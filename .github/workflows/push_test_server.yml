@@ -1,3 +1,5 @@
+# DISABLED: This workflow requires ZeroTier/SSH secrets from IceWhaleTech infra.
+# Kept for reference. To re-enable, remove the 'if: false' lines and configure secrets.
 name: Auto Publish Website
 on:
   push:
@@ -9,6 +11,7 @@ permissions:
   contents: write
 jobs:
   goreleaser:
+    if: false
     runs-on: ubuntu-22.04
     steps:
       -
