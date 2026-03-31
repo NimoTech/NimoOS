@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/drivers/dropbox"
-	"github.com/IceWhaleTech/CasaOS/drivers/google_drive"
-	"github.com/IceWhaleTech/CasaOS/drivers/onedrive"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/drivers/dropbox"
+	"github.com/NimoTech/NimoOS/drivers/google_drive"
+	"github.com/NimoTech/NimoOS/drivers/onedrive"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )

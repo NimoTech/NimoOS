@@ -1,8 +1,8 @@
 package v2
 
 import (
-	"github.com/IceWhaleTech/CasaOS/codegen"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS/codegen"
+	"github.com/NimoTech/NimoOS/service"
 )
 
 type CasaOS struct {

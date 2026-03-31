@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils"
-	"github.com/IceWhaleTech/CasaOS/codegen"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/httper"
+	"github.com/NimoTech/NimoOS-Common/utils"
+	"github.com/NimoTech/NimoOS/codegen"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/utils/httper"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
 )

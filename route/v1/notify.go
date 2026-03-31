@@ -3,9 +3,9 @@ package v1
 import (
 	"net/http"
 
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/labstack/echo/v4"
 )
 

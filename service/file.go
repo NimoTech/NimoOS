@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/moby/sys/mountinfo"
 	"go.uber.org/zap"
 )

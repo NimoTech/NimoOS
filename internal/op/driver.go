@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS/internal/conf"
+	"github.com/NimoTech/NimoOS/internal/conf"
 
-	"github.com/IceWhaleTech/CasaOS/internal/driver"
+	"github.com/NimoTech/NimoOS/internal/driver"
 	"github.com/pkg/errors"
 )
 

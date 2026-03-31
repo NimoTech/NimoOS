@@ -18,17 +18,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/systemctl"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS-Common/utils/systemctl"
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/samba"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/service"
-	model2 "github.com/IceWhaleTech/CasaOS/service/model"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/samba"
+	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service"
+	model2 "github.com/NimoTech/NimoOS/service/model"
 )
 
 // service

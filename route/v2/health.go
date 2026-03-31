@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IceWhaleTech/CasaOS/codegen"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS/codegen"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/labstack/echo/v4"
 	"github.com/mholt/archiver/v3"
 )

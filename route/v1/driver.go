@@ -1,11 +1,11 @@
 package v1
 
 import (
-	"github.com/IceWhaleTech/CasaOS-Common/utils/common_err"
-	"github.com/IceWhaleTech/CasaOS/drivers/dropbox"
-	"github.com/IceWhaleTech/CasaOS/drivers/google_drive"
-	"github.com/IceWhaleTech/CasaOS/drivers/onedrive"
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS-Common/utils/common_err"
+	"github.com/NimoTech/NimoOS/drivers/dropbox"
+	"github.com/NimoTech/NimoOS/drivers/google_drive"
+	"github.com/NimoTech/NimoOS/drivers/onedrive"
+	"github.com/NimoTech/NimoOS/model"
 	"github.com/labstack/echo/v4"
 )
 

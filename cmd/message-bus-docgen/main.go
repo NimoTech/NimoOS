@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/IceWhaleTech/CasaOS-Common/external"
-	"github.com/IceWhaleTech/CasaOS/codegen/message_bus"
-	"github.com/IceWhaleTech/CasaOS/common"
+	"github.com/NimoTech/NimoOS-Common/external"
+	"github.com/NimoTech/NimoOS/codegen/message_bus"
+	"github.com/NimoTech/NimoOS/common"
 	"github.com/samber/lo"
 )
 

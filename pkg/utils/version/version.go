@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/model"
 )
 
 func IsNeedUpdate(version model.Version) (bool, model.Version) {

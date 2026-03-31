@@ -16,9 +16,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/constants"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS-Common/utils/constants"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/model"
 	"github.com/go-ini/ini"
 )
 

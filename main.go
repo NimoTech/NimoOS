@@ -1,5 +1,5 @@
 //go:generate bash -c "mkdir -p codegen && go run github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.12.4 -generate types,server,spec -package codegen api/casaos/openapi.yaml > codegen/casaos_api.go"
-//go:generate bash -c "mkdir -p codegen/message_bus && go run github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.12.4 -generate types,client -package message_bus https://raw.githubusercontent.com/IceWhaleTech/CasaOS-MessageBus/main/api/message_bus/openapi.yaml > codegen/message_bus/api.go"
+//go:generate bash -c "mkdir -p codegen/message_bus && go run github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.12.4 -generate types,client -package message_bus https://raw.githubusercontent.com/NimoTech/NimoOS-MessageBus/main/api/message_bus/openapi.yaml > codegen/message_bus/api.go"
 package main
 
 import (
@@ -12,20 +12,20 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/model"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/command"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/constants"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS-Common/model"
+	"github.com/NimoTech/NimoOS-Common/utils/command"
+	"github.com/NimoTech/NimoOS-Common/utils/constants"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 
-	util_http "github.com/IceWhaleTech/CasaOS-Common/utils/http"
+	util_http "github.com/NimoTech/NimoOS-Common/utils/http"
 
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/pkg/cache"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	"github.com/IceWhaleTech/CasaOS/pkg/sqlite"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/route"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/cache"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/sqlite"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/route"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/coreos/go-systemd/daemon"
 	"go.uber.org/zap"
 

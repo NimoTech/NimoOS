@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/drivers/base"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/drivers/base"
+	"github.com/NimoTech/NimoOS/pkg/utils"
 	"go.uber.org/zap"
 )
 

@@ -18,8 +18,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/service"
 )
 
 func SendAllHardwareStatusBySocket() {

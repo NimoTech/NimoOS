@@ -15,12 +15,12 @@ import (
 	"fmt"
 	"os"
 
-	interfaces "github.com/IceWhaleTech/CasaOS-Common"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/systemctl"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	"github.com/IceWhaleTech/CasaOS/pkg/sqlite"
-	"github.com/IceWhaleTech/CasaOS/service"
+	interfaces "github.com/NimoTech/NimoOS-Common"
+	"github.com/NimoTech/NimoOS-Common/utils/systemctl"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/sqlite"
+	"github.com/NimoTech/NimoOS/service"
 	"gorm.io/gorm"
 )
 

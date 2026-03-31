@@ -1,7 +1,7 @@
 package dropbox
 
 import (
-	"github.com/IceWhaleTech/CasaOS/internal/driver"
+	"github.com/NimoTech/NimoOS/internal/driver"
 )
 
 const ICONURL = "./img/driver/Dropbox.svg"
