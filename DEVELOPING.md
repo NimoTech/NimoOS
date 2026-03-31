@@ -1,5 +1,5 @@
-# CasaOS Development
-Here we will describe the steps required to setup a development environment with CasaOS.  
+# NimoOS Development
+Here we will describe the steps required to setup a development environment with NimoOS.  
 
 - [Setting up development environment](#setting-up-development-environment)  
     - [Pre-requisites](#pre-requisites)  
@@ -23,7 +23,7 @@ The following must be installed in order to get started. The details of how to i
 ### 2. Clone the repo down
 1. Navigate into your go workspace (check with `go env GOPATH`).
 2. Navigate to the appropriate path for github. It should look something like this: `<path from GOPATH>/github.com/<GitHub Username>/`. If it doesn't exist create it. 
-3. Clone down the repo with the following: `git clone --recurse-submodules --remote-submodules https://github.com/<your GitHub Username>/CasaOS.git`  
+3. Clone down the repo with the following: `git clone --recurse-submodules --remote-submodules https://github.com/<your GitHub Username>/NimoOS.git`  
 
 ### 3. Install dependencies
 1. `cd UI`

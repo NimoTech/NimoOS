@@ -3,9 +3,9 @@
  * @Date: 2022-08-02 15:10:56
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-02 16:58:42
- * @FilePath: /CasaOS/route/v1/samba_test.go
+ * @FilePath: /NimoOS/route/v1/samba_test.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package v1_test
@@ -56,7 +56,6 @@ func TestGetSambaSharesList(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-
 
 	executeWithContext := func() *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()

@@ -1,0 +1,22 @@
+[app]
+PAGE_SIZE = 10
+RuntimeRootPath = runtime/
+LogPath = /var/log/nimoos/
+LogSaveName = log
+LogFileExt = log
+DateStrFormat = 20060102
+DateTimeFormat = 2006-01-02 15:04:05
+TimeFormat = 15:04:05
+DateFormat = 2006-01-02
+DBPath     = /var/lib/nimoos
+ShellPath  = /usr/share/nimoos/shell
+UserDataPath = /var/lib/nimoos/conf
+
+[server]
+RunMode = release
+ServerApi = https://api.nimoos.io/nimoos-api
+Handshake = socket.nimoos.io
+Token = 
+USBAutoMount =
+
+[system]

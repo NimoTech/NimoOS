@@ -13,7 +13,7 @@ type HealthService interface {
 type service struct{}
 
 func (s *service) Services() (map[bool]*[]string, error) {
-	services, err := systemctl.ListServices("casaos*")
+	services, err := systemctl.ListServices("nimoos*")
 	if err != nil {
 		return nil, err
 	}

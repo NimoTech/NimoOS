@@ -3,7 +3,7 @@
  * @Date: 2022-05-08 15:07:31
  * @LastEditors: LinkLeong a624669980@163.com
  * @LastEditTime: 2022-05-09 11:43:30
- * @FilePath: /CasaOS/pkg/utils/network_detection_test.go
+ * @FilePath: /NimoOS/pkg/utils/network_detection_test.go
  * @Description:
  *
  * Copyright (c) 2022 by LinkLeong a624669980@163.com, All Rights Reserved.

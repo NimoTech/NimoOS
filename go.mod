@@ -125,4 +125,4 @@ require (
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
-replace github.com/NimoTech/NimoOS-Common => ../CasaOS-Common
+replace github.com/NimoTech/NimoOS-Common => ../NimoOS-Common

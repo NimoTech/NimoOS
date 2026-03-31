@@ -1,6 +1,6 @@
 # This is an example .goreleaser.yml file with some sensible defaults.
 # Make sure to check the documentation at https://goreleaser.com
-project_name: casaos
+project_name: nimoos
 before:
   hooks:
     - go generate
@@ -9,8 +9,8 @@ before:
     - go test -race -v ./...
 
 builds:
-  - id: casaos-amd64
-    binary: build/sysroot/usr/bin/casaos
+  - id: nimoos-amd64
+    binary: build/sysroot/usr/bin/nimoos
     env:
       - CC=x86_64-linux-gnu-gcc
     gcflags:
@@ -25,8 +25,8 @@ builds:
       - linux
     goarch:
       - amd64
-  - id: casaos-arm64
-    binary: build/sysroot/usr/bin/casaos
+  - id: nimoos-arm64
+    binary: build/sysroot/usr/bin/nimoos
     env:
       - CC=aarch64-linux-gnu-gcc
     gcflags:
@@ -41,8 +41,8 @@ builds:
       - linux
     goarch:
       - arm64
-  - id: casaos-arm-7
-    binary: build/sysroot/usr/bin/casaos
+  - id: nimoos-arm-7
+    binary: build/sysroot/usr/bin/nimoos
     env:
       - CC=arm-linux-gnueabihf-gcc
     gcflags:
@@ -59,8 +59,8 @@ builds:
       - arm
     goarm:
       - "7"
-  - id: casaos-riscv64
-    binary: build/sysroot/usr/bin/casaos
+  - id: nimoos-riscv64
+    binary: build/sysroot/usr/bin/nimoos
     env:
       - CC=riscv64-linux-gnu-gcc
     gcflags:
@@ -75,8 +75,8 @@ builds:
       - linux
     goarch:
       - riscv64
-  - id: casaos-migration-tool-amd64
-    binary: build/sysroot/usr/bin/casaos-migration-tool
+  - id: nimoos-migration-tool-amd64
+    binary: build/sysroot/usr/bin/nimoos-migration-tool
     main: ./cmd/migration-tool
     env:
       - CC=x86_64-linux-gnu-gcc
@@ -92,8 +92,8 @@ builds:
       - linux
     goarch:
       - amd64
-  - id: casaos-migration-tool-arm64
-    binary: build/sysroot/usr/bin/casaos-migration-tool
+  - id: nimoos-migration-tool-arm64
+    binary: build/sysroot/usr/bin/nimoos-migration-tool
     main: ./cmd/migration-tool
     env:
       - CC=aarch64-linux-gnu-gcc
@@ -109,8 +109,8 @@ builds:
       - linux
     goarch:
       - arm64
-  - id: casaos-migration-tool-arm-7
-    binary: build/sysroot/usr/bin/casaos-migration-tool
+  - id: nimoos-migration-tool-arm-7
+    binary: build/sysroot/usr/bin/nimoos-migration-tool
     main: ./cmd/migration-tool
     env:
       - CC=arm-linux-gnueabihf-gcc
@@ -128,8 +128,8 @@ builds:
       - arm
     goarm:
       - "7"
-  - id: casaos-migration-tool-riscv64
-    binary: build/sysroot/usr/bin/casaos-migration-tool
+  - id: nimoos-migration-tool-riscv64
+    binary: build/sysroot/usr/bin/nimoos-migration-tool
     main: ./cmd/migration-tool
     env:
       - CC=riscv64-linux-gnu-gcc
@@ -148,22 +148,22 @@ builds:
 archives:
   - name_template: >-
       {{ .Os }}-{{- if eq .Arch "arm" }}arm-7{{- else }}{{ .Arch }}{{- end }}-{{ .ProjectName }}-v{{ .Version }}
-    id: casaos
+    id: nimoos
     builds:
-      - casaos-amd64
-      - casaos-arm64
-      - casaos-arm-7
-      - casaos-riscv64
+      - nimoos-amd64
+      - nimoos-arm64
+      - nimoos-arm-7
+      - nimoos-riscv64
     files:
       - build/**/*
   - name_template: >-
       {{ .Os }}-{{- if eq .Arch "arm" }}arm-7{{- else }}{{ .Arch }}{{- end }}-{{ .ProjectName }}-migration-tool-v{{ .Version }}
-    id: casaos-migration-tool
+    id: nimoos-migration-tool
     builds:
-      - casaos-migration-tool-amd64
-      - casaos-migration-tool-arm64
-      - casaos-migration-tool-arm-7
-      - casaos-migration-tool-riscv64
+      - nimoos-migration-tool-amd64
+      - nimoos-migration-tool-arm64
+      - nimoos-migration-tool-arm-7
+      - nimoos-migration-tool-riscv64
     files:
       - build/sysroot/etc/**/*
 checksum:
@@ -178,16 +178,16 @@ changelog:
       - "^test:"
 # release:
 #   github:
-#     owner: IceWhaleTech
-#     name: CasaOS
+#     owner: NimoTech
+#     name: NimoOS
 #   draft: true
 #   prerelease: auto
 #   mode: replace
 #   name_template: "v{{ .Version }}"
 release:
   github:
-    owner: IceWhaleTech
-    name: CasaOS
+    owner: NimoTech
+    name: NimoOS
   draft: true
   prerelease: auto
   mode: replace

@@ -3,9 +3,9 @@
  * @Date: 2022-08-23 18:09:11
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-31 14:17:51
- * @FilePath: /CasaOS/cmd/migration-tool/main.go
+ * @FilePath: /NimoOS/cmd/migration-tool/main.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package main
@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	casaosServiceName = "casaos.service"
+	nimoosServiceName = "nimoos.service"
 )
 
 var (
@@ -66,13 +66,13 @@ func init() {
 	}
 
 	if !*forceFlag {
-		serviceEnabled, err := systemctl.IsServiceEnabled(casaosServiceName)
+		serviceEnabled, err := systemctl.IsServiceEnabled(nimoosServiceName)
 		if err != nil {
 			panic(err)
 		}
 
 		if serviceEnabled {
-			_logger.Info("%s is already enabled. If migration is still needed, try with -f.", casaosServiceName)
+			_logger.Info("%s is already enabled. If migration is still needed, try with -f.", nimoosServiceName)
 			os.Exit(1)
 		}
 	}

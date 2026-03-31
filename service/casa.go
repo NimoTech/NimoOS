@@ -11,7 +11,7 @@ import (
 )
 
 type CasaService interface {
-	GetCasaosVersion() model.Version
+	GetNimoosVersion() model.Version
 }
 
 type casaService struct{}
@@ -20,7 +20,7 @@ type casaService struct{}
  * @description: get remote version
  * @return {model.Version}
  */
-func (o *casaService) GetCasaosVersion() model.Version {
+func (o *casaService) GetNimoosVersion() model.Version {
 	keyName := "casa_version"
 	var dataStr string
 	var version model.Version

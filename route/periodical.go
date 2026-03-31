@@ -6,9 +6,9 @@
  * @Date: 2022-07-01 15:11:36
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-09-05 16:28:46
- * @FilePath: /CasaOS/route/periodical.go
+ * @FilePath: /NimoOS/route/periodical.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package route
@@ -70,7 +70,7 @@ func SendAllHardwareStatusBySocket() {
 		body[key.(string)] = value
 		return true
 	})
-	service.MyService.Notify().SendNotify("casaos:system:utilization", body)
+	service.MyService.Notify().SendNotify("nimoos:system:utilization", body)
 }
 
 // func MonitoryUSB() {

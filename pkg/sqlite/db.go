@@ -3,9 +3,9 @@
  * @Date: 2022-05-13 18:15:46
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-31 13:39:24
- * @FilePath: /CasaOS/pkg/sqlite/db.go
+ * @FilePath: /NimoOS/pkg/sqlite/db.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package sqlite
@@ -30,7 +30,7 @@ func GetDb(dbPath string) *gorm.DB {
 	// dsn := fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?charset=utf8mb4&parseTime=True&loc=Local", m.User, m.PWD, m.IP, m.Port, m.DBName)
 	// db, err := gorm.Open(mysql2.Open(dsn), &gorm.Config{})
 	file.IsNotExistMkDir(dbPath)
-	db, err := gorm.Open(sqlite.Open(dbPath+"/casaOS.db"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(dbPath+"/nimoOS.db"), &gorm.Config{})
 	if err != nil {
 		panic("sqlite connect error")
 	}

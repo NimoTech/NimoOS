@@ -5,12 +5,12 @@ import (
 	"github.com/NimoTech/NimoOS/service"
 )
 
-type CasaOS struct {
+type NimoOS struct {
 	fileUploadService *service.FileUploadService
 }
 
-func NewCasaOS() codegen.ServerInterface {
-	return &CasaOS{
+func NewNimoOS() codegen.ServerInterface {
+	return &NimoOS{
 		fileUploadService: service.NewFileUploadService(),
 	}
 }

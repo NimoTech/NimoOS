@@ -1,0 +1,13 @@
+[Unit]
+After=nimoos-message-bus.service
+After=rclone.service
+Description=NimoOS Main Service
+
+[Service]
+ExecStart=/usr/bin/nimoos -c /etc/nimoos/nimoos.conf
+PIDFile=/var/run/nimoos/nimoos.pid
+Restart=always
+Type=notify
+
+[Install]
+WantedBy=multi-user.target

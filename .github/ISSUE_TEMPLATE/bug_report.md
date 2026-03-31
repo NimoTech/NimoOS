@@ -49,11 +49,11 @@ assignees: ''
 > Run following command to collect corresponding logs:
 
 ```bash
-sudo journalctl -xef -u casaos-gateway
-sudo journalctl -xef -u casaos-user-service
-sudo journalctl -xef -u casaos-local-storage
-sudo journalctl -xef -u casaos-app-management
-sudo journalctl -xef -u casaos.service
+sudo journalctl -xef -u nimoos-gateway
+sudo journalctl -xef -u nimoos-user-service
+sudo journalctl -xef -u nimoos-local-storage
+sudo journalctl -xef -u nimoos-app-management
+sudo journalctl -xef -u nimoos.service
 ```
 
 

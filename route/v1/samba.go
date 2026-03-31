@@ -3,9 +3,9 @@
  * @Date: 2022-07-26 11:08:48
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-17 18:25:42
- * @FilePath: /CasaOS/route/v1/samba.go
+ * @FilePath: /NimoOS/route/v1/samba.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package v1
@@ -44,7 +44,7 @@ func GetSambaStatus(ctx echo.Context) error {
 	needInit := true
 	if file.Exists("/etc/samba/smb.conf") {
 		str := file.ReadLine(1, "/etc/samba/smb.conf")
-		if strings.Contains(str, "# Copyright (c) 2021-2022 CasaOS Inc. All rights reserved.") {
+		if strings.Contains(str, "# Copyright (c) 2021-2022 NimoOS Inc. All rights reserved.") {
 			needInit = false
 		}
 	}

@@ -27,16 +27,16 @@ jobs:
         if: ${{ ( github.event_name == 'discussion' || github.event_name == 'discussion_comment' ) && github.event.discussion.category.name == 'General' }}
         uses: joseph-montanez/forward-event-action@v3.0.0
         with:
-          webhook: ${{ secrets.Discord_CasaOS_General_Webhook }}
+          webhook: ${{ secrets.Discord_NimoOS_General_Webhook }}
     
       - name: App Request Issues & Comments
         if: ${{ ( github.event_name == 'issues' || github.event_name == 'issue_comment' ) && contains(github.event.issue.labels.*.name, 'App Request') }}
         uses: joseph-montanez/forward-event-action@v3.0.0
         with:
-          webhook: ${{ secrets.Discord_CasaOS_App_Request_Webhook }}
+          webhook: ${{ secrets.Discord_NimoOS_App_Request_Webhook }}
           
       - name: Bug Issues & Comments
         if: ${{ ( github.event_name == 'issues' || github.event_name == 'issue_comment' ) && contains(github.event.issue.labels.*.name, 'bug') && !contains(github.event.issue.labels.*.name, 'alpha') }}
         uses: joseph-montanez/forward-event-action@v3.0.0
         with:
-          webhook: ${{ secrets.Discord_CasaOS_Bug_Webhook }}
+          webhook: ${{ secrets.Discord_NimoOS_Bug_Webhook }}

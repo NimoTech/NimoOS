@@ -3,9 +3,9 @@
  * @Date: 2022-05-20 16:27:12
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-06-09 18:18:46
- * @FilePath: /CasaOS/model/file.go
+ * @FilePath: /NimoOS/model/file.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package model

@@ -13,7 +13,7 @@ import (
 	"github.com/mholt/archiver/v3"
 )
 
-func (s *CasaOS) GetHealthServices(ctx echo.Context) error {
+func (s *NimoOS) GetHealthServices(ctx echo.Context) error {
 	services, err := service.MyService.Health().Services()
 	if err != nil {
 		message := err.Error()
@@ -30,7 +30,7 @@ func (s *CasaOS) GetHealthServices(ctx echo.Context) error {
 	})
 }
 
-func (s *CasaOS) GetHealthPorts(ctx echo.Context) error {
+func (s *NimoOS) GetHealthPorts(ctx echo.Context) error {
 	tcpPorts, udpPorts, err := service.MyService.Health().Ports()
 	if err != nil {
 		message := err.Error()
@@ -46,11 +46,11 @@ func (s *CasaOS) GetHealthPorts(ctx echo.Context) error {
 		},
 	})
 }
-func (c *CasaOS) GetHealthlogs(ctx echo.Context) error {
+func (c *NimoOS) GetHealthlogs(ctx echo.Context) error {
 	var name, currentPath, commonDir, extension string
 	var err error
 	var ar archiver.Writer
-	fileList, err := os.ReadDir("/var/log/casaos")
+	fileList, err := os.ReadDir("/var/log/nimoos")
 	if err != nil {
 		message := err.Error()
 		return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{
@@ -75,7 +75,7 @@ func (c *CasaOS) GetHealthlogs(ctx echo.Context) error {
 	}
 	defer ar.Close()
 
-	commonDir = "/var/log/casaos"
+	commonDir = "/var/log/nimoos"
 
 	currentPath = filepath.Base(commonDir)
 
@@ -87,7 +87,7 @@ func (c *CasaOS) GetHealthlogs(ctx echo.Context) error {
 	ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
 
 	for _, fname := range fileList {
-		err := file.AddFile(ar, filepath.Join("/var/log/casaos", fname.Name()), commonDir)
+		err := file.AddFile(ar, filepath.Join("/var/log/nimoos", fname.Name()), commonDir)
 		if err != nil {
 			message := err.Error()
 			return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{

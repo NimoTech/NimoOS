@@ -21,7 +21,7 @@ func GetRecoverStorage(ctx echo.Context) error {
 	currentTime := time.Now().UTC()
 	currentDate := time.Now().UTC().Format("2006-01-02")
 	notify := make(map[string]interface{})
-	event := "casaos:file:recover"
+	event := "nimoos:file:recover"
 	if t == "GoogleDrive" {
 		google_drive := google_drive.GetConfig()
 		google_drive.Code = ctx.QueryParam("code")
@@ -29,7 +29,7 @@ func GetRecoverStorage(ctx echo.Context) error {
 			notify["status"] = "fail"
 			notify["message"] = "Code cannot be empty"
 			logger.Error("Then code is empty: ", zap.String("code", google_drive.Code), zap.Any("name", "google_drive"))
-			service.MyService.Notify().SendNotify("casaos:file:recover", notify)
+			service.MyService.Notify().SendNotify("nimoos:file:recover", notify)
 			return ctx.HTML(http.StatusOK, `<p>Code cannot be empty</p><script>window.close()</script>`)
 		}
 		err := google_drive.Init(context.Background())

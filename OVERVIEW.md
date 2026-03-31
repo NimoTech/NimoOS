@@ -1,6 +1,6 @@
-# CasaOS 核心服务详解
+# NimoOS 核心服务详解
 
-CasaOS 是整个系统的核心服务，负责文件管理、系统监控、硬件信息采集、网络存储以及与其他微服务的协调。
+NimoOS 是整个系统的核心服务，负责文件管理、系统监控、硬件信息采集、网络存储以及与其他微服务的协调。
 
 ---
 
@@ -20,7 +20,7 @@ CasaOS 是整个系统的核心服务，负责文件管理、系统监控、硬�
 ## 目录结构
 
 ```
-CasaOS/
+NimoOS/
 ├── main.go              # 启动入口
 ├── api/                 # OpenAPI 规范
 ├── route/
@@ -62,8 +62,8 @@ CasaOS/
 
 | 路由前缀 | 功能 |
 |---|---|
-| `/v2/casaos/health/` | 服务健康状态、端口占用、日志下载 |
-| `/v2/casaos/file/` | 文件分片上传校验与提交 |
+| `/v2/nimoos/health/` | 服务健康状态、端口占用、日志下载 |
+| `/v2/nimoos/file/` | 文件分片上传校验与提交 |
 
 ### V3（文件下载）
 
@@ -108,15 +108,15 @@ CasaOS/
 
 ```ini
 [app]
-LogPath = /var/log/casaos/
-DBPath = /var/lib/casaos
-ShellPath = /usr/share/casaos/shell
+LogPath = /var/log/nimoos/
+DBPath = /var/lib/nimoos
+ShellPath = /usr/share/nimoos/shell
 
 [server]
-ServerApi = https://api.casaos.io/casaos-api
+ServerApi = https://api.nimoos.io/nimoos-api
 
 [common]
-RuntimePath = /var/run/casaos
+RuntimePath = /var/run/nimoos
 ```
 
 ---
@@ -125,9 +125,9 @@ RuntimePath = /var/run/casaos
 
 | 服务 | 用途 |
 |---|---|
-| CasaOS-MessageBus | 发布系统事件（文件操作、系统状态） |
-| CasaOS-Gateway | 注册 API 路由、服务发现 |
-| CasaOS-Common | JWT 验证、日志、HTTP 工具 |
+| NimoOS-MessageBus | 发布系统事件（文件操作、系统状态） |
+| NimoOS-Gateway | 注册 API 路由、服务发现 |
+| NimoOS-Common | JWT 验证、日志、HTTP 工具 |
 | rclone | 云存储挂载 |
 | systemd | 服务生命周期管理 |
 

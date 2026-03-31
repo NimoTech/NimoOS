@@ -37,7 +37,7 @@ import (
 // @Success 200 {string} string "ok"
 // @Router /sys/version/check [get]
 func GetSystemCheckVersion(ctx echo.Context) error {
-	need, version := version.IsNeedUpdate(service.MyService.Casa().GetCasaosVersion())
+	need, version := version.IsNeedUpdate(service.MyService.Casa().GetNimoosVersion())
 	if need {
 		installLog := model2.AppNotify{}
 		installLog.State = 0
@@ -45,7 +45,7 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 		installLog.Type = types.NOTIFY_TYPE_NEED_CONFIRM
 		installLog.CreatedAt = strconv.FormatInt(time.Now().Unix(), 10)
 		installLog.UpdatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.Name = "CasaOS System"
+		installLog.Name = "NimoOS System"
 		service.MyService.Notify().AddLog(installLog)
 	}
 	data := make(map[string]interface{}, 3)
@@ -63,7 +63,7 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 // @Success 200 {string} string "ok"
 // @Router /sys/update [post]
 func SystemUpdate(ctx echo.Context) error {
-	need, version := version.IsNeedUpdate(service.MyService.Casa().GetCasaosVersion())
+	need, version := version.IsNeedUpdate(service.MyService.Casa().GetNimoosVersion())
 	if need {
 		service.MyService.System().UpdateSystemVersion(version.Version)
 	}
@@ -77,9 +77,9 @@ func SystemUpdate(ctx echo.Context) error {
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
 // @Router /sys/error/logs [get]
-func GetCasaOSErrorLogs(ctx echo.Context) error {
+func GetNimoOSErrorLogs(ctx echo.Context) error {
 	line, _ := strconv.Atoi(utils.DefaultQuery(ctx, "line", "100"))
-	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: service.MyService.System().GetCasaOSLogs(line)})
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: service.MyService.System().GetNimoOSLogs(line)})
 }
 
 // 系统配置
@@ -87,10 +87,10 @@ func GetSystemConfigDebug(ctx echo.Context) error {
 	array := service.MyService.System().GetSystemConfigDebug()
 	disk := service.MyService.System().GetDiskInfo()
 	sys := service.MyService.System().GetSysInfo()
-	version := service.MyService.Casa().GetCasaosVersion()
+	version := service.MyService.Casa().GetNimoosVersion()
 	var bugContent string = fmt.Sprintf(`
 	 - OS: %s
-	 - CasaOS Version: %s
+	 - NimoOS Version: %s
 	 - Disk Total: %v 
 	 - Disk Used: %v 
 	 - System Info: %s
@@ -104,14 +104,14 @@ func GetSystemConfigDebug(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: bugContent})
 }
 
-// @Summary get casaos server port
+// @Summary get nimoos server port
 // @Produce  application/json
 // @Accept application/json
 // @Tags sys
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
 // @Router /sys/port [get]
-func GetCasaOSPort(ctx echo.Context) error {
+func GetNimoOSPort(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS,
 		model.Result{
 			Success: common_err.SUCCESS,
@@ -120,7 +120,7 @@ func GetCasaOSPort(ctx echo.Context) error {
 		})
 }
 
-// @Summary edit casaos server port
+// @Summary edit nimoos server port
 // @Produce  application/json
 // @Accept application/json
 // @Tags sys
@@ -128,7 +128,7 @@ func GetCasaOSPort(ctx echo.Context) error {
 // @Param port json string true "port"
 // @Success 200 {string} string "ok"
 // @Router /sys/port [put]
-func PutCasaOSPort(ctx echo.Context) error {
+func PutNimoOSPort(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	portStr := json["port"]
@@ -157,14 +157,14 @@ func PutCasaOSPort(ctx echo.Context) error {
 		})
 }
 
-// @Summary active killing casaos
+// @Summary active killing nimoos
 // @Produce  application/json
 // @Accept application/json
 // @Tags sys
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
 // @Router /sys/restart [post]
-func PostKillCasaOS(ctx echo.Context) error {
+func PostKillNimoOS(ctx echo.Context) error {
 	os.Exit(0)
 	return nil
 }
