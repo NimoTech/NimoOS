@@ -9,6 +9,7 @@ import (
 	"github.com/NimoTech/NimoOS-Common/utils/jwt"
 	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/service"
 	v1 "github.com/NimoTech/NimoOS/route/v1"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
@@ -52,6 +53,13 @@ func InitV1Router() http.Handler {
 			}
 
 			c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
+
+			// Query DB for current role (real-time, no stale JWT cache)
+			role, err := service.MyService.User().GetUserRoleByID(claims.ID)
+			if err != nil {
+				role = "user" // fail-closed: default to restricted role
+			}
+			c.Request().Header.Set("user_role", role)
 
 			return claims, nil
 		},
