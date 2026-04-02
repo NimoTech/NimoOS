@@ -89,10 +89,11 @@ func checkPathAccess(ctx echo.Context, path string) error {
 	}
 	isAdmin := role == "admin"
 	if !utils.IsPathAllowed(path, isAdmin) {
-		return ctx.JSON(http.StatusForbidden, model.Result{
+		ctx.JSON(http.StatusForbidden, model.Result{ //nolint:errcheck
 			Success: common_err.INSUFFICIENT_PERMISSIONS,
 			Message: common_err.GetMsg(common_err.INSUFFICIENT_PERMISSIONS),
 		})
+		return echo.ErrForbidden // response committed; Echo won't write again
 	}
 	return nil
 }
