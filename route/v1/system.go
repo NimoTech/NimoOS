@@ -21,6 +21,7 @@ import (
 	"github.com/NimoTech/NimoOS/pkg/config"
 	"github.com/NimoTech/NimoOS/pkg/utils"
 	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/NimoTech/NimoOS/pkg/utils/encryption"
 	"github.com/NimoTech/NimoOS/pkg/utils/version"
 	"github.com/NimoTech/NimoOS/service"
 	model2 "github.com/NimoTech/NimoOS/service/model"
@@ -167,6 +168,30 @@ func PutNimoOSPort(ctx echo.Context) error {
 func PostKillNimoOS(ctx echo.Context) error {
 	os.Exit(0)
 	return nil
+}
+
+// @Summary get system base info (device id, version, model)
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {string} string "ok"
+// @Router /sys/baseinfo [get]
+func GetSystemBaseInfo(ctx echo.Context) error {
+	mac, err := service.MyService.System().GetMacAddress()
+	if err != nil {
+		mac = ""
+	}
+	data := map[string]string{
+		"device_id": encryption.GetMD5ByStr(mac),
+		"version":   common.VERSION,
+		"model":     service.MyService.System().GetDeviceTree(),
+	}
+	return ctx.JSON(common_err.SUCCESS, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    data,
+	})
 }
 
 // @Summary get system hardware info

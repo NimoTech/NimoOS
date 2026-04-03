@@ -82,6 +82,7 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 
 			v1SysGroup.GET("/hardware", v1.GetSystemHardwareInfo) // hardware/info
+			v1SysGroup.GET("/baseinfo", v1.GetSystemBaseInfo)
 
 			v1SysGroup.GET("/wsssh", v1.WsSsh)
 			v1SysGroup.POST("/ssh-login", v1.PostSshLogin)
