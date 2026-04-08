@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	http2 "github.com/IceWhaleTech/CasaOS-Common/utils/http"
 	"github.com/IceWhaleTech/CasaOS-Common/utils/port"
@@ -25,6 +24,7 @@ import (
 	"github.com/IceWhaleTech/CasaOS/service"
 	model2 "github.com/IceWhaleTech/CasaOS/service/model"
 	"github.com/IceWhaleTech/CasaOS/types"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
 )
@@ -45,7 +45,7 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 		installLog.Type = types.NOTIFY_TYPE_NEED_CONFIRM
 		installLog.CreatedAt = strconv.FormatInt(time.Now().Unix(), 10)
 		installLog.UpdatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.Name = "CasaOS System"
+		installLog.Name = "NimoOS System"
 		service.MyService.Notify().AddLog(installLog)
 	}
 	data := make(map[string]interface{}, 3)
@@ -177,19 +177,32 @@ func PostKillCasaOS(ctx echo.Context) error {
 // @Success 200 {string} string "ok"
 // @Router /sys/hardware/info [get]
 func GetSystemHardwareInfo(ctx echo.Context) error {
-	data := make(map[string]string, 1)
+	data := make(map[string]interface{})
 	data["drive_model"] = service.MyService.System().GetDeviceTree()
 	data["arch"] = runtime.GOARCH
 
-	if cpu := service.MyService.System().GetCpuInfo(); len(cpu) > 0 {
-		return ctx.JSON(common_err.SUCCESS,
-			model.Result{
-				Success: common_err.SUCCESS,
-				Message: common_err.GetMsg(common_err.SUCCESS),
-				Data:    data,
-			})
+	// CPU
+	if cpuInfo := service.MyService.System().GetCpuInfo(); len(cpuInfo) > 0 {
+		data["cpu_model"] = cpuInfo[0].ModelName
+		data["cpu_cores"] = service.MyService.System().GetCpuCoreNum()
 	}
-	return nil
+
+	// RAM
+	memInfo := service.MyService.System().GetMemInfo()
+	data["ram_total"] = memInfo["total"]
+	ramDetail := service.MyService.System().GetRamDetail()
+	data["ram_speed"] = ramDetail["speed"]
+	data["ram_type"] = ramDetail["type"]
+
+	// GPU
+	data["gpu_list"] = service.MyService.System().GetGpuInfo()
+
+	return ctx.JSON(common_err.SUCCESS,
+		model.Result{
+			Success: common_err.SUCCESS,
+			Message: common_err.GetMsg(common_err.SUCCESS),
+			Data:    data,
+		})
 }
 
 // @Summary system utilization
@@ -228,15 +241,28 @@ func GetSystemUtilization(ctx echo.Context) error {
 	for _, n := range netList {
 		for _, netCardName := range nets {
 			if n.Name == netCardName {
-				item := *(*model.IOCountersStat)(unsafe.Pointer(&n))
+				item := model.IOCountersStat{
+					Name:        n.Name,
+					BytesSent:   n.BytesSent,
+					BytesRecv:   n.BytesRecv,
+					PacketsSent: n.PacketsSent,
+					PacketsRecv: n.PacketsRecv,
+					Errin:       n.Errin,
+					Errout:      n.Errout,
+					Dropin:      n.Dropin,
+					Dropout:     n.Dropout,
+					Fifoin:      n.Fifoin,
+					Fifoout:     n.Fifoout,
+				}
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
+				item.Addr = service.MyService.System().GetNetAddr(n.Name)
+				item.Speed = service.MyService.System().GetNetSpeed(n.Name)
 				item.Time = time.Now().Unix()
 				newNet = append(newNet, item)
 				break
 			}
 		}
 	}
-
 	data["net"] = newNet
 	systemMap := service.MyService.Notify().GetSystemTempMap()
 	systemMap.Range(func(key, value interface{}) bool {
@@ -244,6 +270,57 @@ func GetSystemUtilization(ctx echo.Context) error {
 		return true
 	})
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
+}
+
+// @Summary get system paths and sizes
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {string} string "ok"
+// @Router /sys/paths [get]
+func GetSystemPaths(ctx echo.Context) error {
+	data := service.MyService.System().GetSystemPaths()
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
+}
+
+// @Summary start app-path migration to a new mount point
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Param body body object true "type: app_data|images|database, target_mount: /media/XXX"
+// @Success 200 {string} string "ok"
+// @Router /sys/migrate [post]
+func PostMigrateAppPath(ctx echo.Context) error {
+	var body struct {
+		Type        string `json:"type"`
+		TargetMount string `json:"target_mount"`
+	}
+	if err := ctx.Bind(&body); err != nil || body.Type == "" || body.TargetMount == "" {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+
+	jobID := uuid.NewString()
+	service.MyService.System().StartMigrateAppPath(jobID, body.Type, body.TargetMount)
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: map[string]string{"job_id": jobID}})
+}
+
+// @Summary get migration job status
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Param id path string true "job ID"
+// @Success 200 {string} string "ok"
+// @Router /sys/migrate/:id [get]
+func GetMigrateStatus(ctx echo.Context) error {
+	jobID := ctx.Param("id")
+	status, ok := service.MyService.System().GetMigrateStatus(jobID)
+	if !ok {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: "job not found"})
+	}
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: status})
 }
 
 // @Summary get cpu info
@@ -299,7 +376,19 @@ func GetSystemNetInfo(ctx echo.Context) error {
 	for _, n := range netList {
 		for _, netCardName := range service.MyService.System().GetNet(true) {
 			if n.Name == netCardName {
-				item := *(*model.IOCountersStat)(unsafe.Pointer(&n))
+				item := model.IOCountersStat{
+					Name:        n.Name,
+					BytesSent:   n.BytesSent,
+					BytesRecv:   n.BytesRecv,
+					PacketsSent: n.PacketsSent,
+					PacketsRecv: n.PacketsRecv,
+					Errin:       n.Errin,
+					Errout:      n.Errout,
+					Dropin:      n.Dropin,
+					Dropout:     n.Dropout,
+					Fifoin:      n.Fifoin,
+					Fifoout:     n.Fifoout,
+				}
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
 				item.Time = time.Now().Unix()
 				newNet = append(newNet, item)
@@ -382,4 +471,29 @@ func GetSystemEntry(ctx echo.Context) error {
 		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: entry, Data: json.RawMessage("[]")})
 	}
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: str})
+}
+
+func PutDiskStandby(ctx echo.Context) error {
+	data := make(map[string]interface{})
+	if err := ctx.Bind(&data); err != nil {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
+	}
+	
+	minutesVal, ok := data["minutes"]
+	if !ok {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: "minutes is required"})
+	}
+
+	var minutes int
+	switch v := minutesVal.(type) {
+	case float64:
+		minutes = int(v)
+	case int:
+		minutes = v
+	default:
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: "minutes must be an integer"})
+	}
+
+	service.MyService.System().SetDiskStandby(minutes)
+	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }

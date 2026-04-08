@@ -98,6 +98,10 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/proxy", v1.GetSystemProxy)
 			v1SysGroup.PUT("/state/:state", v1.PutSystemState)
 			v1SysGroup.GET("/entry", v1.GetSystemEntry)
+			v1SysGroup.GET("/paths", v1.GetSystemPaths)
+			v1SysGroup.POST("/migrate", v1.PostMigrateAppPath)
+			v1SysGroup.GET("/migrate/:id", v1.GetMigrateStatus)
+			v1SysGroup.PUT("/disk/standby", v1.PutDiskStandby)
 		}
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()

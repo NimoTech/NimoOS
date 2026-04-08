@@ -14,4 +14,6 @@ type IOCountersStat struct {
 	Fifoout     uint64 `json:"fifoout"`     // total number of FIFO buffers errors while sending
 	State       string `json:"state"`
 	Time        int64  `json:"time"`
+	Addr        string `json:"addr"`
+	Speed       int    `json:"speed"`
 }

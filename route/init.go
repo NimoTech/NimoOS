@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,14 +26,17 @@ import (
 	"github.com/IceWhaleTech/CasaOS/pkg/samba"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/encryption"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
+	"github.com/IceWhaleTech/CasaOS/pkg/utils/httper"
 	v1 "github.com/IceWhaleTech/CasaOS/route/v1"
 	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
 func InitFunction() {
 	go InitNetworkMount()
 	go InitInfo()
+	go InitDiskStandby()
 	//go InitZerotier()
 }
 
@@ -107,6 +111,52 @@ func InitNetworkMount() {
 		logger.Error("mount storage err", zap.Any("err", err))
 	}
 }
+func InitDiskStandby() {
+	// Wait for gateway and other services to be ready
+	time.Sleep(time.Second * 35)
+
+	err, portStr := service.MyService.Gateway().GetPort()
+	if err != nil {
+		logger.Error("failed to get gateway port for disk standby init", zap.Error(err))
+		return
+	}
+	port := gjson.Get(portStr, "data").String()
+	if port == "" {
+		port = "80" // Default fallback
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%s/v1/users/custom/system", port)
+	
+	// Internal request to fetch system settings
+	res := httper.Get(url, nil)
+	if res == "" {
+		logger.Error("failed to fetch system custom storage for disk standby init")
+		return
+	}
+
+	diskStandby := gjson.Get(res, "data.disk_standby").String()
+	if diskStandby != "" {
+		minutes := parseStandbyMinutes(diskStandby)
+		logger.Info("applying boot disk standby setting", zap.String("setting", diskStandby), zap.Int("minutes", minutes))
+		service.MyService.System().SetDiskStandby(minutes)
+	}
+}
+
+func parseStandbyMinutes(standby string) int {
+	if standby == "never" || standby == "" {
+		return 0
+	}
+	if strings.HasSuffix(standby, "m") {
+		m, _ := strconv.Atoi(strings.TrimSuffix(standby, "m"))
+		return m
+	}
+	if strings.HasSuffix(standby, "h") {
+		h, _ := strconv.Atoi(strings.TrimSuffix(standby, "h"))
+		return h * 60
+	}
+	return 0
+}
+
 func InitZerotier() {
 	v1.CheckNetwork()
 }

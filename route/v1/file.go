@@ -93,7 +93,7 @@ func GetFilerContent(ctx echo.Context) error {
 		})
 	}
 	if !file.Exists(filePath) {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
+		return ctx.JSON(http.StatusNotFound, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
 			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
 		})

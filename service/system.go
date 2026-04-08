@@ -66,6 +66,14 @@ type SystemService interface {
 	SystemShutdown() error
 	GetSystemEntry() string
 	GenreateSystemEntry()
+	GetGpuInfo() []string
+	GetRamDetail() map[string]string
+	SetDiskStandby(minutes int) error
+	GetNetAddr(name string) string
+	GetNetSpeed(name string) int
+	GetSystemPaths() map[string]interface{}
+	StartMigrateAppPath(jobID, migrationType, targetMountPoint string)
+	GetMigrateStatus(jobID string) (MigrateStatus, bool)
 }
 type systemService struct{}
 
@@ -550,6 +558,125 @@ func (s *systemService) SystemShutdown() error {
 		return err
 	}
 	return nil
+}
+
+func (c *systemService) GetGpuInfo() []string {
+	gpuList := []string{}
+	if output, err := command.OnlyExec("lspci | grep -E 'VGA|3D'"); err == nil {
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		for _, line := range lines {
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) > 1 {
+				gpuList = append(gpuList, parts[1])
+			}
+		}
+	}
+	return gpuList
+}
+
+func (c *systemService) GetRamDetail() map[string]string {
+	data := make(map[string]string)
+	// Speed
+	if output, err := command.OnlyExec("sudo dmidecode -t memory | grep 'Speed' | head -n 1"); err == nil {
+		parts := strings.Split(output, ":")
+		if len(parts) > 1 {
+			data["speed"] = strings.TrimSpace(parts[1])
+		}
+	}
+	// Type
+	if output, err := command.OnlyExec("sudo dmidecode -t memory | grep 'Type:' | head -n 1"); err == nil {
+		parts := strings.Split(output, ":")
+		if len(parts) > 1 {
+			data["type"] = strings.TrimSpace(parts[1])
+		}
+	}
+	return data
+}
+
+func (s *systemService) SetDiskStandby(minutes int) error {
+	var hdparmValue int
+	if minutes == 0 {
+		hdparmValue = 0 // Never
+	} else if minutes <= 20 {
+		hdparmValue = minutes * 12
+	} else if minutes >= 30 && minutes <= 330 {
+		hdparmValue = (minutes / 30) + 240
+	} else {
+		hdparmValue = 251 // Max 5.5h
+	}
+
+	// Get all physical sda-sdz and nvme disks
+	devices, _ := filepath.Glob("/dev/sd[a-z]")
+	nvmeDevices, _ := filepath.Glob("/dev/nvme[0-9]n[0-9]")
+	devices = append(devices, nvmeDevices...)
+
+	for _, dev := range devices {
+		// exec hdparm -S <value> <device>
+		// We use sudo because hdparm requires root privileges
+		cmd := exec2.Command("sudo", "hdparm", "-S", fmt.Sprintf("%d", hdparmValue), dev)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			logger.Info("failed to set disk standby for " + dev + ": " + string(output))
+		} else {
+			logger.Info("successfully set disk standby for " + dev + " to hdparm value " + fmt.Sprintf("%d", hdparmValue))
+		}
+	}
+	return nil
+}
+
+func (c *systemService) GetNetAddr(name string) string {
+	allIpv4 := ip_helper.GetDeviceAllIPv4()
+	if v, ok := allIpv4[name]; ok {
+		return v
+	}
+	return ""
+}
+
+func (c *systemService) GetNetSpeed(name string) int {
+	speedPath := filepath.Join("/sys/class/net", name, "speed")
+	if !file.Exists(speedPath) {
+		return 0
+	}
+	content := string(file.ReadFullFile(speedPath))
+	speed, err := strconv.Atoi(strings.TrimSpace(content))
+	if err != nil {
+		return 0
+	}
+	// Speed is in Mbps, -1 means unknown or virtual
+	if speed < 0 {
+		return 0
+	}
+	return speed
+}
+
+func (c *systemService) GetSystemPaths() map[string]interface{} {
+	cfg := LoadPathConfig()
+
+	appDataSize, _ := file.GetFileOrDirSize(cfg.AppData)
+	imagesSize, _ := file.GetFileOrDirSize(cfg.Images)
+	userDataSize, _ := file.GetFileOrDirSize(cfg.UserData)
+
+	return map[string]interface{}{
+		"app_data": map[string]interface{}{
+			"path": cfg.AppData,
+			"size": appDataSize,
+		},
+		"images": map[string]interface{}{
+			"path": cfg.Images,
+			"size": imagesSize,
+		},
+		"database": map[string]interface{}{
+			"path": cfg.UserData,
+			"size": userDataSize,
+		},
+	}
+}
+
+func (c *systemService) StartMigrateAppPath(jobID, migrationType, targetMountPoint string) {
+	StartMigration(jobID, migrationType, targetMountPoint)
+}
+
+func (c *systemService) GetMigrateStatus(jobID string) (MigrateStatus, bool) {
+	return GetMigrationStatus(jobID)
 }
 
 func NewSystemService() SystemService {

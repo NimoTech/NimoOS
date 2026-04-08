@@ -1,0 +1,259 @@
+package service
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
+	localfile "github.com/IceWhaleTech/CasaOS/pkg/utils/file"
+	"go.uber.org/zap"
+)
+
+const (
+	PathConfigFile = "/var/lib/casaos/path_config.json"
+
+	MigrateTypeAppData  = "app_data"
+	MigrateTypeImages   = "images"
+	MigrateTypeUserData = "database"
+
+	DefaultAppDataPath  = "/DATA/AppData"
+	DefaultImagesPath   = "/DATA/.docker"
+	DefaultUserDataPath = "/DATA/Gallery & Downloads & Documents & Media"
+)
+
+// PathConfig stores current configured paths for the three data locations.
+type PathConfig struct {
+	AppData  string `json:"app_data"`
+	Images   string `json:"images"`
+	UserData string `json:"database"`
+}
+
+// MigrateStatus describes a running or finished migration job.
+type MigrateStatus struct {
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	Status        string `json:"status"` // "running" | "done" | "error"
+	Progress      int    `json:"progress"`
+	ProcessedSize int64  `json:"processed_size"`
+	TotalSize     int64  `json:"total_size"`
+	NewPath       string `json:"new_path,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
+// MigrateJobs holds all active/completed migration jobs.
+var MigrateJobs sync.Map // map[string]MigrateStatus
+
+// LoadPathConfig reads the stored path config or returns defaults.
+func LoadPathConfig() PathConfig {
+	cfg := PathConfig{
+		AppData:  DefaultAppDataPath,
+		Images:   DefaultImagesPath,
+		UserData: DefaultUserDataPath,
+	}
+	data, err := os.ReadFile(PathConfigFile)
+	if err != nil {
+		return cfg
+	}
+	var stored PathConfig
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return cfg
+	}
+	if stored.AppData != "" {
+		cfg.AppData = stored.AppData
+	}
+	if stored.Images != "" {
+		cfg.Images = stored.Images
+	}
+	if stored.UserData != "" {
+		cfg.UserData = stored.UserData
+	}
+	return cfg
+}
+
+// SavePathConfig persists the path config to disk.
+func SavePathConfig(cfg PathConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(PathConfigFile, data, 0644)
+}
+
+// StartMigration kicks off an async migration job and returns immediately.
+func StartMigration(jobID, migrationType, targetMountPoint string) {
+	status := MigrateStatus{
+		ID:     jobID,
+		Type:   migrationType,
+		Status: "running",
+	}
+	MigrateJobs.Store(jobID, status)
+
+	go func() {
+		newPath, err := executeMigration(jobID, migrationType, targetMountPoint)
+		if v, ok := MigrateJobs.Load(jobID); ok {
+			s := v.(MigrateStatus)
+			if err != nil {
+				s.Status = "error"
+				s.Error = err.Error()
+				logger.Error("migration failed", zap.String("type", migrationType), zap.Error(err))
+			} else {
+				s.Status = "done"
+				s.Progress = 100
+				s.NewPath = newPath
+			}
+			MigrateJobs.Store(jobID, s)
+		}
+	}()
+}
+
+// GetMigrationStatus looks up a job by ID.
+func GetMigrationStatus(jobID string) (MigrateStatus, bool) {
+	v, ok := MigrateJobs.Load(jobID)
+	if !ok {
+		return MigrateStatus{}, false
+	}
+	return v.(MigrateStatus), true
+}
+
+func executeMigration(jobID, migrationType, targetMountPoint string) (string, error) {
+	cfg := LoadPathConfig()
+
+	var srcPath, dirName string
+	switch migrationType {
+	case MigrateTypeAppData:
+		srcPath = cfg.AppData
+		dirName = filepath.Base(srcPath)
+		if dirName == "" || dirName == "." {
+			dirName = "AppData"
+		}
+	case MigrateTypeImages:
+		srcPath = cfg.Images
+		dirName = filepath.Base(srcPath)
+		if dirName == "" || dirName == "." {
+			dirName = ".docker"
+		}
+	case MigrateTypeUserData:
+		srcPath = cfg.UserData
+		dirName = filepath.Base(srcPath)
+		if dirName == "" || dirName == "." {
+			dirName = "Gallery & Downloads & Documents & Media"
+		}
+	default:
+		return "", fmt.Errorf("unknown migration type: %s", migrationType)
+	}
+
+	// CopyDir appends the last segment of src to dst automatically,
+	// so dst = targetMountPoint gives us targetMountPoint/<dirName>.
+	newPath := filepath.Join(targetMountPoint, dirName)
+
+	// Measure total size for progress tracking.
+	totalSize, _ := localfile.GetFileOrDirSize(srcPath)
+	updateProgress(jobID, 0, 0, totalSize)
+
+	// Docker migration: stop daemon before touching its data dir.
+	if migrationType == MigrateTypeImages {
+		logger.Info("stopping docker for migration")
+		_ = exec.Command("systemctl", "stop", "docker").Run()
+	}
+
+	// Start progress tracking goroutine.
+	done := make(chan struct{})
+	go trackProgress(jobID, newPath, totalSize, done)
+
+	// Perform the copy.
+	if err := localfile.CopyDir(srcPath, targetMountPoint, "overwrite"); err != nil {
+		close(done)
+		if migrationType == MigrateTypeImages {
+			_ = exec.Command("systemctl", "start", "docker").Run()
+		}
+		return "", fmt.Errorf("copy failed: %w", err)
+	}
+	close(done)
+
+	// Update config to point to new path.
+	switch migrationType {
+	case MigrateTypeAppData:
+		cfg.AppData = newPath
+		// Keep /DATA/AppData symlink in sync.
+		updateSymlink("/DATA/AppData", newPath)
+
+	case MigrateTypeImages:
+		cfg.Images = newPath
+		// Update docker root config file.
+		dockerCfg := map[string]string{"docker_root_dir": newPath}
+		if data, err := json.Marshal(dockerCfg); err == nil {
+			_ = os.WriteFile("/var/lib/casaos/docker_root", data, 0644)
+		}
+		// Also update /etc/docker/daemon.json so Docker itself uses the new path.
+		updateDockerDaemonRoot(newPath)
+		logger.Info("starting docker after migration")
+		_ = exec.Command("systemctl", "start", "docker").Run()
+
+	case MigrateTypeUserData:
+		cfg.UserData = newPath
+		updateSymlink("/DATA/Gallery & Downloads & Documents & Media", newPath)
+	}
+
+	if err := SavePathConfig(cfg); err != nil {
+		logger.Error("failed to save path config", zap.Error(err))
+	}
+
+	// Remove old data only after the config is safely updated.
+	if srcPath != newPath {
+		if err := os.RemoveAll(srcPath); err != nil {
+			logger.Error("failed to remove old path after migration", zap.String("path", srcPath), zap.Error(err))
+		}
+	}
+
+	return newPath, nil
+}
+
+func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-time.After(2 * time.Second):
+			processed, _ := localfile.GetFileOrDirSize(destPath)
+			pct := 0
+			if totalSize > 0 {
+				pct = int(processed * 95 / totalSize) // cap at 95 until fully done
+			}
+			updateProgress(jobID, pct, processed, totalSize)
+		}
+	}
+}
+
+func updateProgress(jobID string, pct int, processed, total int64) {
+	if v, ok := MigrateJobs.Load(jobID); ok {
+		s := v.(MigrateStatus)
+		s.Progress = pct
+		s.ProcessedSize = processed
+		s.TotalSize = total
+		MigrateJobs.Store(jobID, s)
+	}
+}
+
+func updateSymlink(linkPath, target string) {
+	_ = os.Remove(linkPath)
+	if err := os.Symlink(target, linkPath); err != nil {
+		logger.Error("failed to update symlink", zap.String("link", linkPath), zap.String("target", target), zap.Error(err))
+	}
+}
+
+func updateDockerDaemonRoot(newRoot string) {
+	const daemonJSON = "/etc/docker/daemon.json"
+	existing := map[string]interface{}{}
+	if data, err := os.ReadFile(daemonJSON); err == nil {
+		_ = json.Unmarshal(data, &existing)
+	}
+	existing["data-root"] = newRoot
+	if data, err := json.MarshalIndent(existing, "", "  "); err == nil {
+		_ = os.WriteFile(daemonJSON, data, 0644)
+	}
+}

@@ -11,6 +11,8 @@ import (
 	"github.com/IceWhaleTech/CasaOS/service"
 	"github.com/labstack/echo/v4"
 	"github.com/mholt/archiver/v3"
+	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
+	"go.uber.org/zap"
 )
 
 func (s *CasaOS) GetHealthServices(ctx echo.Context) error {
@@ -47,54 +49,63 @@ func (s *CasaOS) GetHealthPorts(ctx echo.Context) error {
 	})
 }
 func (c *CasaOS) GetHealthlogs(ctx echo.Context) error {
-	var name, currentPath, commonDir, extension string
+	var name, commonDir, extension string
 	var err error
 	var ar archiver.Writer
-	fileList, err := os.ReadDir("/var/log/casaos")
+
+	commonDir = "/var/log/casaos"
+	if !file.Exists(commonDir) {
+		message := "log directory not found"
+		return ctx.JSON(http.StatusNotFound, codegen.ResponseInternalServerError{
+			Message: &message,
+		})
+	}
+
+	fileList, err := os.ReadDir(commonDir)
 	if err != nil {
 		message := err.Error()
 		return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{
 			Message: &message,
 		})
 	}
+
 	extension, ar, err = file.GetCompressionAlgorithm("zip")
 	if err != nil {
-		ctx.Response().Header().Set("Content-Type", "application/json")
 		message := err.Error()
-		return ctx.JSON(http.StatusNotFound, codegen.ResponseInternalServerError{
+		return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{
 			Message: &message,
 		})
 	}
+
+	// Prepare Headers BEFORE writing any bytes to the stream
+	name = "NimoOS" + extension
+	ctx.Response().Header().Set("Content-Type", "application/octet-stream")
+	ctx.Response().Header().Set("Content-Transfer-Encoding", "binary")
+	ctx.Response().Header().Set("Cache-Control", "no-cache")
+	ctx.Response().Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
+	ctx.Response().WriteHeader(http.StatusOK)
+
+	// Create and start the stream
 	err = ar.Create(ctx.Response().Writer)
 	if err != nil {
-		ctx.Response().Header().Set("Content-Type", "application/json")
-		message := err.Error()
-		return ctx.JSON(http.StatusNotFound, codegen.ResponseInternalServerError{
-			Message: &message,
-		})
+		logger.Error("failed to create archiver stream", zap.Error(err))
+		return nil // Cannot send JSON now, headers already sent
 	}
 	defer ar.Close()
 
-	commonDir = "/var/log/casaos"
-
-	currentPath = filepath.Base(commonDir)
-
-	name = currentPath
-	name += extension
-	ctx.Response().Header().Add("Content-Type", "application/octet-stream")
-	ctx.Response().Header().Add("Content-Transfer-Encoding", "binary")
-	ctx.Response().Header().Add("Cache-Control", "no-cache")
-	ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
-
 	for _, fname := range fileList {
-		err := file.AddFile(ar, filepath.Join("/var/log/casaos", fname.Name()), commonDir)
-		if err != nil {
-			message := err.Error()
-			return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{
-				Message: &message,
-			})
+		fullPath := filepath.Join(commonDir, fname.Name())
+		// Skip directories to avoid complex nesting issues in this quick health log fix
+		if fname.IsDir() {
+			continue
 		}
-
+		
+		err := file.AddFile(ar, fullPath, commonDir)
+		if err != nil {
+			logger.Error("failed to add file to log zip stream", zap.String("file", fullPath), zap.Error(err))
+			// Continue with other files if one fails
+			continue
+		}
 	}
 	return nil
 }
