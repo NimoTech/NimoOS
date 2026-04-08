@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/drivers/dropbox"
-	"github.com/IceWhaleTech/CasaOS/drivers/google_drive"
-	"github.com/IceWhaleTech/CasaOS/drivers/onedrive"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/drivers/dropbox"
+	"github.com/NimoTech/NimoOS/drivers/google_drive"
+	"github.com/NimoTech/NimoOS/drivers/onedrive"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )
@@ -21,7 +21,7 @@ func GetRecoverStorage(ctx echo.Context) error {
 	currentTime := time.Now().UTC()
 	currentDate := time.Now().UTC().Format("2006-01-02")
 	notify := make(map[string]interface{})
-	event := "casaos:file:recover"
+	event := "nimoos:file:recover"
 	if t == "GoogleDrive" {
 		google_drive := google_drive.GetConfig()
 		google_drive.Code = ctx.QueryParam("code")
@@ -29,7 +29,7 @@ func GetRecoverStorage(ctx echo.Context) error {
 			notify["status"] = "fail"
 			notify["message"] = "Code cannot be empty"
 			logger.Error("Then code is empty: ", zap.String("code", google_drive.Code), zap.Any("name", "google_drive"))
-			service.MyService.Notify().SendNotify("casaos:file:recover", notify)
+			service.MyService.Notify().SendNotify("nimoos:file:recover", notify)
 			return ctx.HTML(http.StatusOK, `<p>Code cannot be empty</p><script>window.close()</script>`)
 		}
 		err := google_drive.Init(context.Background())

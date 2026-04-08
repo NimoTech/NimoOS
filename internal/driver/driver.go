@@ -3,7 +3,7 @@ package driver
 import (
 	"context"
 
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS/model"
 )
 
 type Driver interface {

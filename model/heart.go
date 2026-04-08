@@ -1,6 +1,6 @@
 package model
 
-type CasaOSHeart struct {
+type NimoOSHeart struct {
 	UuId string `json:"uuid"`
 	Type string `json:"type"`
 }

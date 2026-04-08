@@ -3,9 +3,9 @@
  * @Date: 2021-12-20 14:15:46
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-07-04 16:18:23
- * @FilePath: /CasaOS/service/file.go
+ * @FilePath: /NimoOS/service/file.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package service
@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/moby/sys/mountinfo"
 	"go.uber.org/zap"
 )

@@ -3,15 +3,15 @@
  * @Date: 2021-09-30 18:18:14
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-06-02 18:00:57
- * @FilePath: /CasaOS/service/rely.go
+ * @FilePath: /NimoOS/service/rely.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package service
 
 import (
-	model2 "github.com/IceWhaleTech/CasaOS/service/model"
+	model2 "github.com/NimoTech/NimoOS/service/model"
 	"gorm.io/gorm"
 )
 
@@ -31,7 +31,7 @@ func (r *relyService) Create(rely model2.RelyDBModel) {
 
 }
 
-//获取我的应用列表
+// 获取我的应用列表
 func (r *relyService) GetInfo(id string) model2.RelyDBModel {
 	var m model2.RelyDBModel
 	r.db.Where("custom_id = ?", id).First(&m)

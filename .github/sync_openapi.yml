@@ -12,8 +12,8 @@ on:
 
 jobs:
   sync:
-    uses: IceWhaleTech/github/.github/workflows/sync_openapi.yml@main
+    uses: NimoTech/github/.github/workflows/sync_openapi.yml@main
     with:
-      project-name: casaos
+      project-name: nimoos
     secrets:
       API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}

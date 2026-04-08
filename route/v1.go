@@ -5,11 +5,12 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/IceWhaleTech/CasaOS-Common/external"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/jwt"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	v1 "github.com/IceWhaleTech/CasaOS/route/v1"
+	"github.com/NimoTech/NimoOS-Common/external"
+	"github.com/NimoTech/NimoOS-Common/utils/jwt"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/service"
+	v1 "github.com/NimoTech/NimoOS/route/v1"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
 )
@@ -53,6 +54,13 @@ func InitV1Router() http.Handler {
 
 			c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
 
+			// Query DB for current role (real-time, no stale JWT cache)
+			role, err := service.MyService.User().GetUserRoleByID(claims.ID)
+			if err != nil {
+				role = "user" // fail-closed: default to restricted role
+			}
+			c.Request().Header.Set("user_role", role)
+
 			return claims, nil
 		},
 		TokenLookupFuncs: []echo_middleware.ValuesExtractor{
@@ -74,16 +82,17 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 
 			v1SysGroup.GET("/hardware", v1.GetSystemHardwareInfo) // hardware/info
+			v1SysGroup.GET("/baseinfo", v1.GetSystemBaseInfo)
 
 			v1SysGroup.GET("/wsssh", v1.WsSsh)
 			v1SysGroup.POST("/ssh-login", v1.PostSshLogin)
 			// v1SysGroup.GET("/config", v1.GetSystemConfig) //delete
 			// v1SysGroup.POST("/config", v1.PostSetSystemConfig)
-			v1SysGroup.GET("/logs", v1.GetCasaOSErrorLogs) // error/logs
+			v1SysGroup.GET("/logs", v1.GetNimoOSErrorLogs) // error/logs
 			// v1SysGroup.GET("/widget/config", v1.GetWidgetConfig)//delete
 			// v1SysGroup.POST("/widget/config", v1.PostSetWidgetConfig)//delete
 
-			v1SysGroup.POST("/stop", v1.PostKillCasaOS)
+			v1SysGroup.POST("/stop", v1.PostKillNimoOS)
 
 			v1SysGroup.GET("/utilization", v1.GetSystemUtilization)
 			// v1SysGroup.GET("/cpu", v1.GetSystemCupInfo)
@@ -93,8 +102,8 @@ func InitV1Router() http.Handler {
 
 			v1SysGroup.GET("/server-info", nil)
 			v1SysGroup.PUT("/server-info", nil)
-			// v1SysGroup.GET("/port", v1.GetCasaOSPort)
-			// v1SysGroup.PUT("/port", v1.PutCasaOSPort)
+			// v1SysGroup.GET("/port", v1.GetNimoOSPort)
+			// v1SysGroup.PUT("/port", v1.PutNimoOSPort)
 			v1SysGroup.GET("/proxy", v1.GetSystemProxy)
 			v1SysGroup.PUT("/state/:state", v1.PutSystemState)
 			v1SysGroup.GET("/entry", v1.GetSystemEntry)

@@ -6,16 +6,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IceWhaleTech/CasaOS/codegen"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS/codegen"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/labstack/echo/v4"
 	"github.com/mholt/archiver/v3"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"go.uber.org/zap"
 )
 
-func (s *CasaOS) GetHealthServices(ctx echo.Context) error {
+func (s *NimoOS) GetHealthServices(ctx echo.Context) error {
 	services, err := service.MyService.Health().Services()
 	if err != nil {
 		message := err.Error()
@@ -32,7 +32,7 @@ func (s *CasaOS) GetHealthServices(ctx echo.Context) error {
 	})
 }
 
-func (s *CasaOS) GetHealthPorts(ctx echo.Context) error {
+func (s *NimoOS) GetHealthPorts(ctx echo.Context) error {
 	tcpPorts, udpPorts, err := service.MyService.Health().Ports()
 	if err != nil {
 		message := err.Error()
@@ -48,12 +48,12 @@ func (s *CasaOS) GetHealthPorts(ctx echo.Context) error {
 		},
 	})
 }
-func (c *CasaOS) GetHealthlogs(ctx echo.Context) error {
+func (c *NimoOS) GetHealthlogs(ctx echo.Context) error {
 	var name, commonDir, extension string
 	var err error
 	var ar archiver.Writer
 
-	commonDir = "/var/log/casaos"
+	commonDir = "/var/log/nimoos"
 	if !file.Exists(commonDir) {
 		message := "log directory not found"
 		return ctx.JSON(http.StatusNotFound, codegen.ResponseInternalServerError{
@@ -94,16 +94,13 @@ func (c *CasaOS) GetHealthlogs(ctx echo.Context) error {
 	defer ar.Close()
 
 	for _, fname := range fileList {
-		fullPath := filepath.Join(commonDir, fname.Name())
-		// Skip directories to avoid complex nesting issues in this quick health log fix
 		if fname.IsDir() {
 			continue
 		}
-		
+		fullPath := filepath.Join(commonDir, fname.Name())
 		err := file.AddFile(ar, fullPath, commonDir)
 		if err != nil {
 			logger.Error("failed to add file to log zip stream", zap.String("file", fullPath), zap.Error(err))
-			// Continue with other files if one fails
 			continue
 		}
 	}

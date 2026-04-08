@@ -3,14 +3,14 @@ package v1
 import (
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/drivers/dropbox"
-	"github.com/IceWhaleTech/CasaOS/drivers/google_drive"
-	"github.com/IceWhaleTech/CasaOS/drivers/onedrive"
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/httper"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/drivers/dropbox"
+	"github.com/NimoTech/NimoOS/drivers/google_drive"
+	"github.com/NimoTech/NimoOS/drivers/onedrive"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/NimoTech/NimoOS/pkg/utils/httper"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )

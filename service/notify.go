@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/common"
-	model2 "github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/model/notify"
-	"github.com/IceWhaleTech/CasaOS/service/model"
-	"github.com/IceWhaleTech/CasaOS/types"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/common"
+	model2 "github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/model/notify"
+	"github.com/NimoTech/NimoOS/service/model"
+	"github.com/NimoTech/NimoOS/types"
 	"go.uber.org/zap"
 	"golang.org/x/sync/syncmap"
 
@@ -88,7 +88,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 				bt, _ := json.Marshal(v)
 				msg[k] = string(bt)
 			}
-			response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "casaos:file:operate", msg)
+			response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:file:operate", msg)
 			if err != nil {
 				logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
 			}
@@ -147,7 +147,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 			bt, _ := json.Marshal(v)
 			msg[k] = string(bt)
 		}
-		response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "casaos:file:operate", msg)
+		response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:file:operate", msg)
 		if err != nil {
 			logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
 		}
@@ -216,7 +216,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 				bt, _ := json.Marshal(v)
 				msg[k] = string(bt)
 			}
-			response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "casaos:file:operate", msg)
+			response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:file:operate", msg)
 			if err != nil {
 				logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
 			}

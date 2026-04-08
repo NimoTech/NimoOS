@@ -3,9 +3,9 @@
  * @Date: 2022-07-26 18:13:22
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-04 20:10:31
- * @FilePath: /CasaOS/service/connections.go
+ * @FilePath: /NimoOS/service/connections.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package service
@@ -13,8 +13,8 @@ package service
 import (
 	"fmt"
 
-	"github.com/IceWhaleTech/CasaOS/service/model"
-	model2 "github.com/IceWhaleTech/CasaOS/service/model"
+	"github.com/NimoTech/NimoOS/service/model"
+	model2 "github.com/NimoTech/NimoOS/service/model"
 	"github.com/moby/sys/mount"
 	"golang.org/x/sys/unix"
 	"gorm.io/gorm"

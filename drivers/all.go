@@ -1,9 +1,9 @@
 package drivers
 
 import (
-	_ "github.com/IceWhaleTech/CasaOS/drivers/dropbox"
-	_ "github.com/IceWhaleTech/CasaOS/drivers/google_drive"
-	_ "github.com/IceWhaleTech/CasaOS/drivers/onedrive"
+	_ "github.com/NimoTech/NimoOS/drivers/dropbox"
+	_ "github.com/NimoTech/NimoOS/drivers/google_drive"
+	_ "github.com/NimoTech/NimoOS/drivers/onedrive"
 )
 
 // All do nothing,just for import

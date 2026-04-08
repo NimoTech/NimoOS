@@ -13,17 +13,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/command"
-	exec2 "github.com/IceWhaleTech/CasaOS-Common/utils/exec"
+	"github.com/NimoTech/NimoOS-Common/utils/command"
+	exec2 "github.com/NimoTech/NimoOS-Common/utils/exec"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/file"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/httper"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/ip_helper"
+	"github.com/NimoTech/NimoOS-Common/utils/file"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/NimoTech/NimoOS/pkg/utils/httper"
+	"github.com/NimoTech/NimoOS/pkg/utils/ip_helper"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 
@@ -37,7 +37,7 @@ import (
 type SystemService interface {
 	UpdateSystemVersion(version string)
 	GetSystemConfigDebug() []string
-	GetCasaOSLogs(lineNumber int) string
+	GetNimoOSLogs(lineNumber int) string
 	UpdateAssist()
 	UpSystemPort(port string)
 	GetTimeZone() string
@@ -130,7 +130,7 @@ func (c *systemService) GetDeviceInfo() model.DeviceInfo {
 }
 
 func (c *systemService) GenreateSystemEntry() {
-	modelsPath := "/var/lib/casaos/www/modules"
+	modelsPath := "/var/lib/nimoos/www/modules"
 	entryFileName := "entry.json"
 	entryFilePath := filepath.Join(config.AppInfo.DBPath, "db", entryFileName)
 	file.IsNotExistCreateFile(entryFilePath)
@@ -159,7 +159,7 @@ func (c *systemService) GenreateSystemEntry() {
 }
 
 func (c *systemService) GetSystemEntry() string {
-	modelsPath := "/var/lib/casaos/www/modules"
+	modelsPath := "/var/lib/nimoos/www/modules"
 	entryFileName := "entry.json"
 	dir, err := os.ReadDir(modelsPath)
 	if err != nil {
@@ -293,10 +293,10 @@ func (c *systemService) GetDirPath(path string) ([]model.Path, error) {
 	if path == "/DATA" {
 		sysType := runtime.GOOS
 		if sysType == "windows" {
-			path = "C:\\CasaOS\\DATA"
+			path = "C:\\NimoOS\\DATA"
 		}
 		if sysType == "darwin" {
-			path = "./CasaOS/DATA"
+			path = "./NimoOS/DATA"
 		}
 
 	}
@@ -385,12 +385,12 @@ func (s *systemService) UpdateSystemVersion(version string) {
 		os.Remove(config.AppInfo.LogPath + "/upgrade.log")
 	}
 	file.CreateFile(config.AppInfo.LogPath + "/upgrade.log")
-	// go command2.OnlyExec("curl -fsSL https://raw.githubusercontent.com/LinkLeong/casaos-alpha/main/update.sh | bash")
+	// go command2.OnlyExec("curl -fsSL https://raw.githubusercontent.com/LinkLeong/nimoos-alpha/main/update.sh | bash")
 	if len(config.ServerInfo.UpdateUrl) > 0 {
 		go command.OnlyExec("curl -fsSL " + config.ServerInfo.UpdateUrl + " | bash")
 	} else {
 		osRelease, _ := file.ReadOSRelease()
-		go command.OnlyExec("curl -fsSL https://get.casaos.io/update?t=" + osRelease["MANUFACTURER"] + " | bash")
+		go command.OnlyExec("curl -fsSL https://get.nimoos.io/update?t=" + osRelease["MANUFACTURER"] + " | bash")
 	}
 
 	// s.log.Error(config.AppInfo.ProjectPath + "/shell/tool.sh -r " + version)
@@ -433,7 +433,7 @@ func (s *systemService) UpSystemPort(port string) {
 	config.Cfg.SaveTo(config.SystemConfigInfo.ConfigPath)
 }
 
-func (s *systemService) GetCasaOSLogs(lineNumber int) string {
+func (s *systemService) GetNimoOSLogs(lineNumber int) string {
 	file, err := os.Open(filepath.Join(config.AppInfo.LogPath, fmt.Sprintf("%s.%s",
 		config.AppInfo.LogSaveName,
 		config.AppInfo.LogFileExt,

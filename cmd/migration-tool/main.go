@@ -3,9 +3,9 @@
  * @Date: 2022-08-23 18:09:11
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-31 14:17:51
- * @FilePath: /CasaOS/cmd/migration-tool/main.go
+ * @FilePath: /NimoOS/cmd/migration-tool/main.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package main
@@ -15,17 +15,17 @@ import (
 	"fmt"
 	"os"
 
-	interfaces "github.com/IceWhaleTech/CasaOS-Common"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/systemctl"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	"github.com/IceWhaleTech/CasaOS/pkg/sqlite"
-	"github.com/IceWhaleTech/CasaOS/service"
+	interfaces "github.com/NimoTech/NimoOS-Common"
+	"github.com/NimoTech/NimoOS-Common/utils/systemctl"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/sqlite"
+	"github.com/NimoTech/NimoOS/service"
 	"gorm.io/gorm"
 )
 
 const (
-	casaosServiceName = "casaos.service"
+	nimoosServiceName = "nimoos.service"
 )
 
 var (
@@ -66,13 +66,13 @@ func init() {
 	}
 
 	if !*forceFlag {
-		serviceEnabled, err := systemctl.IsServiceEnabled(casaosServiceName)
+		serviceEnabled, err := systemctl.IsServiceEnabled(nimoosServiceName)
 		if err != nil {
 			panic(err)
 		}
 
 		if serviceEnabled {
-			_logger.Info("%s is already enabled. If migration is still needed, try with -f.", casaosServiceName)
+			_logger.Info("%s is already enabled. If migration is still needed, try with -f.", nimoosServiceName)
 			os.Exit(1)
 		}
 	}

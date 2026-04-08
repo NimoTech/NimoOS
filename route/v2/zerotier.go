@@ -4,19 +4,19 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils"
-	"github.com/IceWhaleTech/CasaOS/codegen"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/httper"
+	"github.com/NimoTech/NimoOS-Common/utils"
+	"github.com/NimoTech/NimoOS/codegen"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/utils/httper"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
 )
 
-func (s *CasaOS) SetZerotierNetworkStatus(ctx echo.Context, networkId string) error {
+func (s *NimoOS) SetZerotierNetworkStatus(ctx echo.Context, networkId string) error {
 
 	return ctx.JSON(http.StatusOK, nil)
 }
-func (s *CasaOS) GetZerotierInfo(ctx echo.Context) error {
+func (s *NimoOS) GetZerotierInfo(ctx echo.Context) error {
 	info := codegen.GetZTInfoOK{}
 	respBody, err := httper.ZTGet("/controller/network")
 	if err != nil {

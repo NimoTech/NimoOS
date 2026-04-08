@@ -1,5 +1,5 @@
-//go:generate bash -c "mkdir -p codegen && go run github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.12.4 -generate types,server,spec -package codegen api/casaos/openapi.yaml > codegen/casaos_api.go"
-//go:generate bash -c "mkdir -p codegen/message_bus && go run github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.12.4 -generate types,client -package message_bus https://raw.githubusercontent.com/IceWhaleTech/CasaOS-MessageBus/main/api/message_bus/openapi.yaml > codegen/message_bus/api.go"
+//go:generate bash -c "mkdir -p codegen && go run github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.12.4 -generate types,server,spec -package codegen api/nimoos/openapi.yaml > codegen/nimoos_api.go"
+//go:generate bash -c "mkdir -p codegen/message_bus && go run github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.12.4 -generate types,client -package message_bus ../NimoOS-MessageBus/api/message_bus/openapi.yaml > codegen/message_bus/api.go"
 package main
 
 import (
@@ -12,20 +12,20 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/model"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/command"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/constants"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS-Common/model"
+	"github.com/NimoTech/NimoOS-Common/utils/command"
+	"github.com/NimoTech/NimoOS-Common/utils/constants"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 
-	util_http "github.com/IceWhaleTech/CasaOS-Common/utils/http"
+	util_http "github.com/NimoTech/NimoOS-Common/utils/http"
 
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/pkg/cache"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	"github.com/IceWhaleTech/CasaOS/pkg/sqlite"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/route"
-	"github.com/IceWhaleTech/CasaOS/service"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/cache"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/sqlite"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/route"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/coreos/go-systemd/daemon"
 	"go.uber.org/zap"
 
@@ -44,10 +44,10 @@ var (
 	//go:embed api/index.html
 	_docHTML string
 
-	//go:embed api/casaos/openapi.yaml
+	//go:embed api/nimoos/openapi.yaml
 	_docYAML string
 
-	//go:embed build/sysroot/etc/casaos/casaos.conf.sample
+	//go:embed build/sysroot/etc/nimoos/nimoos.conf.sample
 	_confSample string
 
 	configFlag  = flag.String("c", "", "config address")
@@ -89,12 +89,12 @@ func init() {
 	//configfile.Install()
 }
 
-// @title casaOS API
+// @title nimoOS API
 // @version 1.0.0
 // @contact.name lauren.pan
 // @contact.url https://www.zimaboard.com
 // @contact.email lauren.pan@icewhale.org
-// @description casaOS v1版本api
+// @description nimoOS v1版本api
 // @host 192.168.2.217:8089
 // @securityDefinitions.apikey ApiKeyAuth
 // @in header
@@ -189,7 +189,7 @@ func main() {
 		}
 	}()
 
-	urlFilePath := filepath.Join(config.CommonInfo.RuntimePath, "casaos.url")
+	urlFilePath := filepath.Join(config.CommonInfo.RuntimePath, "nimoos.url")
 	if err := file.CreateFileAndWriteContent(urlFilePath, "http://"+listener.Addr().String()); err != nil {
 		logger.Error("error when creating address file", zap.Error(err),
 			zap.Any("address", listener.Addr().String()),
@@ -202,9 +202,9 @@ func main() {
 	command.ExecuteScripts(scriptDirectory)
 
 	if supported, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
-		logger.Error("Failed to notify systemd that casaos main service is ready", zap.Any("error", err))
+		logger.Error("Failed to notify systemd that nimoos main service is ready", zap.Any("error", err))
 	} else if supported {
-		logger.Info("Notified systemd that casaos main service is ready")
+		logger.Info("Notified systemd that nimoos main service is ready")
 	} else {
 		logger.Info("This process is not running as a systemd service.")
 	}
@@ -220,7 +220,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second, // fix G112: Potential slowloris attack (see https://github.com/securego/gosec)
 	}
 
-	logger.Info("CasaOS main service is listening...", zap.Any("address", listener.Addr().String()))
+	logger.Info("NimoOS main service is listening...", zap.Any("address", listener.Addr().String()))
 	// defer service.MyService.Storage().UnmountAllStorage()
 	err = s.Serve(listener) // not using http.serve() to fix G114: Use of net/http serve function that has no support for setting timeouts (see https://github.com/securego/gosec)
 	if err != nil {

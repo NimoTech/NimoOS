@@ -3,9 +3,9 @@
  * @Date: 2022-08-24 17:37:36
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-24 17:38:48
- * @FilePath: /CasaOS/interfaces/migrationTool.go
+ * @FilePath: /NimoOS/interfaces/migrationTool.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package interfaces

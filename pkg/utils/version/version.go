@@ -3,9 +3,9 @@
  * @Date: 2022-05-13 18:15:46
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-07-21 15:27:53
- * @FilePath: /CasaOS/pkg/utils/version/version.go
+ * @FilePath: /NimoOS/pkg/utils/version/version.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package version
@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/model"
 )
 
 func IsNeedUpdate(version model.Version) (bool, model.Version) {

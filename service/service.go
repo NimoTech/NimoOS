@@ -3,17 +3,17 @@
  * @Date: 2022-07-12 09:48:56
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-09-02 22:10:05
- * @FilePath: /CasaOS/service/service.go
+ * @FilePath: /NimoOS/service/service.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package service
 
 import (
-	"github.com/IceWhaleTech/CasaOS-Common/external"
-	"github.com/IceWhaleTech/CasaOS/codegen/message_bus"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
+	"github.com/NimoTech/NimoOS-Common/external"
+	"github.com/NimoTech/NimoOS/codegen/message_bus"
+	"github.com/NimoTech/NimoOS/pkg/config"
 	"github.com/gorilla/websocket"
 	"github.com/patrickmn/go-cache"
 	"gorm.io/gorm"
@@ -43,6 +43,7 @@ type Repository interface {
 	MessageBus() *message_bus.ClientWithResponses
 	Peer() PeerService
 	Other() OtherService
+	User() UserService
 }
 
 func NewService(db *gorm.DB, RuntimePath string) Repository {
@@ -62,6 +63,7 @@ func NewService(db *gorm.DB, RuntimePath string) Repository {
 		shares:      NewSharesService(db),
 		storage:     NewStorageService(),
 		other:       NewOtherService(),
+		user:        &userService{db: db},
 
 		peer: NewPeerService(db),
 	}
@@ -80,6 +82,7 @@ type store struct {
 	storage     StorageService
 	health      HealthService
 	other       OtherService
+	user        UserService
 }
 
 func (c *store) Storage() StorageService {
@@ -92,6 +95,10 @@ func (c *store) Peer() PeerService {
 
 func (c *store) Other() OtherService {
 	return c.other
+}
+
+func (c *store) User() UserService {
+	return c.user
 }
 
 func (c *store) Gateway() external.ManagementService {

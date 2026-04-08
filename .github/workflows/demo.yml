@@ -2,15 +2,15 @@ name: Demo Reset
 
 # Controls when the workflow will run
 on:
-  schedule:
-  - cron: "0 * * * *"
+  # schedule:
+  # - cron: "0 * * * *"
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# OLD_INSTANCE_SNAPSHOT_NAME=$(aws lightsail get-instance-snapshots | grep '"name": "CasaOS-Demo-Snapshot-[0-9]' | sed 's/ //g' | sed 's/"//g' | sed 's/,//g' | sed 's/name://g')
-# OLD_INSTANCE_NAME=$(aws lightsail get-instances | grep '"name": "CasaOS-Demo-[0-9]' | sed 's/ //g' | sed 's/"//g' | sed 's/,//g' | sed 's/name://g')
-# NEW_INSTANCE_NAME=CasaOS-Demo-$(date +%s)
+# OLD_INSTANCE_SNAPSHOT_NAME=$(aws lightsail get-instance-snapshots | grep '"name": "NimoOS-Demo-Snapshot-[0-9]' | sed 's/ //g' | sed 's/"//g' | sed 's/,//g' | sed 's/name://g')
+# OLD_INSTANCE_NAME=$(aws lightsail get-instances | grep '"name": "NimoOS-Demo-[0-9]' | sed 's/ //g' | sed 's/"//g' | sed 's/,//g' | sed 's/name://g')
+# NEW_INSTANCE_NAME=NimoOS-Demo-$(date +%s)
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -33,10 +33,10 @@ jobs:
           
       - name: Get old instance and snapshot name, create new instance name
         run: | 
-          echo "OLD_INSTANCE_SNAPSHOT_NAME=CasaOS-v0.4.4-3-Demo-1700132299" >> $GITHUB_ENV
-          echo "OLD_INSTANCE_NAME=$(aws lightsail get-instances | grep '"name": "CasaOS-Demo-[0-9]' | tail -1 | sed 's/ //g' | sed 's/"//g' | sed 's/,//g' | sed 's/name://g')" >> $GITHUB_ENV
-          # echo "OLD_INSTANCE_NAME=CasaOS-Demo-1687680295" >> $GITHUB_ENV
-          echo "NEW_INSTANCE_NAME= CasaOS-Demo-$(date +%s)" >> $GITHUB_ENV
+          echo "OLD_INSTANCE_SNAPSHOT_NAME=NimoOS-v0.4.4-3-Demo-1700132299" >> $GITHUB_ENV
+          echo "OLD_INSTANCE_NAME=$(aws lightsail get-instances | grep '"name": "NimoOS-Demo-[0-9]' | tail -1 | sed 's/ //g' | sed 's/"//g' | sed 's/,//g' | sed 's/name://g')" >> $GITHUB_ENV
+          # echo "OLD_INSTANCE_NAME=NimoOS-Demo-1687680295" >> $GITHUB_ENV
+          echo "NEW_INSTANCE_NAME= NimoOS-Demo-$(date +%s)" >> $GITHUB_ENV
           
       - name: Create instances from snapshot
         run: | 
@@ -69,7 +69,7 @@ jobs:
       - name: Attach static ip
         run: | 
           aws lightsail attach-static-ip \
-            --static-ip-name CasaOS-Demo-IP \
+            --static-ip-name NimoOS-Demo-IP \
             --instance-name ${{ env.NEW_INSTANCE_NAME }}
             
       - name: Delete old instance

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/drivers/base"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/drivers/base"
 	"github.com/go-resty/resty/v2"
 	"go.uber.org/zap"
 )
@@ -24,7 +24,7 @@ func (d *Dropbox) getRefreshToken() error {
 		SetFormData(map[string]string{
 			"code":         d.Code,
 			"grant_type":   "authorization_code",
-			"redirect_uri": "https://cloudoauth.files.casaos.app",
+			"redirect_uri": "https://cloudoauth.files.nimoos.app",
 		}).SetBasicAuth(d.Addition.AppKey, d.Addition.AppSecret).SetHeader("Content-Type", "application/x-www-form-urlencoded").Post(url)
 	if err != nil {
 		return err
@@ -108,7 +108,7 @@ func (d *Dropbox) getFiles(path string) ([]File, error) {
 func GetConfig() Dropbox {
 	dp := Dropbox{}
 	dp.RootFolderID = ""
-	dp.AuthUrl = "https://www.dropbox.com/oauth2/authorize?client_id=" + app_key + "&redirect_uri=https://cloudoauth.files.casaos.app&response_type=code&token_access_type=offline&state=${HOST}%2Fv1%2Frecover%2FDropbox&&force_reapprove=true&force_reauthentication=true"
+	dp.AuthUrl = "https://www.dropbox.com/oauth2/authorize?client_id=" + app_key + "&redirect_uri=https://cloudoauth.files.nimoos.app&response_type=code&token_access_type=offline&state=${HOST}%2Fv1%2Frecover%2FDropbox&&force_reapprove=true&force_reauthentication=true"
 	dp.AppKey = app_key
 	dp.AppSecret = app_secret
 	dp.Icon = "./img/driver/Dropbox.svg"

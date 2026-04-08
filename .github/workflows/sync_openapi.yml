@@ -1,3 +1,5 @@
+# DISABLED: This workflow syncs OpenAPI specs using NimoTech's private GitHub token.
+# Kept for reference. To re-enable, configure API_TOKEN_GITHUB secret and update project-name.
 name: Sync OpenAPI
 
 on:
@@ -12,8 +14,9 @@ on:
 
 jobs:
   sync:
-    uses: IceWhaleTech/github/.github/workflows/sync_openapi.yml@main
+    if: false
+    uses: NimoTech/github/.github/workflows/sync_openapi.yml@main
     with:
-      project-name: casaos
+      project-name: nimoos
     secrets:
       API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}

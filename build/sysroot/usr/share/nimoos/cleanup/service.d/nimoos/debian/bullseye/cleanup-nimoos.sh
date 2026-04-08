@@ -1,0 +1,1 @@
+../cleanup-nimoos.sh

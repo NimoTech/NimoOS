@@ -3,9 +3,9 @@
  * @Date: 2022-05-13 18:15:46
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-09-05 11:58:02
- * @FilePath: /CasaOS/pkg/config/init.go
+ * @FilePath: /NimoOS/pkg/config/init.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package config
@@ -16,9 +16,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/constants"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS-Common/utils/constants"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/model"
 	"github.com/go-ini/ini"
 )
 
@@ -29,7 +29,7 @@ var (
 		LogPath:      constants.DefaultLogPath,
 		LogSaveName:  common.SERVICENAME,
 		LogFileExt:   "log",
-		ShellPath:    "/usr/share/casaos/shell",
+		ShellPath:    "/usr/share/nimoos/shell",
 		UserDataPath: filepath.Join(constants.DefaultDataPath, "conf"),
 	}
 	CommonInfo = &model.CommonModel{
@@ -45,7 +45,7 @@ var (
 
 // 初始化设置，获取系统的部分信息。
 func InitSetup(config string, sample string) {
-	ConfigFilePath = CasaOSConfigFilePath
+	ConfigFilePath = NimoOSConfigFilePath
 	if len(config) > 0 {
 		ConfigFilePath = config
 	}

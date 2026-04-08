@@ -17,18 +17,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/model"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/robfig/cron/v3"
 	"github.com/tidwall/gjson"
 
-	"github.com/IceWhaleTech/CasaOS/pkg/utils"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/service"
-	model2 "github.com/IceWhaleTech/CasaOS/service/model"
+	"github.com/NimoTech/NimoOS/pkg/utils"
+	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service"
+	model2 "github.com/NimoTech/NimoOS/service/model"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -76,6 +76,28 @@ var (
 	err  error
 )
 
+// checkPathAccess returns an error response if the authenticated user is not
+// allowed to access the given path. Returns nil if access is permitted.
+// For localhost requests (JWT middleware skipped), both user_id and user_role
+// are empty — these are internal service calls and are always permitted.
+func checkPathAccess(ctx echo.Context, path string) error {
+	role := ctx.Request().Header.Get("user_role")
+	userID := ctx.Request().Header.Get("user_id")
+	// Localhost bypass: JWT middleware skipped, no headers set.
+	if role == "" && userID == "" {
+		return nil
+	}
+	isAdmin := role == "admin"
+	if !utils.IsPathAllowed(path, isAdmin) {
+		ctx.JSON(http.StatusForbidden, model.Result{ //nolint:errcheck
+			Success: common_err.INSUFFICIENT_PERMISSIONS,
+			Message: common_err.GetMsg(common_err.INSUFFICIENT_PERMISSIONS),
+		})
+		return echo.ErrForbidden // response committed; Echo won't write again
+	}
+	return nil
+}
+
 // @Summary 读取文件
 // @Produce  application/json
 // @Accept application/json
@@ -91,6 +113,9 @@ func GetFilerContent(ctx echo.Context) error {
 			Success: common_err.INVALID_PARAMS,
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
+	}
+	if err := checkPathAccess(ctx, filePath); err != nil {
+		return err
 	}
 	if !file.Exists(filePath) {
 		return ctx.JSON(http.StatusNotFound, model.Result{
@@ -154,6 +179,11 @@ func GetDownloadFile(ctx echo.Context) error {
 		})
 	}
 	list := strings.Split(files, ",")
+	for _, v := range list {
+		if err := checkPathAccess(ctx, v); err != nil {
+			return err
+		}
+	}
 	for _, v := range list {
 		if !file.Exists(v) {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
@@ -230,6 +260,9 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if err := checkPathAccess(ctx, filePath); err != nil {
+		return err
+	}
 	fileName := path.Base(filePath)
 	// c.Header("Content-Disposition", "inline")
 	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
@@ -283,6 +316,9 @@ func DirPath(ctx echo.Context) error {
 	path := ctx.QueryParam("path")
 	req.Path = path
 	req.Validate()
+	if err := checkPathAccess(ctx, req.Path); err != nil {
+		return err
+	}
 	info, err := service.MyService.System().GetDirPath(req.Path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
@@ -385,6 +421,12 @@ func RenamePath(ctx echo.Context) error {
 	if len(op) == 0 || len(np) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if err := checkPathAccess(ctx, op); err != nil {
+		return err
+	}
+	if err := checkPathAccess(ctx, np); err != nil {
+		return err
+	}
 	mounted := service.IsMounted(op)
 	if mounted {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES)})
@@ -410,6 +452,9 @@ func MkdirAll(ctx echo.Context) error {
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if err := checkPathAccess(ctx, path); err != nil {
+		return err
+	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
 	// 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
@@ -434,6 +479,9 @@ func PostCreateFile(ctx echo.Context) error {
 	var code int
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if err := checkPathAccess(ctx, path); err != nil {
+		return err
 	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
@@ -461,6 +509,9 @@ func GetFileUpload(ctx echo.Context) error {
 	path := ctx.QueryParam("path")
 	dirPath := ""
 	hash := file.GetHashByContent([]byte(fileName))
+	if err := checkPathAccess(ctx, path); err != nil {
+		return err
+	}
 	if file.Exists(path + "/" + relative) {
 		return ctx.JSON(http.StatusConflict, model.Result{Success: http.StatusConflict, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -501,6 +552,9 @@ func PostFileUpload(ctx echo.Context) error {
 	if len(path) == 0 {
 		logger.Error("path should not be empty")
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if err := checkPathAccess(ctx, path); err != nil {
+		return err
 	}
 	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)) + "/"
 
@@ -648,6 +702,14 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	if len(list.Item) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if err := checkPathAccess(ctx, list.To); err != nil {
+		return err
+	}
+	for _, item := range list.Item {
+		if err := checkPathAccess(ctx, item.From); err != nil {
+			return err
+		}
+	}
 	if list.To == list.Item[0].From[:strings.LastIndex(list.Item[0].From, "/")] {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SOURCE_DES_SAME, Message: common_err.GetMsg(common_err.SOURCE_DES_SAME)})
 	}
@@ -700,6 +762,11 @@ func DeleteFile(ctx echo.Context) error {
 	if len(paths) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	for _, p := range paths {
+		if err := checkPathAccess(ctx, p); err != nil {
+			return err
+		}
+	}
 	//	path := ctx.QueryParam("path")
 
 	//	paths := strings.Split(path, ",")
@@ -735,6 +802,9 @@ func PutFileContent(ctx echo.Context) error {
 
 	// path := ctx.FormValue("path")
 	// content := ctx.FormValue("content")
+	if err := checkPathAccess(ctx, fi.FilePath); err != nil {
+		return err
+	}
 	if !file.Exists(fi.FilePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -767,6 +837,9 @@ func PutFileContent(ctx echo.Context) error {
 func GetFileImage(ctx echo.Context) error {
 	t := ctx.QueryParam("type")
 	path := ctx.QueryParam("path")
+	if err := checkPathAccess(ctx, path); err != nil {
+		return err
+	}
 	if !file.Exists(path) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -816,6 +889,9 @@ func GetSize(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
+	if err := checkPathAccess(ctx, path); err != nil {
+		return err
+	}
 	size, err := file.GetFileOrDirSize(path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
@@ -827,6 +903,9 @@ func GetFileCount(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
+	if err := checkPathAccess(ctx, path); err != nil {
+		return err
+	}
 	list, err := ioutil.ReadDir(path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})

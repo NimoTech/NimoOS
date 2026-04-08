@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 
-	"github.com/IceWhaleTech/CasaOS/internal/driver"
-	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/NimoTech/NimoOS/internal/driver"
+	"github.com/NimoTech/NimoOS/model"
 	"go.uber.org/zap"
 )
 

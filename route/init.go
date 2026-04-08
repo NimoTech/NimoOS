@@ -3,9 +3,9 @@
  * @Date: 2022-11-15 15:51:44
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-11-15 15:55:16
- * @FilePath: /CasaOS/route/init.go
+ * @FilePath: /NimoOS/route/init.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package route
@@ -18,17 +18,17 @@ import (
 	"strings"
 	"time"
 
-	file1 "github.com/IceWhaleTech/CasaOS-Common/utils/file"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS/common"
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	"github.com/IceWhaleTech/CasaOS/pkg/samba"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/encryption"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/httper"
-	v1 "github.com/IceWhaleTech/CasaOS/route/v1"
-	"github.com/IceWhaleTech/CasaOS/service"
+	file1 "github.com/NimoTech/NimoOS-Common/utils/file"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/samba"
+	"github.com/NimoTech/NimoOS/pkg/utils/encryption"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/pkg/utils/httper"
+	v1 "github.com/NimoTech/NimoOS/route/v1"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )

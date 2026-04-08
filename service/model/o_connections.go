@@ -3,9 +3,9 @@
  * @Date: 2022-07-26 17:17:57
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-01 17:08:08
- * @FilePath: /CasaOS/service/model/o_connections.go
+ * @FilePath: /NimoOS/service/model/o_connections.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package model

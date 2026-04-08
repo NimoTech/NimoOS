@@ -1,8 +1,8 @@
 package service
 
 import (
-	"github.com/IceWhaleTech/CasaOS-Common/utils/port"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/systemctl"
+	"github.com/NimoTech/NimoOS-Common/utils/port"
+	"github.com/NimoTech/NimoOS-Common/utils/systemctl"
 )
 
 type HealthService interface {
@@ -13,7 +13,7 @@ type HealthService interface {
 type service struct{}
 
 func (s *service) Services() (map[bool]*[]string, error) {
-	services, err := systemctl.ListServices("casaos*")
+	services, err := systemctl.ListServices("nimoos*")
 	if err != nil {
 		return nil, err
 	}

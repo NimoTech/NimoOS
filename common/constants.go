@@ -1,8 +1,8 @@
 package common
 
 const (
-	SERVICENAME = "casaos"
+	SERVICENAME = "nimoos"
 	VERSION     = "0.4.15"
 	BODY        = " "
-	RANW_NAME   = "IceWhale-RemoteAccess"
+	RANW_NAME   = "Nimo-RemoteAccess"
 )

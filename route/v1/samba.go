@@ -3,9 +3,9 @@
  * @Date: 2022-07-26 11:08:48
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-17 18:25:42
- * @FilePath: /CasaOS/route/v1/samba.go
+ * @FilePath: /NimoOS/route/v1/samba.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package v1
@@ -18,17 +18,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	"github.com/IceWhaleTech/CasaOS-Common/utils/systemctl"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS-Common/utils/systemctl"
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
-	"github.com/IceWhaleTech/CasaOS/model"
-	"github.com/IceWhaleTech/CasaOS/pkg/samba"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/service"
-	model2 "github.com/IceWhaleTech/CasaOS/service/model"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/samba"
+	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service"
+	model2 "github.com/NimoTech/NimoOS/service/model"
 )
 
 // service
@@ -44,7 +44,7 @@ func GetSambaStatus(ctx echo.Context) error {
 	needInit := true
 	if file.Exists("/etc/samba/smb.conf") {
 		str := file.ReadLine(1, "/etc/samba/smb.conf")
-		if strings.Contains(str, "# Copyright (c) 2021-2022 CasaOS Inc. All rights reserved.") {
+		if strings.Contains(str, "# Copyright (c) 2021-2022 NimoOS Inc. All rights reserved.") {
 			needInit = false
 		}
 	}

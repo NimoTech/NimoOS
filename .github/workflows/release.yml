@@ -9,10 +9,10 @@ permissions:
   contents: write
 jobs:
   call-workflow-passing-data:
-    uses: IceWhaleTech/github/.github/workflows/go_release.yml@main
+    uses: NimoTech/github/.github/workflows/go_release.yml@main
     with:
-      project-name: CasaOS
-      file-name: casaos
+      project-name: NimoOS
+      file-name: nimoos
     secrets:
       GoogleID: ${{ secrets.GoogleID }} 
       GoogleSecret: ${{ secrets.GoogleSecret }}

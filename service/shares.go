@@ -3,9 +3,9 @@
  * @Date: 2022-07-26 11:21:14
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-18 11:16:25
- * @FilePath: /CasaOS/service/shares.go
+ * @FilePath: /NimoOS/service/shares.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package service
@@ -14,11 +14,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/command"
-	"github.com/IceWhaleTech/CasaOS/pkg/config"
-	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
-	"github.com/IceWhaleTech/CasaOS/service/model"
-	model2 "github.com/IceWhaleTech/CasaOS/service/model"
+	"github.com/NimoTech/NimoOS-Common/utils/command"
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service/model"
+	model2 "github.com/NimoTech/NimoOS/service/model"
 	"gorm.io/gorm"
 )
 
@@ -78,7 +78,7 @@ func (s *sharesStruct) UpdateConfigFile() {
 		dirName := filepath.Base(share.Path)
 		configStr += `
 [` + dirName + `]
-comment = CasaOS share ` + dirName + `
+comment = NimoOS share ` + dirName + `
 public = Yes
 path = ` + share.Path + `
 browseable = Yes
@@ -99,12 +99,12 @@ force user = root
 func (s *sharesStruct) InitSambaConfig() {
 	if file.Exists("/etc/samba/smb.conf") {
 		str := file.ReadLine(1, "/etc/samba/smb.conf")
-		if strings.Contains(str, "# Copyright (c) 2021-2022 CasaOS Inc. All rights reserved.") {
+		if strings.Contains(str, "# Copyright (c) 2021-2022 NimoOS Inc. All rights reserved.") {
 			return
 		}
 		file.MoveFile("/etc/samba/smb.conf", "/etc/samba/smb.conf.bak")
 		smbConf := ""
-		smbConf += `# Copyright (c) 2021-2022 CasaOS Inc. All rights reserved.
+		smbConf += `# Copyright (c) 2021-2022 NimoOS Inc. All rights reserved.
 #
 #
 #                          ______     _______
@@ -135,7 +135,7 @@ func (s *sharesStruct) InitSambaConfig() {
 #  |/     \|  (_______)  (______/   \_______/  |/            \_/
 #
 #
-# IMPORTANT: CasaOS will not provide technical support for any issues
+# IMPORTANT: NimoOS will not provide technical support for any issues
 #            caused by unauthorized modification to the configuration.
 
 [global]

@@ -3,9 +3,9 @@
  * @Date: 2022-07-27 10:35:29
  * @LastEditors: LinkLeong
  * @LastEditTime: 2022-08-01 13:56:44
- * @FilePath: /CasaOS/pkg/samba/smaba.go
+ * @FilePath: /NimoOS/pkg/samba/smaba.go
  * @Description:
- * @Website: https://www.casaos.io
+ * @Website: https://www.nimoos.io
  * Copyright (c) 2022 by icewhale, All Rights Reserved.
  */
 package samba
@@ -48,7 +48,7 @@ func ConnectSambaService(host, port, username, password, directory string) error
 	return errors.New("directory not found")
 }
 
-//get share name list
+// get share name list
 func GetSambaSharesList(host, port, username, password string) ([]string, error) {
 	conn, err := net.Dial("tcp", host+":"+port)
 	if err != nil {
