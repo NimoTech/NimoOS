@@ -21,11 +21,13 @@ jobs:
         with:
           repository: NimoTech/NimoOS-Common
           path: ../NimoOS-Common
+          token: ${{ secrets.API_TOKEN_GITHUB }}
       - name: Checkout NimoOS-MessageBus
         uses: actions/checkout@v3
         with:
           repository: NimoTech/NimoOS-MessageBus
           path: ../NimoOS-MessageBus
+          token: ${{ secrets.API_TOKEN_GITHUB }}
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
