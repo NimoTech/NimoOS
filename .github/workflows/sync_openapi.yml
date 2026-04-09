@@ -15,6 +15,8 @@ on:
 jobs:
   sync:
     if: false
-    runs-on: ubuntu-22.04
-    steps:
-      - run: echo "disabled"
+    uses: NimoTech/github/.github/workflows/sync_openapi.yml@main
+    with:
+      project-name: nimoos
+    secrets:
+      API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
