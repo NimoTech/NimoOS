@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
-	localfile "github.com/IceWhaleTech/CasaOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	localfile "github.com/NimoTech/NimoOS/pkg/utils/file"
 	"go.uber.org/zap"
 )
 

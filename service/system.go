@@ -371,11 +371,36 @@ func (c *systemService) GetNet(physics bool) []string {
 		t = "2"
 	}
 
-	if output, err := command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;GetNetCard " + t); err != nil {
-		return []string{}
-	} else {
-		return strings.Split(output, "\n")
+	if output, err := command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;GetNetCard " + t); err == nil {
+		if trimmed := strings.TrimSpace(output); len(trimmed) > 0 {
+			return strings.Split(trimmed, "\n")
+		}
 	}
+
+	// Fallback: enumerate directly from /sys/class/net when helper.sh is unavailable
+	allNets, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return []string{}
+	}
+
+	virtualSet := make(map[string]bool)
+	if virtualNets, err := os.ReadDir("/sys/devices/virtual/net"); err == nil {
+		for _, n := range virtualNets {
+			virtualSet[n.Name()] = true
+		}
+	}
+
+	result := []string{}
+	for _, n := range allNets {
+		name := n.Name()
+		isVirtual := virtualSet[name]
+		if physics && !isVirtual {
+			result = append(result, name)
+		} else if !physics && isVirtual {
+			result = append(result, name)
+		}
+	}
+	return result
 }
 
 func (s *systemService) UpdateSystemVersion(version string) {
