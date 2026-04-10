@@ -129,6 +129,12 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	var srcPath string
 	isBatch := false
 
+	actualTargetBase := targetMountPoint
+	if targetMountPoint == "/" {
+		actualTargetBase = "/DATA"
+		logger.Info("system back-migration: redirecting / to /DATA")
+	}
+
 	switch migrationType {
 	case MigrateTypeAppData:
 		srcPath = cfg.AppData
@@ -161,11 +167,11 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	if isBatch {
 		destFolders := []string{}
 		for _, f := range subFolders {
-			destFolders = append(destFolders, filepath.Join(targetMountPoint, f))
+			destFolders = append(destFolders, filepath.Join(actualTargetBase, f))
 		}
 		go trackBatchProgress(jobID, destFolders, totalSize, done)
 	} else {
-		newPath := filepath.Join(targetMountPoint, filepath.Base(srcPath))
+		newPath := filepath.Join(actualTargetBase, filepath.Base(srcPath))
 		go trackBatchProgress(jobID, []string{newPath}, totalSize, done)
 	}
 
@@ -176,23 +182,23 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			if _, err := os.Stat(fullSrc); os.IsNotExist(err) {
 				continue
 			}
-			if err := localfile.CopyDir(fullSrc, targetMountPoint, "overwrite"); err != nil {
+			if err := localfile.CopyDir(fullSrc, actualTargetBase, "overwrite"); err != nil {
 				close(done)
 				return "", fmt.Errorf("batch copy failed at %s: %w", f, err)
 			}
 			_ = os.RemoveAll(fullSrc)
-			updateSymlink(fullSrc, filepath.Join(targetMountPoint, f))
+			updateSymlink(fullSrc, filepath.Join(actualTargetBase, f))
 		}
-		cfg.UserData = targetMountPoint
+		cfg.UserData = actualTargetBase
 	} else {
-		if err := localfile.CopyDir(srcPath, targetMountPoint, "overwrite"); err != nil {
+		if err := localfile.CopyDir(srcPath, actualTargetBase, "overwrite"); err != nil {
 			close(done)
 			if migrationType == MigrateTypeImages {
 				_ = exec.Command("systemctl", "start", "docker").Run()
 			}
 			return "", fmt.Errorf("copy failed: %w", err)
 		}
-		newPath := filepath.Join(targetMountPoint, filepath.Base(srcPath))
+		newPath := filepath.Join(actualTargetBase, filepath.Base(srcPath))
 		_ = os.RemoveAll(srcPath)
 		updateSymlink(srcPath, newPath)
 
@@ -215,9 +221,9 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	}
 
 	if isBatch {
-		return targetMountPoint, nil
+		return actualTargetBase, nil
 	}
-	return filepath.Join(targetMountPoint, filepath.Base(srcPath)), nil
+	return filepath.Join(actualTargetBase, filepath.Base(srcPath)), nil
 }
 
 func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}) {
