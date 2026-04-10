@@ -23,7 +23,7 @@ const (
 
 	DefaultAppDataPath  = "/DATA/AppData"
 	DefaultImagesPath   = "/DATA/.docker"
-	DefaultUserDataPath = "/DATA/Gallery & Downloads & Documents & Media"
+	DefaultUserDataPath = "/DATA"
 )
 
 // PathConfig stores current configured paths for the three data locations.
@@ -130,22 +130,35 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	isBatch := false
 
 	actualTargetBase := targetMountPoint
+	isReturningToSystem := false
 	if targetMountPoint == "/" {
 		actualTargetBase = "/DATA"
+		isReturningToSystem = true
 		logger.Info("system back-migration: redirecting / to /DATA")
 	}
 
 	switch migrationType {
 	case MigrateTypeAppData:
 		srcPath = cfg.AppData
+		if isReturningToSystem {
+			// Force return to NimoOS Standard AppData path
+			actualTargetBase = "/DATA"
+			srcPath = cfg.AppData // Could be anywhere
+		}
 		totalSize, _ = localfile.GetFileOrDirSize(srcPath)
 	case MigrateTypeImages:
 		srcPath = cfg.Images
+		if isReturningToSystem {
+			actualTargetBase = "/DATA"
+		}
 		totalSize, _ = localfile.GetFileOrDirSize(srcPath)
 	case MigrateTypeUserData:
 		isBatch = true
 		subFolders = []string{"Gallery", "Downloads", "Documents", "Media"}
-		srcBase := "/DATA"
+		srcBase := cfg.UserData // This is the registered base
+		if isReturningToSystem {
+			actualTargetBase = "/DATA"
+		}
 		for _, f := range subFolders {
 			s, _ := localfile.GetFileOrDirSize(filepath.Join(srcBase, f))
 			totalSize += s
@@ -178,16 +191,26 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	// 4. Perform Data Movement
 	if isBatch {
 		for _, f := range subFolders {
-			fullSrc := filepath.Join("/DATA", f)
-			if _, err := os.Stat(fullSrc); os.IsNotExist(err) {
-				continue
-			}
-			// --- LANDING ZONE CLEANUP ---
-			// If target already exists as a symlink, remove the link so we can copy real data there.
+			fullSrc := filepath.Join(cfg.UserData, f) // Use actual registered base
 			fullDst := filepath.Join(actualTargetBase, f)
-			if info, err := os.Lstat(fullDst); err == nil && info.Mode()&os.ModeSymlink != 0 {
-				logger.Info("smooth-return: clearing legacy symlink at target", zap.String("path", fullDst))
-				_ = os.Remove(fullDst)
+
+			// SELF-HEALING: If source doesn't exist but target already has it (desync), skip copy
+			if _, err := os.Stat(fullSrc); os.IsNotExist(err) {
+				if _, errDst := os.Stat(fullDst); errDst == nil {
+					logger.Info("batch-sync: source missing but target exists, auto-aligning config", zap.String("folder", f))
+					updateSymlink(fullSrc, fullDst)
+					continue
+				}
+				continue // Genuine file missing
+			}
+
+			// --- LANDING ZONE CLEANUP (Batch) ---
+			// If target subfolder already exists (as a symlink or file), remove it so we can copy real data there.
+			if info, err := os.Lstat(fullDst); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+					logger.Info("smooth-return: clearing legacy node at target subfolder", zap.String("path", fullDst))
+					_ = os.Remove(fullDst)
+				}
 			}
 
 			if err := localfile.CopyDir(fullSrc, actualTargetBase, "overwrite"); err != nil {
@@ -195,15 +218,23 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 				return "", fmt.Errorf("batch copy failed at %s: %w", f, err)
 			}
 			_ = os.RemoveAll(fullSrc)
-			updateSymlink(fullSrc, filepath.Join(actualTargetBase, f))
+			updateSymlink(fullSrc, fullDst)
 		}
 		cfg.UserData = actualTargetBase
 	} else {
 		targetFolderName := filepath.Base(srcPath)
 		fullDst := filepath.Join(actualTargetBase, targetFolderName)
 
+		// SELF-HEALING: If source missing but target physically present
+		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+			if _, errDst := os.Stat(fullDst); errDst == nil {
+				logger.Info("path-sync: source missing but target exists, auto-aligning", zap.String("path", fullDst))
+				updateSymlink(srcPath, fullDst)
+				goto finalize
+			}
+		}
+
 		// --- LANDING ZONE CLEANUP ---
-		// If target already exists as a symlink, remove the link so we can copy real data there.
 		if info, err := os.Lstat(fullDst); err == nil && info.Mode()&os.ModeSymlink != 0 {
 			logger.Info("smooth-return: clearing legacy symlink at target", zap.String("path", fullDst))
 			_ = os.Remove(fullDst)
@@ -216,19 +247,19 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 			return "", fmt.Errorf("copy failed: %w", err)
 		}
-		newPath := filepath.Join(actualTargetBase, targetFolderName)
 		_ = os.RemoveAll(srcPath)
-		updateSymlink(srcPath, newPath)
+		updateSymlink(srcPath, fullDst)
 
+	finalize:
 		if migrationType == MigrateTypeAppData {
-			cfg.AppData = newPath
+			cfg.AppData = fullDst
 		} else if migrationType == MigrateTypeImages {
-			cfg.Images = newPath
-			dockerCfg := map[string]string{"docker_root_dir": newPath}
+			cfg.Images = fullDst
+			dockerCfg := map[string]string{"docker_root_dir": fullDst}
 			if data, err := json.Marshal(dockerCfg); err == nil {
 				_ = os.WriteFile("/var/lib/casaos/docker_root", data, 0644)
 			}
-			updateDockerDaemonRoot(newPath)
+			updateDockerDaemonRoot(fullDst)
 			_ = exec.Command("systemctl", "start", "docker").Run()
 		}
 	}
@@ -241,7 +272,8 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	if isBatch {
 		return actualTargetBase, nil
 	}
-	return filepath.Join(actualTargetBase, filepath.Base(srcPath)), nil
+	targetFolderName := filepath.Base(srcPath)
+	return filepath.Join(actualTargetBase, targetFolderName), nil
 }
 
 func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}) {
