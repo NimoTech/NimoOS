@@ -123,104 +123,108 @@ func GetMigrationStatus(jobID string) (MigrateStatus, bool) {
 func executeMigration(jobID, migrationType, targetMountPoint string) (string, error) {
 	cfg := LoadPathConfig()
 
-	var srcPath, dirName string
+	// 1. Define paths based on type
+	var totalSize int64
+	var subFolders []string
+	var srcPath string
+	isBatch := false
+
 	switch migrationType {
 	case MigrateTypeAppData:
 		srcPath = cfg.AppData
-		dirName = filepath.Base(srcPath)
-		if dirName == "" || dirName == "." {
-			dirName = "AppData"
-		}
+		totalSize, _ = localfile.GetFileOrDirSize(srcPath)
 	case MigrateTypeImages:
 		srcPath = cfg.Images
-		dirName = filepath.Base(srcPath)
-		if dirName == "" || dirName == "." {
-			dirName = ".docker"
-		}
+		totalSize, _ = localfile.GetFileOrDirSize(srcPath)
 	case MigrateTypeUserData:
-		srcPath = cfg.UserData
-		dirName = filepath.Base(srcPath)
-		if dirName == "" || dirName == "." {
-			dirName = "Gallery & Downloads & Documents & Media"
+		isBatch = true
+		subFolders = []string{"Gallery", "Downloads", "Documents", "Media"}
+		srcBase := "/DATA"
+		for _, f := range subFolders {
+			s, _ := localfile.GetFileOrDirSize(filepath.Join(srcBase, f))
+			totalSize += s
 		}
 	default:
 		return "", fmt.Errorf("unknown migration type: %s", migrationType)
 	}
 
-	// CopyDir appends the last segment of src to dst automatically,
-	// so dst = targetMountPoint gives us targetMountPoint/<dirName>.
-	newPath := filepath.Join(targetMountPoint, dirName)
+	updateProgress(jobID, 1, 0, totalSize)
+	done := make(chan struct{})
 
-	// Measure total size for progress tracking.
-	totalSize, err := localfile.GetFileOrDirSize(srcPath)
-	if err != nil {
-		logger.Error("migration: failed to calculate total size", zap.String("path", srcPath), zap.Error(err))
-	}
-	logger.Info("migration: total size calculated", zap.String("id", jobID), zap.Int64("total", totalSize))
-	updateProgress(jobID, 1, 0, totalSize) // Push 1% immediately to show life
-
-	// Docker migration: stop daemon before touching its data dir.
+	// 2. Specialized Logic (Pre-copy)
 	if migrationType == MigrateTypeImages {
 		logger.Info("stopping docker for migration")
 		_ = exec.Command("systemctl", "stop", "docker").Run()
 	}
 
-	// Start progress tracking goroutine.
-	done := make(chan struct{})
-	go trackProgress(jobID, newPath, totalSize, done)
+	// 3. Start Progress Tracking
+	if isBatch {
+		destFolders := []string{}
+		for _, f := range subFolders {
+			destFolders = append(destFolders, filepath.Join(targetMountPoint, f))
+		}
+		go trackBatchProgress(jobID, destFolders, totalSize, done)
+	} else {
+		newPath := filepath.Join(targetMountPoint, filepath.Base(srcPath))
+		go trackBatchProgress(jobID, []string{newPath}, totalSize, done)
+	}
 
-	// Perform the copy.
-	logger.Info("starting data copy", zap.String("src", srcPath), zap.String("dst", targetMountPoint))
-	if err := localfile.CopyDir(srcPath, targetMountPoint, "overwrite"); err != nil {
-		close(done)
-		if migrationType == MigrateTypeImages {
+	// 4. Perform Data Movement
+	if isBatch {
+		for _, f := range subFolders {
+			fullSrc := filepath.Join("/DATA", f)
+			if _, err := os.Stat(fullSrc); os.IsNotExist(err) {
+				continue
+			}
+			if err := localfile.CopyDir(fullSrc, targetMountPoint, "overwrite"); err != nil {
+				close(done)
+				return "", fmt.Errorf("batch copy failed at %s: %w", f, err)
+			}
+			_ = os.RemoveAll(fullSrc)
+			updateSymlink(fullSrc, filepath.Join(targetMountPoint, f))
+		}
+		cfg.UserData = targetMountPoint
+	} else {
+		if err := localfile.CopyDir(srcPath, targetMountPoint, "overwrite"); err != nil {
+			close(done)
+			if migrationType == MigrateTypeImages {
+				_ = exec.Command("systemctl", "start", "docker").Run()
+			}
+			return "", fmt.Errorf("copy failed: %w", err)
+		}
+		newPath := filepath.Join(targetMountPoint, filepath.Base(srcPath))
+		_ = os.RemoveAll(srcPath)
+		updateSymlink(srcPath, newPath)
+
+		if migrationType == MigrateTypeAppData {
+			cfg.AppData = newPath
+		} else if migrationType == MigrateTypeImages {
+			cfg.Images = newPath
+			dockerCfg := map[string]string{"docker_root_dir": newPath}
+			if data, err := json.Marshal(dockerCfg); err == nil {
+				_ = os.WriteFile("/var/lib/casaos/docker_root", data, 0644)
+			}
+			updateDockerDaemonRoot(newPath)
 			_ = exec.Command("systemctl", "start", "docker").Run()
 		}
-		return "", fmt.Errorf("copy failed: %w", err)
 	}
+
 	close(done)
-	logger.Info("data copy completed successfully", zap.String("newPath", newPath))
-
-	// Remove old data only after the copy is verified done.
-	if srcPath != newPath {
-		logger.Info("removing old data", zap.String("path", srcPath))
-		if err := os.RemoveAll(srcPath); err != nil {
-			logger.Error("failed to remove old path after migration", zap.String("path", srcPath), zap.Error(err))
-		}
-	}
-
-	// Update config and links only after physical cleanup.
-	switch migrationType {
-	case MigrateTypeAppData:
-		cfg.AppData = newPath
-		// Establish /DATA/AppData symlink.
-		updateSymlink("/DATA/AppData", newPath)
-
-	case MigrateTypeImages:
-		cfg.Images = newPath
-		// Update docker root config file.
-		dockerCfg := map[string]string{"docker_root_dir": newPath}
-		if data, err := json.Marshal(dockerCfg); err == nil {
-			_ = os.WriteFile("/var/lib/casaos/docker_root", data, 0644)
-		}
-		// Also update /etc/docker/daemon.json so Docker itself uses the new path.
-		updateDockerDaemonRoot(newPath)
-		logger.Info("starting docker after migration")
-		_ = exec.Command("systemctl", "start", "docker").Run()
-
-	case MigrateTypeUserData:
-		cfg.UserData = newPath
-		updateSymlink("/DATA/Gallery & Downloads & Documents & Media", newPath)
-	}
-
 	if err := SavePathConfig(cfg); err != nil {
 		logger.Error("failed to save path config", zap.Error(err))
 	}
 
-	return newPath, nil
+	if isBatch {
+		return targetMountPoint, nil
+	}
+	return filepath.Join(targetMountPoint, filepath.Base(srcPath)), nil
 }
 
 func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}) {
+	trackBatchProgress(jobID, []string{destPath}, totalSize, done)
+}
+
+func trackBatchProgress(jobID string, destFolders []string, totalSize int64, done <-chan struct{}) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
@@ -229,12 +233,11 @@ func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}
 		case <-done:
 			return
 		case <-ticker.C:
-			// Calculate processed size.
-			processed, err := localfile.GetFileOrDirSize(destPath)
-			if err != nil {
-				// Log the error but keep the progress map updated with current values.
-				logger.Info("migration: scanning destPath pending (normal during startup)", zap.String("path", destPath), zap.Error(err))
-				processed = 0
+			// Calculate aggregate processed size across all folders in batch.
+			var processed int64
+			for _, path := range destFolders {
+				s, _ := localfile.GetFileOrDirSize(path)
+				processed += s
 			}
 
 			pct := 0

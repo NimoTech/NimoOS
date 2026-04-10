@@ -676,21 +676,35 @@ func (c *systemService) GetNetSpeed(name string) int {
 func (c *systemService) GetSystemPaths() map[string]interface{} {
 	cfg := LoadPathConfig()
 
-	appDataSize, _ := file.GetFileOrDirSize(cfg.AppData)
-	imagesSize, _ := file.GetFileOrDirSize(cfg.Images)
-	userDataSize, _ := file.GetFileOrDirSize(cfg.UserData)
+	// Evaluate real physical paths to avoid "Shadow Migration" UI confusion.
+	realAppData, _ := filepath.EvalSymlinks(cfg.AppData)
+	if realAppData == "" {
+		realAppData = cfg.AppData
+	}
+	realImages, _ := filepath.EvalSymlinks(cfg.Images)
+	if realImages == "" {
+		realImages = cfg.Images
+	}
+	realUserData, _ := filepath.EvalSymlinks(cfg.UserData)
+	if realUserData == "" {
+		realUserData = cfg.UserData
+	}
+
+	appDataSize, _ := file.GetFileOrDirSize(realAppData)
+	imagesSize, _ := file.GetFileOrDirSize(realImages)
+	userDataSize, _ := file.GetFileOrDirSize(realUserData)
 
 	return map[string]interface{}{
 		"app_data": map[string]interface{}{
-			"path": cfg.AppData,
+			"path": realAppData,
 			"size": appDataSize,
 		},
 		"images": map[string]interface{}{
-			"path": cfg.Images,
+			"path": realImages,
 			"size": imagesSize,
 		},
 		"database": map[string]interface{}{
-			"path": cfg.UserData,
+			"path": realUserData,
 			"size": userDataSize,
 		},
 	}
