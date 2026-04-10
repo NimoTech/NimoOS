@@ -152,8 +152,12 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	newPath := filepath.Join(targetMountPoint, dirName)
 
 	// Measure total size for progress tracking.
-	totalSize, _ := localfile.GetFileOrDirSize(srcPath)
-	updateProgress(jobID, 0, 0, totalSize)
+	totalSize, err := localfile.GetFileOrDirSize(srcPath)
+	if err != nil {
+		logger.Error("migration: failed to calculate total size", zap.String("path", srcPath), zap.Error(err))
+	}
+	logger.Info("migration: total size calculated", zap.String("id", jobID), zap.Int64("total", totalSize))
+	updateProgress(jobID, 1, 0, totalSize) // Push 1% immediately to show life
 
 	// Docker migration: stop daemon before touching its data dir.
 	if migrationType == MigrateTypeImages {
@@ -225,18 +229,28 @@ func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}
 		case <-done:
 			return
 		case <-ticker.C:
-			// Bypass if totalSize is invalid.
-			if totalSize <= 0 {
-				continue
-			}
+			// Calculate processed size.
 			processed, err := localfile.GetFileOrDirSize(destPath)
 			if err != nil {
-				continue
+				// Log the error but keep the progress map updated with current values.
+				logger.Info("migration: scanning destPath pending (normal during startup)", zap.String("path", destPath), zap.Error(err))
+				processed = 0
 			}
-			pct := int(processed * 95 / totalSize) // cap at 95 until fully done
+
+			pct := 0
+			if totalSize > 0 {
+				pct = int(processed * 95 / totalSize) // cap at 95 until fully done
+			}
 			if pct > 95 {
 				pct = 95
 			}
+			// Diagnostic heart-beat log
+			logger.Info("migration progress trace", 
+				zap.String("id", jobID), 
+				zap.Int("progress", pct), 
+				zap.Int64("processed", processed), 
+				zap.Int64("total", totalSize))
+			
 			updateProgress(jobID, pct, processed, totalSize)
 		}
 	}
