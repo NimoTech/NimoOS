@@ -83,19 +83,50 @@ var (
 func checkPathAccess(ctx echo.Context, path string) error {
 	role := ctx.Request().Header.Get("user_role")
 	userID := ctx.Request().Header.Get("user_id")
+	
+	logger.Info("Checking path access", 
+		zap.String("path", path), 
+		zap.String("userID", userID), 
+		zap.String("role", role),
+		zap.String("remoteIP", ctx.RealIP()))
+
 	// Localhost bypass: JWT middleware skipped, no headers set.
 	if role == "" && userID == "" {
+		logger.Debug("Permitting access due to empty role and userID (internal bypass)")
 		return nil
 	}
-	isAdmin := role == "admin"
-	if !utils.IsPathAllowed(path, isAdmin) {
-		ctx.JSON(http.StatusForbidden, model.Result{ //nolint:errcheck
-			Success: common_err.INSUFFICIENT_PERMISSIONS,
-			Message: common_err.GetMsg(common_err.INSUFFICIENT_PERMISSIONS),
-		})
-		return echo.ErrForbidden // response committed; Echo won't write again
+	// Only User ID 1 (Root Admin) gets the "Skeleton Key" to all paths.
+	// Other admins (like admin1) must still follow explicit folder grants for security isolation.
+	isSuperAdmin := userID == "1"
+	cleanPath := filepath.Clean(path)
+ 
+	// Fast path: Super-admin gets everything.
+	if isSuperAdmin {
+		logger.Debug("Access granted: Super-admin", zap.String("userID", userID))
+		return nil
 	}
-	return nil
+ 
+	// Base safety check (empty for users now that prefixes are removed).
+	if utils.IsPathAllowed(cleanPath, false) {
+		logger.Debug("Access granted: IsPathAllowed", zap.String("path", cleanPath))
+		return nil
+	}
+ 
+	// Slow path: check whether the user has an explicit folder grant.
+	if userID != "" {
+		uid, err := strconv.Atoi(userID)
+		if err == nil && service.MyService.User().IsPathGranted(uid, cleanPath) {
+			logger.Debug("Access granted: Explicitly granted folder", zap.String("path", cleanPath), zap.Int("uid", uid))
+			return nil
+		}
+	}
+
+	logger.Warn("Access DENIED", zap.String("path", cleanPath), zap.String("userID", userID))
+	ctx.JSON(http.StatusForbidden, model.Result{ //nolint:errcheck
+		Success: common_err.INSUFFICIENT_PERMISSIONS,
+		Message: common_err.GetMsg(common_err.INSUFFICIENT_PERMISSIONS),
+	})
+	return echo.ErrForbidden
 }
 
 // @Summary 读取文件

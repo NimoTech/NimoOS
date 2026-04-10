@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -57,6 +58,12 @@ var (
 
 func init() {
 	flag.Parse()
+	
+	// Create a log file to capture panics
+	f, _ := os.OpenFile("/tmp/nimoos_panic.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	os.Stdout = f
+	os.Stderr = f
+
 	if *versionFlag {
 		fmt.Println("v" + common.VERSION)
 		return
@@ -75,7 +82,9 @@ func init() {
 	sqliteDB = sqlite.GetDb(*dbFlag)
 	// gredis.GetRedisConn(config.RedisInfo),
 
-	service.MyService = service.NewService(sqliteDB, config.CommonInfo.RuntimePath)
+	// user.db lives alongside nimoOS.db; open it read-only for folder-permission lookups.
+	userDBPath := config.AppInfo.DBPath + "/db/user.db"
+	service.MyService = service.NewServiceWithUserDB(sqliteDB, config.CommonInfo.RuntimePath, userDBPath)
 
 	service.Cache = cache.Init()
 
@@ -150,12 +159,14 @@ func main() {
 		route.V3FilePath,
 	}
 	for _, apiPath := range routers {
+		target := "http://" + listener.Addr().String()
+		logger.Info("Registering route to Gateway", zap.String("path", apiPath), zap.String("target", target))
 		err = service.MyService.Gateway().CreateRoute(&model.Route{
 			Path:   apiPath,
-			Target: "http://" + listener.Addr().String(),
+			Target: target,
 		})
 		if err != nil {
-			fmt.Println("err", err)
+			logger.Error("Failed to register route to Gateway", zap.String("path", apiPath), zap.Error(err))
 			panic(err)
 		}
 	}
@@ -216,8 +227,11 @@ func main() {
 	// go http.ListenAndServe(":8081", nil)
 
 	s := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second, // fix G112: Potential slowloris attack (see https://github.com/securego/gosec)
+		Handler: mux,
+		// Increased from 5s to avoid ECONNRESET on large file uploads.
+		// ReadHeaderTimeout only covers reading the request headers (not body),
+		// but some Go versions/proxy chains can miscount timing under load.
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 
 	logger.Info("NimoOS main service is listening...", zap.Any("address", listener.Addr().String()))

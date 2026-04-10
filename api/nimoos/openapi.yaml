@@ -237,6 +237,42 @@ paths:
         "500":
           $ref: "#/components/responses/ResponseInternalServerError"
 
+  /local_storage/display_names:
+    get:
+      tags:
+        - Local Storage
+      summary: Get display names for all managed mount points
+      operationId: getLocalStorageDisplayNames
+      responses:
+        "200":
+          $ref: "#/components/responses/ResponseOK"
+        "500":
+          $ref: "#/components/responses/ResponseInternalServerError"
+
+  /local_storage/display_name:
+    put:
+      tags:
+        - Local Storage
+      summary: Update display name for one mount point
+      operationId: updateLocalStorageDisplayName
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mount_point:
+                  type: string
+                  example: "/DATA"
+                display_name:
+                  type: string
+                  example: "NimoOS-HD"
+      responses:
+        "200":
+          $ref: "#/components/responses/ResponseOK"
+        "500":
+          $ref: "#/components/responses/ResponseInternalServerError"
+
 components:
   securitySchemes:
     access_token:

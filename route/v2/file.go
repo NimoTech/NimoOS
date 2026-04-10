@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/codegen"
 	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 )
 
 // Path: route/v2/file.go
@@ -33,7 +35,12 @@ func (c *NimoOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadCh
 }
 
 func (c *NimoOS) PostUploadFile(ctx echo.Context) error {
-	path := ctx.FormValue("path")
+	// path can come from URL query param (set by frontend uploader's "query" option)
+	// or from form body (legacy). Check query param first.
+	path := ctx.QueryParam("path")
+	if path == "" {
+		path = ctx.FormValue("path")
+	}
 
 	// handle the request
 	chunkNumber, err := strconv.ParseInt(ctx.FormValue("chunkNumber"), 10, 64)
@@ -56,13 +63,20 @@ func (c *NimoOS) PostUploadFile(ctx echo.Context) error {
 	if err != nil {
 		return ctx.JSON(http.StatusBadRequest, err)
 	}
-
 	identifier := ctx.FormValue("identifier")
 	fileName := ctx.FormValue("filename")
 	relativePath := ctx.FormValue("relativePath")
+
+	logger.Info("Upload Request Received", 
+		zap.String("path", path), 
+		zap.String("filename", fileName), 
+		zap.String("identifier", identifier),
+		zap.Int64("chunk", chunkNumber))
+
 	bin, err := ctx.FormFile("file")
 
 	if err != nil {
+		logger.Error("FormFile error", zap.Error(err))
 		return ctx.JSON(http.StatusBadRequest, err)
 	}
 
@@ -80,7 +94,9 @@ func (c *NimoOS) PostUploadFile(ctx echo.Context) error {
 		bin,
 	)
 	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, err)
+		return ctx.JSON(http.StatusInternalServerError, echo.Map{
+			"message": err.Error(),
+		})
 	}
 	return ctx.NoContent(http.StatusOK)
 }

@@ -74,38 +74,28 @@ func (s *FileUploadService) UploadFile(
 	fileInfoTemp, ok := s.uploadStatus.Load(identifier)
 	var fileInfo *FileInfo
 
-	if relativePath != fileName {
-		// uploaded file is folder
-		folderPath := filepath.Dir(path + "/" + relativePath)
-		if _, err := os.Stat(folderPath); os.IsNotExist(err) {
-			err := os.MkdirAll(folderPath, os.ModePerm)
-			if err != nil {
-				s.lock.Unlock()
-				return err
-			}
+	// Ensure target folder exists before creating the temp file
+	tempFilePath := filepath.Join(path, relativePath+".tmp")
+	finalFilePath := filepath.Join(path, relativePath)
+	targetDir := filepath.Dir(tempFilePath)
+
+	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(targetDir, os.ModePerm); err != nil {
+			s.lock.Unlock()
+			logger.Error("create folder error: ", zap.Error(err), zap.String("path", targetDir))
+			return err
 		}
 	}
 
-	file, err := os.OpenFile(path+"/"+relativePath+".tmp", os.O_WRONLY|os.O_CREATE, 0644)
+	// Open file for writing the chunk
+	file, err := os.OpenFile(tempFilePath, os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		s.lock.Unlock()
+		logger.Error("open file error: ", zap.Error(err), zap.String("path", tempFilePath))
 		return err
 	}
 
 	if !ok {
-
-		if err != nil {
-			s.lock.Unlock()
-			return err
-		}
-
-		// pre allocate file size
-		fmt.Println("truncate", totalSize)
-		if err != nil {
-			s.lock.Unlock()
-			return err
-		}
-
 		// file info init
 		fileInfo = &FileInfo{
 			init:             true,
@@ -116,29 +106,33 @@ func (s *FileUploadService) UploadFile(
 	} else {
 		fileInfo = fileInfoTemp.(*FileInfo)
 	}
-
 	s.lock.Unlock()
+
+	// Ensure we close the file handle after writing this chunk
+	defer file.Close()
 
 	_, err = file.Seek((chunkNumber-1)*chunkSize, io.SeekStart)
 	if err != nil {
+		logger.Error("seek file error: ", zap.Error(err))
 		return err
 	}
 
 	src, err := bin.Open()
 	if err != nil {
+		logger.Error("open multipart buffer error: ", zap.Error(err))
 		return err
 	}
 	defer src.Close()
 
 	_, err = io.Copy(file, src)
-
 	if err != nil {
-		fmt.Println(err)
+		logger.Error("copy chunk error: ", zap.Error(err))
 		return err
 	}
 
 	s.lock.Lock()
-	// handle file after write a chunk
+	defer s.lock.Unlock()
+
 	// handle single chunk upload twice
 	if !fileInfo.uploaded[chunkNumber-1] {
 		fileInfo.uploadedChunkNum++
@@ -147,21 +141,16 @@ func (s *FileUploadService) UploadFile(
 
 	// handle file after write all chunk
 	if fileInfo.uploadedChunkNum == totalChunks {
-		err := file.Close()
-		if err != nil {
-			s.lock.Unlock()
-			logger.Error("close file error: ", zap.Error(err))
-		}
+		// Close the handle before renaming
+		file.Close()
 
-		err = os.Rename(path+"/"+relativePath+".tmp", path+"/"+relativePath)
-		if err != nil {
-			s.lock.Unlock()
-			logger.Error("rename file error: ", zap.Error(err))
+		if err := os.Rename(tempFilePath, finalFilePath); err != nil {
+			logger.Error("rename file error: ", zap.Error(err), zap.String("from", tempFilePath), zap.String("to", finalFilePath))
+			return err
 		}
 		// remove upload status info after upload complete
 		s.uploadStatus.Delete(identifier)
 	}
-	s.lock.Unlock()
 
 	return nil
 }

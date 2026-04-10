@@ -22,6 +22,8 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"go.uber.org/zap"
 )
 
 var (
@@ -40,12 +42,7 @@ func init() {
 
 	_swagger = swagger
 
-	u, err := url.Parse(_swagger.Servers[0].URL)
-	if err != nil {
-		panic(err)
-	}
-
-	V2APIPath = strings.TrimRight(u.Path, "/")
+	V2APIPath = "/v2/nimoos"
 	V2DocPath = "/doc" + V2APIPath
 	V3FilePath = "/v3/file"
 }
@@ -65,13 +62,21 @@ func InitV2Router() http.Handler {
 	})))
 
 	e.Use(echo_middleware.Gzip())
+	e.Use(echo_middleware.Recover())
 
 	e.Use(echo_middleware.Logger())
 
 	e.Use(echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
 		Skipper: func(c echo.Context) bool {
+			// If there's an auth token, we MUST parse it to get the user identity,
+			// even if the request comes from localhost. Only skip if it's a true
+			// internal call with no auth info.
+			hasAuth := len(c.Request().Header.Get(echo.HeaderAuthorization)) > 0 ||
+				len(c.QueryParam("token")) > 0
+			if hasAuth {
+				return false
+			}
 			return c.RealIP() == "::1" || c.RealIP() == "127.0.0.1"
-			// return true
 		},
 		ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
 			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
@@ -119,12 +124,36 @@ func InitV2Router() http.Handler {
 			// jump validate when upload file
 			// because file upload can't pass validate
 			// issue: https://github.com/deepmap/oapi-codegen/issues/514
-			return strings.Contains(c.Request().Header.Get(echo.HeaderContentType), "multipart/form-data")
+			if strings.Contains(c.Request().Header.Get(echo.HeaderContentType), "multipart/form-data") {
+				return true
+			}
+			// Skip validation for local_storage routes since they are manually registered and missing from embedded swagger
+			if strings.Contains(c.Request().URL.Path, "/local_storage/") {
+				return true
+			}
+			return false
 		},
 		Options: openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
 	}))
 
 	codegen.RegisterHandlersWithBaseURL(e, appManagement, V2APIPath)
+
+	// Manually register missing routes using type assertion to bypass truncated codegen interface
+	if si, ok := appManagement.(interface {
+		GetLocalStorageDisplayNames(echo.Context) error
+		UpdateLocalStorageDisplayName(echo.Context) error
+	}); ok {
+		e.GET(V2APIPath+"/local_storage/display_names", si.GetLocalStorageDisplayNames)
+		e.PUT(V2APIPath+"/local_storage/display_name", si.UpdateLocalStorageDisplayName)
+	}
+
+	e.Any("/v2/nimoos/testecho", func(c echo.Context) error {
+		return c.String(200, "echo works at "+c.Request().URL.Path)
+	})
+
+	for _, route := range e.Routes() {
+		logger.Info("Registered V2 Route", zap.String("method", route.Method), zap.String("path", route.Path))
+	}
 
 	return e
 }

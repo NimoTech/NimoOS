@@ -44,6 +44,14 @@ func InitV1Router() http.Handler {
 	//	e.Any("/v1/test", v1.CheckNetwork)
 	v1Group.Use(echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
 		Skipper: func(c echo.Context) bool {
+			// If there's an auth token, we MUST parse it to get the user identity,
+			// even if the request comes from localhost. Only skip if it's a true
+			// internal call with no auth info.
+			hasAuth := len(c.Request().Header.Get(echo.HeaderAuthorization)) > 0 ||
+				len(c.QueryParam("token")) > 0
+			if hasAuth {
+				return false
+			}
 			return c.RealIP() == "::1" || c.RealIP() == "127.0.0.1"
 		},
 		ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {

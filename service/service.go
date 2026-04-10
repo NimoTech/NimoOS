@@ -47,6 +47,10 @@ type Repository interface {
 }
 
 func NewService(db *gorm.DB, RuntimePath string) Repository {
+	return NewServiceWithUserDB(db, RuntimePath, "")
+}
+
+func NewServiceWithUserDB(db *gorm.DB, RuntimePath string, userDBPath string) Repository {
 	gatewayManagement, err := external.NewManagementService(RuntimePath)
 	if err != nil && len(RuntimePath) > 0 {
 		panic(err)
@@ -63,7 +67,7 @@ func NewService(db *gorm.DB, RuntimePath string) Repository {
 		shares:      NewSharesService(db),
 		storage:     NewStorageService(),
 		other:       NewOtherService(),
-		user:        &userService{db: db},
+		user:        newUserService(db, userDBPath),
 
 		peer: NewPeerService(db),
 	}
