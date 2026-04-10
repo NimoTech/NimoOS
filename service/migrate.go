@@ -182,6 +182,14 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			if _, err := os.Stat(fullSrc); os.IsNotExist(err) {
 				continue
 			}
+			// --- LANDING ZONE CLEANUP ---
+			// If target already exists as a symlink, remove the link so we can copy real data there.
+			fullDst := filepath.Join(actualTargetBase, f)
+			if info, err := os.Lstat(fullDst); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				logger.Info("smooth-return: clearing legacy symlink at target", zap.String("path", fullDst))
+				_ = os.Remove(fullDst)
+			}
+
 			if err := localfile.CopyDir(fullSrc, actualTargetBase, "overwrite"); err != nil {
 				close(done)
 				return "", fmt.Errorf("batch copy failed at %s: %w", f, err)
@@ -191,6 +199,16 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 		cfg.UserData = actualTargetBase
 	} else {
+		targetFolderName := filepath.Base(srcPath)
+		fullDst := filepath.Join(actualTargetBase, targetFolderName)
+
+		// --- LANDING ZONE CLEANUP ---
+		// If target already exists as a symlink, remove the link so we can copy real data there.
+		if info, err := os.Lstat(fullDst); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			logger.Info("smooth-return: clearing legacy symlink at target", zap.String("path", fullDst))
+			_ = os.Remove(fullDst)
+		}
+
 		if err := localfile.CopyDir(srcPath, actualTargetBase, "overwrite"); err != nil {
 			close(done)
 			if migrationType == MigrateTypeImages {
@@ -198,7 +216,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 			return "", fmt.Errorf("copy failed: %w", err)
 		}
-		newPath := filepath.Join(actualTargetBase, filepath.Base(srcPath))
+		newPath := filepath.Join(actualTargetBase, targetFolderName)
 		_ = os.RemoveAll(srcPath)
 		updateSymlink(srcPath, newPath)
 
