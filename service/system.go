@@ -690,9 +690,25 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 		realUserData = cfg.UserData
 	}
 
-	appDataSize, _ := file.GetFileOrDirSize(realAppData)
-	imagesSize, _ := file.GetFileOrDirSize(realImages)
-	userDataSize, _ := file.GetFileOrDirSize(realUserData)
+	var appDataSize, imagesSize, userDataSize int64
+
+	// SAFETY: Prevent full-disk scan if path is "/" or empty
+	if realAppData != "/" && realAppData != "" {
+		appDataSize, _ = file.GetFileOrDirSize(realAppData)
+	}
+
+	if realImages != "/" && realImages != "" {
+		imagesSize, _ = file.GetFileOrDirSize(realImages)
+	}
+
+	if realUserData != "/" && realUserData != "" {
+		// Aggregate size for batch folders (Gallery, Downloads, etc.)
+		subFolders := []string{"Gallery", "Downloads", "Documents", "Media"}
+		for _, f := range subFolders {
+			s, _ := file.GetFileOrDirSize(filepath.Join(realUserData, f))
+			userDataSize += s
+		}
+	}
 
 	return map[string]interface{}{
 		"app_data": map[string]interface{}{
