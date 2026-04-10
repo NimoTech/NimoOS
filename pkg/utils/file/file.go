@@ -535,10 +535,17 @@ func CommonPrefix(sep byte, paths ...string) string {
 }
 
 func GetFileOrDirSize(path string) (int64, error) {
-	fileInfo, err := os.Stat(path)
+	// Use Lstat to check the actual node type without following symlinks blindly
+	fileInfo, err := os.Lstat(path)
 	if err != nil {
 		return 0, err
 	}
+	
+	// If it's a symlink, just return the size of the link itself, DO NOT walk into it
+	if fileInfo.Mode()&os.ModeSymlink != 0 {
+		return fileInfo.Size(), nil
+	}
+
 	if fileInfo.IsDir() {
 		return DirSizeB(path + "/")
 	}
