@@ -332,15 +332,15 @@ func CopyDir(src string, dst string, style string) error {
 	}
 	for _, fd := range fds {
 		srcfp := path.Join(src, fd.Name())
-		dstfp := dst // path.Join(dst, fd.Name())
+		dstfp := path.Join(dst, fd.Name())
 
 		if fd.IsDir() {
 			if err = CopyDir(srcfp, dstfp, style); err != nil {
-				fmt.Println(err)
+				return err
 			}
 		} else {
 			if err = CopyFile(srcfp, dstfp, style); err != nil {
-				fmt.Println(err)
+				return err
 			}
 		}
 	}

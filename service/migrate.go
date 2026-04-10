@@ -205,7 +205,6 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 
 			// --- LANDING ZONE CLEANUP (Batch) ---
-			// If target subfolder already exists (as a symlink or file), remove it so we can copy real data there.
 			if info, err := os.Lstat(fullDst); err == nil {
 				if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 					logger.Info("smooth-return: clearing legacy node at target subfolder", zap.String("path", fullDst))
@@ -213,10 +212,24 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 				}
 			}
 
+			// Ensure target parent exists
+			if err := os.MkdirAll(actualTargetBase, 0755); err != nil {
+				close(done)
+				return "", fmt.Errorf("failed to create target base %s: %w", actualTargetBase, err)
+			}
+
 			if err := localfile.CopyDir(fullSrc, actualTargetBase, "overwrite"); err != nil {
 				close(done)
 				return "", fmt.Errorf("batch copy failed at %s: %w", f, err)
 			}
+
+			// --- VERIFICATION BEFORE DELETE ---
+			// Ensure data actually arrived at fullDst before we wipe fullSrc
+			if _, err := os.Stat(fullDst); err != nil {
+				close(done)
+				return "", fmt.Errorf("verification failed: data did not arrive at %s", fullDst)
+			}
+
 			_ = os.RemoveAll(fullSrc)
 			updateSymlink(fullSrc, fullDst)
 		}
@@ -240,6 +253,12 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			_ = os.Remove(fullDst)
 		}
 
+		// Ensure target parent exists
+		if err := os.MkdirAll(actualTargetBase, 0755); err != nil {
+			close(done)
+			return "", fmt.Errorf("failed to create target base %s: %w", actualTargetBase, err)
+		}
+
 		if err := localfile.CopyDir(srcPath, actualTargetBase, "overwrite"); err != nil {
 			close(done)
 			if migrationType == MigrateTypeImages {
@@ -247,6 +266,14 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 			return "", fmt.Errorf("copy failed: %w", err)
 		}
+
+		// --- VERIFICATION BEFORE DELETE ---
+		// Ensure data actually arrived at fullDst before we wipe srcPath
+		if _, err := os.Stat(fullDst); err != nil {
+			close(done)
+			return "", fmt.Errorf("verification failed: data did not arrive at %s", fullDst)
+		}
+
 		_ = os.RemoveAll(srcPath)
 		updateSymlink(srcPath, fullDst)
 
