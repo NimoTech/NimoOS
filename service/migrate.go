@@ -276,6 +276,12 @@ func updateProgress(jobID string, pct int, processed, total int64) {
 }
 
 func updateSymlink(linkPath, target string) {
+	// CRITICAL: Prevent circular symlinks (A -> A)
+	if linkPath == target {
+		logger.Info("skipping circular symlink to self", zap.String("path", linkPath))
+		return
+	}
+
 	// Use RemoveAll to ensure we can delete the existing directory if it wasn't a symlink yet.
 	_ = os.RemoveAll(linkPath)
 	if err := os.Symlink(target, linkPath); err != nil {
