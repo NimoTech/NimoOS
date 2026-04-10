@@ -166,6 +166,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	go trackProgress(jobID, newPath, totalSize, done)
 
 	// Perform the copy.
+	logger.Info("starting data copy", zap.String("src", srcPath), zap.String("dst", targetMountPoint))
 	if err := localfile.CopyDir(srcPath, targetMountPoint, "overwrite"); err != nil {
 		close(done)
 		if migrationType == MigrateTypeImages {
@@ -174,12 +175,21 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		return "", fmt.Errorf("copy failed: %w", err)
 	}
 	close(done)
+	logger.Info("data copy completed successfully", zap.String("newPath", newPath))
 
-	// Update config to point to new path.
+	// Remove old data only after the copy is verified done.
+	if srcPath != newPath {
+		logger.Info("removing old data", zap.String("path", srcPath))
+		if err := os.RemoveAll(srcPath); err != nil {
+			logger.Error("failed to remove old path after migration", zap.String("path", srcPath), zap.Error(err))
+		}
+	}
+
+	// Update config and links only after physical cleanup.
 	switch migrationType {
 	case MigrateTypeAppData:
 		cfg.AppData = newPath
-		// Keep /DATA/AppData symlink in sync.
+		// Establish /DATA/AppData symlink.
 		updateSymlink("/DATA/AppData", newPath)
 
 	case MigrateTypeImages:
@@ -203,26 +213,29 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		logger.Error("failed to save path config", zap.Error(err))
 	}
 
-	// Remove old data only after the config is safely updated.
-	if srcPath != newPath {
-		if err := os.RemoveAll(srcPath); err != nil {
-			logger.Error("failed to remove old path after migration", zap.String("path", srcPath), zap.Error(err))
-		}
-	}
-
 	return newPath, nil
 }
 
 func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-done:
 			return
-		case <-time.After(2 * time.Second):
-			processed, _ := localfile.GetFileOrDirSize(destPath)
-			pct := 0
-			if totalSize > 0 {
-				pct = int(processed * 95 / totalSize) // cap at 95 until fully done
+		case <-ticker.C:
+			// Bypass if totalSize is invalid.
+			if totalSize <= 0 {
+				continue
+			}
+			processed, err := localfile.GetFileOrDirSize(destPath)
+			if err != nil {
+				continue
+			}
+			pct := int(processed * 95 / totalSize) // cap at 95 until fully done
+			if pct > 95 {
+				pct = 95
 			}
 			updateProgress(jobID, pct, processed, totalSize)
 		}
@@ -240,7 +253,8 @@ func updateProgress(jobID string, pct int, processed, total int64) {
 }
 
 func updateSymlink(linkPath, target string) {
-	_ = os.Remove(linkPath)
+	// Use RemoveAll to ensure we can delete the existing directory if it wasn't a symlink yet.
+	_ = os.RemoveAll(linkPath)
 	if err := os.Symlink(target, linkPath); err != nil {
 		logger.Error("failed to update symlink", zap.String("link", linkPath), zap.String("target", target), zap.Error(err))
 	}

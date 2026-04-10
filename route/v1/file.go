@@ -90,11 +90,12 @@ func checkPathAccess(ctx echo.Context, path string) error {
 		zap.String("role", role),
 		zap.String("remoteIP", ctx.RealIP()))
 
+	// 1. 内部调用/本地回环认证豁免权限检查。
 	// Localhost bypass: JWT middleware skipped, no headers set.
 	if role == "" && userID == "" {
-		logger.Debug("Permitting access due to empty role and userID (internal bypass)")
 		return nil
 	}
+	// 2. 超级管理员特权判定。
 	// Only User ID 1 (Root Admin) gets the "Skeleton Key" to all paths.
 	// Other admins (like admin1) must still follow explicit folder grants for security isolation.
 	isSuperAdmin := userID == "1"
@@ -102,26 +103,25 @@ func checkPathAccess(ctx echo.Context, path string) error {
  
 	// Fast path: Super-admin gets everything.
 	if isSuperAdmin {
-		logger.Debug("Access granted: Super-admin", zap.String("userID", userID))
 		return nil
 	}
  
+	// 3. 基本放行规则检测。
 	// Base safety check (empty for users now that prefixes are removed).
 	if utils.IsPathAllowed(cleanPath, false) {
-		logger.Debug("Access granted: IsPathAllowed", zap.String("path", cleanPath))
 		return nil
 	}
  
+	// 4. 显式文件夹授权校验。
 	// Slow path: check whether the user has an explicit folder grant.
 	if userID != "" {
 		uid, err := strconv.Atoi(userID)
 		if err == nil && service.MyService.User().IsPathGranted(uid, cleanPath) {
-			logger.Debug("Access granted: Explicitly granted folder", zap.String("path", cleanPath), zap.Int("uid", uid))
 			return nil
 		}
 	}
 
-	logger.Warn("Access DENIED", zap.String("path", cleanPath), zap.String("userID", userID))
+	logger.Info("Access DENIED", zap.String("path", cleanPath), zap.String("userID", userID))
 	ctx.JSON(http.StatusForbidden, model.Result{ //nolint:errcheck
 		Success: common_err.INSUFFICIENT_PERMISSIONS,
 		Message: common_err.GetMsg(common_err.INSUFFICIENT_PERMISSIONS),
