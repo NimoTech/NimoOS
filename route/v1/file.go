@@ -570,7 +570,11 @@ func GetFileUpload(ctx echo.Context) error {
 // @Success 200 {string} string "ok"
 // @Router /file/upload [post]
 func PostFileUpload(ctx echo.Context) error {
-	f, _, _ := ctx.Request().FormFile("file")
+	f, _, err := ctx.Request().FormFile("file")
+	if err != nil {
+		logger.Error("failed to read uploaded file", zap.Error(err))
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: "failed to read uploaded file: " + err.Error()})
+	}
 	relative := ctx.FormValue("relativePath")
 	fileName := ctx.FormValue("filename")
 	totalChunks, _ := strconv.Atoi(utils.DefaultPostForm(ctx, "totalChunks", "0"))
@@ -633,12 +637,13 @@ func PostFileUpload(ctx echo.Context) error {
 		}
 
 		if totalChunks == len(fileNum) {
-			if err := file.SpliceFiles(tempDir, path, totalChunks, 1); err != nil {
-				logger.Error("error when trying to splice files under `"+tempDir+"`", zap.Error(err))
-				return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
-			}
+			// Splice chunks asynchronously so the last chunk response returns immediately.
 			go func() {
-				time.Sleep(11 * time.Second)
+				if err := file.SpliceFiles(tempDir, path, totalChunks, 1); err != nil {
+					logger.Error("error when trying to splice files under `"+tempDir+"`", zap.Error(err))
+					return
+				}
+				// Clean up temp dir after splice completes
 				if err := file.RMDir(tempDir); err != nil {
 					logger.Error("error when trying to remove `"+tempDir+"`", zap.Error(err))
 				}

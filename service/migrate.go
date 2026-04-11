@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,18 +139,35 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	}
 
 	switch migrationType {
+	case MigrateTypeAppData, MigrateTypeImages, MigrateTypeUserData:
+		if !isReturningToSystem && !IsMounted(targetMountPoint) {
+			return "", fmt.Errorf("target path %s is not a mounted disk", targetMountPoint)
+		}
+	}
+
+	switch migrationType {
 	case MigrateTypeAppData:
 		srcPath = cfg.AppData
 		if isReturningToSystem {
-			// Force return to NimoOS Standard AppData path
 			actualTargetBase = "/DATA"
-			srcPath = cfg.AppData // Could be anywhere
+		}
+		// Resolve symlinks: cfg may store the symlink path (e.g. /DATA/AppData) rather than the
+		// real physical location on the storage disk. Without this, the landing zone cleanup
+		// removes the symlink and then CopyDir fails because the source no longer exists.
+		if resolved, err := filepath.EvalSymlinks(srcPath); err == nil && resolved != srcPath {
+			logger.Info("resolved symlink for app_data source", zap.String("from", srcPath), zap.String("to", resolved))
+			srcPath = resolved
 		}
 		totalSize, _ = localfile.GetFileOrDirSize(srcPath)
 	case MigrateTypeImages:
 		srcPath = cfg.Images
 		if isReturningToSystem {
 			actualTargetBase = "/DATA"
+		}
+		// Same symlink resolution as AppData.
+		if resolved, err := filepath.EvalSymlinks(srcPath); err == nil && resolved != srcPath {
+			logger.Info("resolved symlink for images source", zap.String("from", srcPath), zap.String("to", resolved))
+			srcPath = resolved
 		}
 		totalSize, _ = localfile.GetFileOrDirSize(srcPath)
 	case MigrateTypeUserData:
@@ -160,7 +178,12 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			actualTargetBase = "/DATA"
 		}
 		for _, f := range subFolders {
-			s, _ := localfile.GetFileOrDirSize(filepath.Join(srcBase, f))
+			folderPath := filepath.Join(srcBase, f)
+			// Resolve symlinks so GetFileOrDirSize measures real data, not link size
+			if resolved, err := filepath.EvalSymlinks(folderPath); err == nil {
+				folderPath = resolved
+			}
+			s, _ := localfile.GetFileOrDirSize(folderPath)
 			totalSize += s
 		}
 	default:
@@ -193,6 +216,19 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		for _, f := range subFolders {
 			fullSrc := filepath.Join(cfg.UserData, f) // Use actual registered base
 			fullDst := filepath.Join(actualTargetBase, f)
+
+			// --- CIRCULAR SYMLINK PROTECTION ---
+			// Resolve the real source path to avoid copying a symlink that points back to the target
+			if resolved, err := filepath.EvalSymlinks(fullSrc); err == nil && resolved != fullSrc {
+				logger.Info("batch-sync: resolving symlink source", zap.String("from", fullSrc), zap.String("to", resolved))
+				// If it already points to the target disk, just re-align and continue
+				if strings.HasPrefix(resolved, actualTargetBase) {
+					logger.Info("batch-sync: folder already on target partition, skipping copy", zap.String("folder", f))
+					updateSymlink(fullSrc, fullDst)
+					continue
+				}
+				fullSrc = resolved
+			}
 
 			// SELF-HEALING: If source doesn't exist but target already has it (desync), skip copy
 			if _, err := os.Stat(fullSrc); os.IsNotExist(err) {
@@ -230,8 +266,11 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 				return "", fmt.Errorf("verification failed: data did not arrive at %s", fullDst)
 			}
 
-			_ = os.RemoveAll(fullSrc)
-			updateSymlink(fullSrc, fullDst)
+			if isReturningToSystem {
+				_ = os.RemoveAll(fullSrc)
+			} else {
+				updateSymlink(fullSrc, fullDst)
+			}
 		}
 		cfg.UserData = actualTargetBase
 	} else {
@@ -242,7 +281,9 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
 			if _, errDst := os.Stat(fullDst); errDst == nil {
 				logger.Info("path-sync: source missing but target exists, auto-aligning", zap.String("path", fullDst))
-				updateSymlink(srcPath, fullDst)
+				if !isReturningToSystem {
+					updateSymlink(srcPath, fullDst)
+				}
 				goto finalize
 			}
 		}
@@ -275,7 +316,12 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 
 		_ = os.RemoveAll(srcPath)
-		updateSymlink(srcPath, fullDst)
+		if !isReturningToSystem {
+			// Only create symlink when moving OUT to external disk,
+			// so apps can still access data through the original path.
+			// When returning to system disk, no symlink needed on external disk.
+			updateSymlink(srcPath, fullDst)
+		}
 
 	finalize:
 		if migrationType == MigrateTypeAppData {
@@ -308,7 +354,7 @@ func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}
 }
 
 func trackBatchProgress(jobID string, destFolders []string, totalSize int64, done <-chan struct{}) {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {

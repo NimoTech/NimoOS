@@ -203,19 +203,14 @@ func ReadFullFile(path string) []byte {
 	return content
 }
 
-// File copies a single file from src to dst
+// CopyFile copies a single file from src to dst.
+// dst should be the full target path including the filename.
 func CopyFile(src, dst, style string) error {
 	var err error
 	var srcfd *os.File
 	var dstfd *os.File
 	var srcinfo os.FileInfo
 
-	lastPath := src[strings.LastIndex(src, "/")+1:]
-
-	if !strings.HasSuffix(dst, "/") {
-		dst += "/"
-	}
-	dst += lastPath
 	if Exists(dst) {
 		if style == "skip" {
 			return nil
@@ -296,8 +291,17 @@ func GetNoDuplicateFileName(fullPath string) string {
 	return fullPath
 }
 
-// Dir copies a whole directory recursively
+// CopyDir copies a whole directory recursively.
+// It will create a new directory inside dst with the same name as src.
 func CopyDir(src string, dst string, style string) error {
+	lastPath := filepath.Base(src)
+	targetDir := filepath.Join(dst, lastPath)
+	return CopyDirContents(src, targetDir, style)
+}
+
+// CopyDirContents copies the contents of src directory into dst directory.
+// It does NOT append the basename of src to dst.
+func CopyDirContents(src string, dst string, style string) error {
 	var err error
 	var fds []os.FileInfo
 	var srcinfo os.FileInfo
@@ -305,37 +309,33 @@ func CopyDir(src string, dst string, style string) error {
 	if srcinfo, err = os.Stat(src); err != nil {
 		return err
 	}
+
 	if !srcinfo.IsDir() {
-		if err = CopyFile(src, dst, style); err != nil {
-			fmt.Println(err)
-		}
-		return nil
+		return CopyFile(src, dst, style)
 	}
-	// dstPath := dst
-	lastPath := src[strings.LastIndex(src, "/")+1:]
-	dst += "/" + lastPath
-	// for i := 0; Exists(dst); i++ {
-	// 	dst = dstPath + "/" + lastPath + strconv.Itoa(i+1)
-	// }
+
 	if Exists(dst) {
 		if style == "skip" {
 			return nil
 		} else {
-			os.Remove(dst)
+			os.RemoveAll(dst)
 		}
 	}
+
 	if err = os.MkdirAll(dst, srcinfo.Mode()); err != nil {
 		return err
 	}
+
 	if fds, err = ioutil.ReadDir(src); err != nil {
 		return err
 	}
+
 	for _, fd := range fds {
-		srcfp := path.Join(src, fd.Name())
-		dstfp := path.Join(dst, fd.Name())
+		srcfp := filepath.Join(src, fd.Name())
+		dstfp := filepath.Join(dst, fd.Name())
 
 		if fd.IsDir() {
-			if err = CopyDir(srcfp, dstfp, style); err != nil {
+			if err = CopyDirContents(srcfp, dstfp, style); err != nil {
 				return err
 			}
 		} else {
@@ -375,7 +375,7 @@ func WriteToFullPath(data []byte, fullPath string, perm fs.FileMode) error {
 	return err
 }
 
-// 最终拼接
+// 最终拼接 - 使用流式拷贝，避免将整个分片读入内存
 func SpliceFiles(dir, path string, length int, startPoint int) error {
 	fullPath := path
 
@@ -383,28 +383,29 @@ func SpliceFiles(dir, path string, length int, startPoint int) error {
 		return err
 	}
 
-	file, _ := os.OpenFile(fullPath,
+	file, err := os.OpenFile(fullPath,
 		os.O_WRONLY|os.O_TRUNC|os.O_CREATE,
 		0o666,
 	)
-
+	if err != nil {
+		return err
+	}
 	defer file.Close()
 
-	bufferedWriter := bufio.NewWriter(file)
-
-	// todo: here should have a goroutine to remove each partial file after it is read, to save disk space
+	buf := make([]byte, 256*1024) // 256KB copy buffer
 
 	for i := 0; i < length+startPoint-1; i++ {
-		data, err := ioutil.ReadFile(dir + "/" + strconv.Itoa(i+startPoint))
+		chunkPath := dir + "/" + strconv.Itoa(i+startPoint)
+		chunk, err := os.Open(chunkPath)
 		if err != nil {
 			return err
 		}
-		if _, err := bufferedWriter.Write(data); err != nil { // recommend to use https://github.com/iceber/iouring-go for faster write
+		if _, err := io.CopyBuffer(file, chunk, buf); err != nil {
+			chunk.Close()
 			return err
 		}
+		chunk.Close()
 	}
-
-	bufferedWriter.Flush()
 
 	return nil
 }
