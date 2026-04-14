@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"net/http"
 	"os"
@@ -67,10 +68,59 @@ func GetThumbnailByOwnerPhotos(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Read EXIF Orientation from root IFD and apply it to the thumbnail.
+	// The embedded EXIF thumbnail is stored in raw sensor orientation;
+	// the Orientation tag tells viewers how to rotate for correct display.
+	orientation := uint16(1)
+	if results, err := index.RootIfd.FindTagWithName("Orientation"); err == nil && len(results) > 0 {
+		if val, err := results[0].Value(); err == nil {
+			if orientations, ok := val.([]uint16); ok && len(orientations) > 0 {
+				orientation = orientations[0]
+			}
+		}
+	}
+	if orientation > 1 {
+		thumbnail = applyOrientationToThumbnail(thumbnail, orientation)
+	}
+
 	return thumbnail, nil
 }
+
+// applyOrientationToThumbnail rotates/flips JPEG thumbnail bytes according to
+// the EXIF Orientation tag value. Returns original data on any decode error.
+func applyOrientationToThumbnail(data []byte, orientation uint16) []byte {
+	img, err := imaging.Decode(bytes.NewReader(data))
+	if err != nil {
+		return data
+	}
+	var out image.Image
+	switch orientation {
+	case 2:
+		out = imaging.FlipH(img)
+	case 3:
+		out = imaging.Rotate180(img)
+	case 4:
+		out = imaging.FlipV(img)
+	case 5:
+		out = imaging.Rotate90(imaging.FlipH(img))
+	case 6:
+		out = imaging.Rotate270(img)
+	case 7:
+		out = imaging.Rotate270(imaging.FlipH(img))
+	case 8:
+		out = imaging.Rotate90(img)
+	default:
+		return data
+	}
+	buf := bytes.Buffer{}
+	if err := imaging.Encode(&buf, out, imaging.JPEG); err != nil {
+		return data
+	}
+	return buf.Bytes()
+}
 func GetThumbnailByWebPhoto(path string, width, height int) ([]byte, error) {
-	src, err := imaging.Open(path)
+	src, err := imaging.Open(path, imaging.AutoOrientation(true))
 	if err != nil {
 		fmt.Println(err)
 		return nil, err
