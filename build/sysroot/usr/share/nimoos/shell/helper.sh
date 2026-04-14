@@ -333,7 +333,7 @@ GetDeviceTree(){
 
 # restart samba service
 RestartSMBD(){
-  $sudo_cmd systemctl restart smbd
+  $sudo_cmd systemctl restart smbd nmbd
 }
 
 # edit user password $1:username

@@ -83,11 +83,13 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.SHARE_NAME_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.SHARE_NAME_ALREADY_EXISTS)})
 		}
 	}
+	username := ctx.Request().Header.Get("user_name")
 	for _, v := range shares {
 		shareDBModel := model2.SharesDBModel{}
-		shareDBModel.Anonymous = true
+		shareDBModel.Anonymous = username == ""
 		shareDBModel.Path = v.Path
 		shareDBModel.Name = filepath.Base(v.Path)
+		shareDBModel.Username = username
 		os.Chmod(v.Path, 0o777)
 		service.MyService.Shares().CreateShare(shareDBModel)
 	}

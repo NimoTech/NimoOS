@@ -12,7 +12,6 @@ package service
 
 import (
 	"path/filepath"
-	"strings"
 
 	"github.com/NimoTech/NimoOS-Common/utils/command"
 	"github.com/NimoTech/NimoOS/pkg/config"
@@ -44,7 +43,6 @@ func (s *sharesStruct) DeleteShareByPath(path string) {
 
 func (s *sharesStruct) GetSharesByName(name string) (shares []model2.SharesDBModel) {
 	s.db.Select("anonymous,path,id").Where("name = ?", name).Find(&shares)
-
 	return
 }
 
@@ -60,7 +58,6 @@ func (s *sharesStruct) GetSharesList() (shares []model2.SharesDBModel) {
 
 func (s *sharesStruct) CreateShare(share model2.SharesDBModel) {
 	s.db.Create(&share)
-	s.InitSambaConfig()
 	s.UpdateConfigFile()
 }
 
@@ -69,42 +66,10 @@ func (s *sharesStruct) DeleteShare(id string) {
 	s.UpdateConfigFile()
 }
 
-func (s *sharesStruct) UpdateConfigFile() {
-	shares := []model2.SharesDBModel{}
-	s.db.Select("anonymous,path").Find(&shares)
-	// generated config file
-	configStr := ""
-	for _, share := range shares {
-		dirName := filepath.Base(share.Path)
-		configStr += `
-[` + dirName + `]
-comment = NimoOS share ` + dirName + `
-public = Yes
-path = ` + share.Path + `
-browseable = Yes
-read only = No
-guest ok = Yes
-create mask = 0777
-directory mask = 0777
-force user = root
-
-`
-	}
-	// write config file
-	file.WriteToPath([]byte(configStr), "/etc/samba", "smb.casa.conf")
-	// restart samba
-	command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;RestartSMBD")
-}
-
-func (s *sharesStruct) InitSambaConfig() {
-	if file.Exists("/etc/samba/smb.conf") {
-		str := file.ReadLine(1, "/etc/samba/smb.conf")
-		if strings.Contains(str, "# Copyright (c) 2021-2022 NimoOS Inc. All rights reserved.") {
-			return
-		}
-		file.MoveFile("/etc/samba/smb.conf", "/etc/samba/smb.conf.bak")
-		smbConf := ""
-		smbConf += `# Copyright (c) 2021-2022 NimoOS Inc. All rights reserved.
+// globalSmbConf is the canonical [global] section written on every config update.
+// Keeping it here ensures deployed systems always get the latest settings without
+// requiring a manual file deletion or factory reset.
+const globalSmbConf = `# Copyright (c) 2021-2022 NimoOS Inc. All rights reserved.
 #
 #
 #                          ______     _______
@@ -131,7 +96,7 @@ func (s *sharesStruct) InitSambaConfig() {
 #  | || || |  | |   | |  | |   ) |     | |     | (__       \ (_) /
 #  | |(_)| |  | |   | |  | |   | |     | |     |  __)       \   /
 #  | |   | |  | |   | |  | |   ) |     | |     | (           ) (
-#  | )   ( |  | (___) |  | (__/  )  ___) (___  | )           | |
+#  | |   | |  | (___) |  | (__/  )  ___) (___  | )           | |
 #  |/     \|  (_______)  (______/   \_______/  |/            \_/
 #
 #
@@ -139,10 +104,15 @@ func (s *sharesStruct) InitSambaConfig() {
 #            caused by unauthorized modification to the configuration.
 
 [global]
-## fruit settings
+   workgroup = WORKGROUP
+   netbios name = NIMOOS
+   server string = NimoOS
+   security = user
+   passdb backend = tdbsam
+   access based share enum = yes
    min protocol = SMB2
+   ntlm auth = ntlmv2-only
    ea support = yes
-## vfs objects = fruit streams_xattr
    fruit:metadata = stream
    fruit:model = Macmini
    fruit:veto_appledouble = no
@@ -150,11 +120,46 @@ func (s *sharesStruct) InitSambaConfig() {
    fruit:zero_file_id = yes
    fruit:wipe_intentionally_left_blank_rfork = yes
    fruit:delete_empty_adfiles = yes
-   map to guest = bad user
    include=/etc/samba/smb.casa.conf`
-		file.WriteToPath([]byte(smbConf), "/etc/samba", "smb.conf")
+
+// UpdateConfigFile writes both the global smb.conf and the per-share smb.casa.conf,
+// then restarts Samba. Called on every share create/delete so the on-disk config
+// always reflects the current code and database state.
+func (s *sharesStruct) UpdateConfigFile() {
+	// Always overwrite the global config so settings like access based share enum
+	// take effect on existing deployments without manual intervention.
+	file.WriteToPath([]byte(globalSmbConf), "/etc/samba", "smb.conf")
+
+	// Build per-share config.
+	shares := []model2.SharesDBModel{}
+	s.db.Select("anonymous,path,username").Find(&shares)
+	configStr := ""
+	for _, share := range shares {
+		dirName := filepath.Base(share.Path)
+		validUsers := share.Username
+		if validUsers == "" {
+			validUsers = "@users"
+		}
+		configStr += `
+[` + dirName + `]
+comment = NimoOS share ` + dirName + `
+path = ` + share.Path + `
+browseable = Yes
+read only = No
+valid users = ` + validUsers + `
+create mask = 0777
+directory mask = 0777
+force user = root
+
+`
 	}
+	file.WriteToPath([]byte(configStr), "/etc/samba", "smb.casa.conf")
+	command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;RestartSMBD")
 }
+
+// InitSambaConfig is kept for interface compatibility. Config is now always
+// written by UpdateConfigFile, so this is a no-op.
+func (s *sharesStruct) InitSambaConfig() {}
 
 func NewSharesService(db *gorm.DB) SharesService {
 	return &sharesStruct{db: db}

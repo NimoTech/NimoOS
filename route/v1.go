@@ -61,6 +61,7 @@ func InitV1Router() http.Handler {
 			}
 
 			c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
+			c.Request().Header.Set("user_name", claims.Username)
 
 			// Query DB for current role (real-time, no stale JWT cache)
 			role, err := service.MyService.User().GetUserRoleByID(claims.ID)
