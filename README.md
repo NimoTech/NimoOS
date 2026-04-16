@@ -37,7 +37,7 @@
     </a> -->
     <br/>
     <!-- NimoOS Community -->
-    <a href="https://discord.gg/knqAbbBbeX" target="_blank">
+    <a href="https://discord.gg/8T8hd5GPZU" target="_blank">
         <img alt="IceWhale Discord" src="https://img.shields.io/discord/884667213326463016?color=162453&style=flat-square&label=Discord&logo=discord&logoColor=fff" />
     </a>
     <a href="https://github.com/NimoTech/NimoOS/discussions" target="_blank">
@@ -190,9 +190,9 @@ So, we set out to build this open-source project to develop NimoOS with our own 
 
 We believe that through community-driven collaborative innovation and open communication with global developers, we can reshape the digital home experience like never before.
 
-**A warm welcome for you to get help or share great ideas in the [Discord](https://discord.gg/knqAbbBbeX)!**
+**A warm welcome for you to get help or share great ideas in the [Discord](https://discord.gg/8T8hd5GPZU)!**
 
-[![Discord Card](https://discordapp.com/api/guilds/884667213326463016/widget.png?style=banner2)](https://discord.gg/knqAbbBbeX)
+[![Discord Card](https://discordapp.com/api/guilds/884667213326463016/widget.png?style=banner2)](https://discord.gg/8T8hd5GPZU)
 
 ## Contributing
 
