@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime/multipart"
 	"os"
+	"os/exec"
 	"path"
 	path2 "path"
 	"path/filepath"
@@ -205,26 +206,35 @@ func ReadFullFile(path string) []byte {
 
 // CopyFile copies a single file from src to dst.
 // dst should be the full target path including the filename.
+// Sparse files (e.g. Docker's volumes/backingFsBlockDev) are preserved using
+// "cp --sparse=always" so that unallocated regions are not expanded into real
+// disk blocks, which would cause the copy to appear far larger than the source.
 func CopyFile(src, dst, style string) error {
-	var err error
-	var srcfd *os.File
-	var dstfd *os.File
 	var srcinfo os.FileInfo
+	var err error
 
 	if Exists(dst) {
 		if style == "skip" {
 			return nil
-		} else {
-			os.Remove(dst)
 		}
+		os.Remove(dst)
 	}
 
-	if srcfd, err = os.Open(src); err != nil {
+	// Use cp --sparse=always to handle sparse files correctly.
+	// Fall back to pure-Go copy only if cp is unavailable.
+	if cpErr := exec.Command("cp", "--sparse=always", "--preserve=mode", src, dst).Run(); cpErr == nil {
+		return nil
+	}
+
+	// Fallback: pure-Go copy (dense, no sparse support).
+	srcfd, err := os.Open(src)
+	if err != nil {
 		return err
 	}
 	defer srcfd.Close()
 
-	if dstfd, err = os.Create(dst); err != nil {
+	dstfd, err := os.Create(dst)
+	if err != nil {
 		return err
 	}
 	defer dstfd.Close()
@@ -322,6 +332,13 @@ func CopyDirContents(src string, dst string, style string) error {
 		}
 	}
 
+	// NEW: Use native cp -a -T to handle symlinks, sparse files, and hardlinks (critical for docker overlay) efficiently.
+	// Fall back to manual loop if cp fails.
+	if cpErr := exec.Command("cp", "-a", "--sparse=always", "-T", src, dst).Run(); cpErr == nil {
+		return nil
+	}
+
+	// Fallback to manual recursive directory copy
 	if err = os.MkdirAll(dst, srcinfo.Mode()); err != nil {
 		return err
 	}
@@ -536,15 +553,11 @@ func CommonPrefix(sep byte, paths ...string) string {
 }
 
 func GetFileOrDirSize(path string) (int64, error) {
-	// Use Lstat to check the actual node type without following symlinks blindly
-	fileInfo, err := os.Lstat(path)
+	// Use Stat (instead of Lstat) to follow the top-level symlink to the actual data.
+	// This ensures we report the size of the target, not the symlink node itself.
+	fileInfo, err := os.Stat(path)
 	if err != nil {
 		return 0, err
-	}
-	
-	// If it's a symlink, just return the size of the link itself, DO NOT walk into it
-	if fileInfo.Mode()&os.ModeSymlink != 0 {
-		return fileInfo.Size(), nil
 	}
 
 	if fileInfo.IsDir() {

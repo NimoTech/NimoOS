@@ -190,3 +190,25 @@ func IsMounted(path string) bool {
 	}
 	return false
 }
+
+// HasChildMounts returns true if any mount point exists at or below path.
+// Docker bind-mounts AppData subdirectories into running containers; those
+// active mounts make os.RemoveAll fail with EBUSY.  Call this before
+// attempting to delete a directory tree to surface the problem early.
+func HasChildMounts(path string) bool {
+	mounts, err := mountinfo.GetMounts(func(info *mountinfo.Info) (bool, bool) {
+		// skip=false means include; stop=false means keep scanning
+		return false, false
+	})
+	if err != nil {
+		return false
+	}
+	prefix := filepath.Clean(path)
+	for _, m := range mounts {
+		mp := filepath.Clean(m.Mountpoint)
+		if mp == prefix || strings.HasPrefix(mp, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}

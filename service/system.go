@@ -674,21 +674,31 @@ func (c *systemService) GetNetSpeed(name string) int {
 }
 
 func (c *systemService) GetSystemPaths() map[string]interface{} {
-	cfg := LoadPathConfig()
+	cfg := ResolveActivePaths()
 
 	// Evaluate real physical paths to avoid "Shadow Migration" UI confusion.
-	realAppData, _ := filepath.EvalSymlinks(cfg.AppData)
-	if realAppData == "" {
-		realAppData = cfg.AppData
+	// resolveForSize resolves symlinks for size calculation; if resolution fails
+	// (e.g. broken/circular symlink chain), fall back to os.Stat-based resolution
+	// so we measure real content rather than the symlink node itself.
+	resolveForSize := func(p string) string {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return resolved
+		}
+		// EvalSymlinks failed — try one level of Readlink to get past the first hop
+		if target, err := os.Readlink(p); err == nil {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(p), target)
+			}
+			if resolved, err := filepath.EvalSymlinks(target); err == nil {
+				return resolved
+			}
+			return target
+		}
+		return p
 	}
-	realImages, _ := filepath.EvalSymlinks(cfg.Images)
-	if realImages == "" {
-		realImages = cfg.Images
-	}
-	realUserData, _ := filepath.EvalSymlinks(cfg.UserData)
-	if realUserData == "" {
-		realUserData = cfg.UserData
-	}
+	realAppData := resolveForSize(cfg.AppData)
+	realImages := resolveForSize(cfg.Images)
+	realUserData := resolveForSize(cfg.UserData)
 
 	var appDataSize, imagesSize, userDataSize int64
 
@@ -708,6 +718,10 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 			s, _ := file.GetFileOrDirSize(filepath.Join(realUserData, f))
 			userDataSize += s
 		}
+		// If subfolders are empty, but the root userdata directory has content, show the root size
+		if userDataSize == 0 {
+			userDataSize, _ = file.GetFileOrDirSize(realUserData)
+		}
 	}
 
 	return map[string]interface{}{
@@ -716,7 +730,7 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 			"size": appDataSize,
 		},
 		"images": map[string]interface{}{
-			"path": realImages,
+			"path": realImages + " & containerd",
 			"size": imagesSize,
 		},
 		"database": map[string]interface{}{

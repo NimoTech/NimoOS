@@ -37,6 +37,7 @@ func InitFunction() {
 	go InitNetworkMount()
 	go InitInfo()
 	go InitDiskStandby()
+	go InitPathConfig()
 	//go InitZerotier()
 }
 
@@ -155,6 +156,46 @@ func parseStandbyMinutes(standby string) int {
 		return h * 60
 	}
 	return 0
+}
+
+// InitPathConfig ensures path_config.json is in sync with the actual system state on every boot.
+// If the file is missing or the images path doesn't match daemon.json, it self-heals from daemon.json.
+func InitPathConfig() {
+	cfg := service.LoadPathConfig()
+	changed := false
+
+	// Read actual Docker data-root from daemon.json
+	actualDockerRoot := "/var/lib/docker"
+	if data, err := os.ReadFile("/etc/docker/daemon.json"); err == nil {
+		var daemonCfg map[string]interface{}
+		if json.Unmarshal(data, &daemonCfg) == nil {
+			if root, ok := daemonCfg["data-root"].(string); ok && root != "" {
+				actualDockerRoot = root
+			}
+		}
+	}
+
+	if cfg.Images != actualDockerRoot {
+		logger.Info("InitPathConfig: images path mismatch, self-healing",
+			zap.String("configured", cfg.Images),
+			zap.String("actual", actualDockerRoot))
+		cfg.Images = actualDockerRoot
+		changed = true
+
+		// Keep docker_root file in sync for AppManagement service
+		dockerRootEntry := map[string]string{"docker_root_dir": actualDockerRoot}
+		if data, err := json.Marshal(dockerRootEntry); err == nil {
+			_ = os.WriteFile("/var/lib/nimoos/docker_root", data, 0o644)
+		}
+	}
+
+	if changed {
+		if err := service.SavePathConfig(cfg); err != nil {
+			logger.Error("InitPathConfig: failed to save path config", zap.Error(err))
+		} else {
+			logger.Info("InitPathConfig: path config saved", zap.String("images", cfg.Images))
+		}
+	}
 }
 
 func InitZerotier() {

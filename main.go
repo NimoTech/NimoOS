@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/model"
@@ -235,9 +237,22 @@ func main() {
 	}
 
 	logger.Info("NimoOS main service is listening...", zap.Any("address", listener.Addr().String()))
+
+	// Handle SIGTERM/SIGINT gracefully: clean up any in-progress migration before exit.
+	go func() {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+		<-quit
+		logger.Info("shutdown signal received, cleaning up in-progress migrations")
+		service.CleanupActiveMigration()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = s.Shutdown(shutdownCtx)
+	}()
+
 	// defer service.MyService.Storage().UnmountAllStorage()
 	err = s.Serve(listener) // not using http.serve() to fix G114: Use of net/http serve function that has no support for setting timeouts (see https://github.com/securego/gosec)
-	if err != nil {
+	if err != nil && err != http.ErrServerClosed {
 		panic(err)
 	}
 }
