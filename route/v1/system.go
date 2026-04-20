@@ -282,6 +282,7 @@ func GetSystemUtilization(ctx echo.Context) error {
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
 				item.Addr = service.MyService.System().GetNetAddr(n.Name)
 				item.Speed = service.MyService.System().GetNetSpeed(n.Name)
+				item.MaxSpeed = service.MyService.System().GetNetMaxSpeed(n.Name)
 				item.Time = time.Now().Unix()
 				newNet = append(newNet, item)
 				break

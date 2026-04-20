@@ -185,14 +185,15 @@ func GetMigrationStatus(jobID string) (MigrateStatus, bool) {
 	return v.(MigrateStatus), true
 }
 
+type migrateUnit struct {
+	anchor string
+	src    string
+	dst    string
+}
+
 func executeMigration(jobID, migrationType, targetMountPoint string) (string, error) {
 	cfg := ResolveActivePaths()
 
-	type migrateUnit struct {
-		anchor string
-		src    string
-		dst    string
-	}
 	var units []migrateUnit
 	var newPath string
 
@@ -263,7 +264,16 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		activeMigrationMu.Unlock()
 	}()
 
-	// 1. Size tracking
+	// 1. Stop services first for images migration (overlay mounts must be gone before measuring size)
+	if migrationType == MigrateTypeImages {
+		logger.Info("stopping docker and containerd for migration")
+		_ = exec.Command("systemctl", "stop", "docker.socket", "docker", "containerd").Run()
+		// Kill any lingering shim processes that hold overlay mounts after service stop
+		_ = exec.Command("pkill", "-9", "-f", "containerd-shim").Run()
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// 2. Size tracking — done after service stop so overlay mounts are gone and size is accurate
 	var totalSize int64
 	for _, u := range units {
 		if u.src == u.dst || strings.HasPrefix(u.dst, u.src) {
@@ -274,26 +284,27 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	}
 	updateProgress(jobID, 1, 0, totalSize)
 
-	if migrationType == MigrateTypeImages {
-		logger.Info("stopping docker and containerd for migration")
-		_ = exec.Command("systemctl", "stop", "docker.socket", "docker", "containerd").Run()
-	}
-
 	done := make(chan struct{})
-	go trackProgress(jobID, newPath, totalSize, done)
+	go trackProgress(jobID, units, totalSize, done)
 
-	// 2. Perform Copies & Cleanup Anchor
+	// 3. Perform Copies & Cleanup Anchor
 	for _, u := range units {
 		if u.src == u.dst || strings.HasPrefix(u.dst, u.src) {
 			continue
 		}
-		
+
+		// Skip: anchor is already a symlink pointing to dst — data is already in place, nothing to copy
+		if resolved, err := filepath.EvalSymlinks(u.anchor); err == nil && resolved == u.dst {
+			logger.Info("skipping unit — anchor already points to dst", zap.String("anchor", u.anchor), zap.String("dst", u.dst))
+			continue
+		}
+
 		if _, err := os.Stat(u.src); os.IsNotExist(err) {
 			continue
 		}
 
 		// If we are restoring to system, the destination IS the anchor.
-		// We must severe the symlink connecting them BEFORE we copy, or rsync goes into a black hole.
+		// We must sever the symlink connecting them BEFORE we copy, or rsync goes into a black hole.
 		if isSystemRestore && u.dst == u.anchor {
 			_ = os.Remove(u.anchor)
 		}
@@ -303,7 +314,13 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		srcWithSlash := strings.TrimRight(u.src, "/") + "/"
 		dstWithSlash := strings.TrimRight(u.dst, "/") + "/"
 
-		if err := exec.Command("rsync", "-a", srcWithSlash, dstWithSlash).Run(); err != nil {
+		rsyncArgs := []string{"-a", "--one-file-system"}
+		if migrationType == MigrateTypeImages {
+			// Exclude runtime state directories that docker recreates on start
+			rsyncArgs = append(rsyncArgs, "--exclude=rootfs/overlayfs", "--exclude=rootfs/mounts")
+		}
+		rsyncArgs = append(rsyncArgs, srcWithSlash, dstWithSlash)
+		if err := exec.Command("rsync", rsyncArgs...).Run(); err != nil {
 			close(done)
 			if migrationType == MigrateTypeImages {
 				_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
@@ -313,13 +330,18 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	}
 	close(done)
 
-	// 3. Anchor cleanup and redirection
+	// 4. Anchor cleanup and redirection
 	for _, u := range units {
 		if u.src == u.dst {
 			continue
 		}
 
-		// Delete the old exterior location
+		// Skip: anchor already correctly points to dst — nothing to clean up or relink
+		if resolved, err := filepath.EvalSymlinks(u.anchor); err == nil && resolved == u.dst {
+			continue
+		}
+
+		// Delete the old exterior location (only if it's not the anchor itself)
 		if u.src != u.anchor {
 			_ = os.RemoveAll(u.src)
 		}
@@ -331,7 +353,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 	}
 
-	// 4. Update Config & finalize
+	// 5. Update Config & finalize
 	switch migrationType {
 	case MigrateTypeAppData:
 		cfg.AppData = newPath
@@ -350,7 +372,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	return newPath, nil
 }
 
-func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}) {
+func trackProgress(jobID string, units []migrateUnit, totalSize int64, done <-chan struct{}) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -359,7 +381,15 @@ func trackProgress(jobID, destPath string, totalSize int64, done <-chan struct{}
 		case <-done:
 			return
 		case <-ticker.C:
-			processed, _ := localfile.GetFileOrDirSize(destPath)
+			var processed int64
+			for _, u := range units {
+				if u.src == u.dst || strings.HasPrefix(u.dst, u.src) {
+					continue
+				}
+				p, _ := localfile.GetFileOrDirSize(u.dst)
+				processed += p
+			}
+			
 			pct := 0
 			if totalSize > 0 {
 				pct = int(processed * 95 / totalSize)

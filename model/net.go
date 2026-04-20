@@ -16,4 +16,5 @@ type IOCountersStat struct {
 	Time        int64  `json:"time"`
 	Addr        string `json:"addr"`
 	Speed       int    `json:"speed"`
+	MaxSpeed    int    `json:"max_speed"`
 }

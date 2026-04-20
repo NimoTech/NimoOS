@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 
+	"syscall"
+
 	"github.com/mholt/archiver/v3"
 )
 
@@ -568,12 +570,33 @@ func GetFileOrDirSize(path string) (int64, error) {
 
 // getFileSize get file size by path(B)
 func DirSizeB(path string) (int64, error) {
+	rootInfo, err := os.Lstat(path)
+	if err != nil {
+		return 0, err
+	}
+	rootStat, ok := rootInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("cannot get device ID for %s", path)
+	}
+	rootDev := rootStat.Dev
+
 	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
+	err = filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil
+		}
+		// Skip directories on a different device (mount points)
+		if info.IsDir() && stat.Dev != rootDev {
+			return filepath.SkipDir
+		}
+		if !info.IsDir() && stat.Dev == rootDev {
 			size += info.Size()
 		}
-		return err
+		return nil
 	})
 	return size, err
 }
