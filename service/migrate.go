@@ -23,7 +23,7 @@ const (
 	MigrateTypeUserData = "database"
 
 	DefaultAppDataPath  = "/DATA/AppData"
-	DefaultImagesPath   = "/var/lib/docker"
+	DefaultImagesPath   = "/DATA/docker"
 	DefaultUserDataPath = "/DATA"
 )
 
@@ -88,7 +88,7 @@ func ResolveActivePaths() PathConfig {
 
 	cfg.AppData = resolveReal(cfg.AppData, DefaultAppDataPath)
 	
-	// Fast track for Images: The true and only source of truth is the current destination of /var/lib/docker
+	// Fast track for Images: anchor is /DATA/docker; follow it to find the real location
 	if resolvedDocker, err := filepath.EvalSymlinks(DefaultImagesPath); err == nil {
 		if cfg.Images != resolvedDocker {
 			cfg.Images = resolvedDocker
@@ -217,7 +217,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 	case MigrateTypeImages:
 		for _, name := range []string{"docker", "containerd"} {
-			anchor := "/var/lib/" + name
+			anchor := "/DATA/" + name
 			src, _ := filepath.EvalSymlinks(anchor)
 			if src == "" {
 				src = anchor
@@ -230,7 +230,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 		newPath = filepath.Join(targetMountPoint, "docker")
 		if isSystemRestore {
-			newPath = "/var/lib/docker"
+			newPath = "/DATA/docker"
 		}
 
 	case MigrateTypeUserData:
@@ -330,26 +330,32 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	}
 	close(done)
 
-	// 4. Anchor cleanup and redirection
+	// 4. Anchor cleanup and symlink management
+	// Three cases for all migration types:
+	//   External → System : remove old external data, no symlink (data lives at anchor)
+	//   System → External : remove physical data at anchor, create symlink anchor → dst
+	//   External → External: remove old external data, update symlink anchor → new dst
 	for _, u := range units {
 		if u.src == u.dst {
 			continue
 		}
-
-		// Skip: anchor already correctly points to dst — nothing to clean up or relink
+		// Skip: anchor already correctly points to dst
 		if resolved, err := filepath.EvalSymlinks(u.anchor); err == nil && resolved == u.dst {
 			continue
 		}
 
-		// Delete the old exterior location (only if it's not the anchor itself)
-		if u.src != u.anchor {
-			_ = os.RemoveAll(u.src)
-		}
-
-		// If it's a System Restore, the physical files are NOW solidly sitting at the anchor. No symlink needed!
-		if !isSystemRestore || u.dst != u.anchor {
-			_ = os.RemoveAll(u.anchor)
-			_ = os.Symlink(u.dst, u.anchor)
+		if isSystemRestore {
+			// External → System: data is now physically at anchor. Remove old external, no symlink.
+			if u.src != u.anchor {
+				_ = os.RemoveAll(u.src)
+			}
+		} else {
+			// System → External OR External → External: update symlink at anchor → dst
+			if u.src != u.anchor {
+				_ = os.RemoveAll(u.src) // remove old external location
+			}
+			_ = os.RemoveAll(u.anchor)       // remove anchor (symlink or physical data)
+			_ = os.Symlink(u.dst, u.anchor)  // create / update: anchor → dst
 		}
 	}
 
@@ -359,6 +365,15 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		cfg.AppData = newPath
 	case MigrateTypeImages:
 		cfg.Images = newPath
+		// Ensure /var/lib/docker and /var/lib/containerd always point to /DATA anchors
+		for _, name := range []string{"docker", "containerd"} {
+			varLibPath := "/var/lib/" + name
+			dataAnchor := "/DATA/" + name
+			if target, err := filepath.EvalSymlinks(varLibPath); err != nil || target != dataAnchor {
+				_ = os.Remove(varLibPath)
+				_ = os.Symlink(dataAnchor, varLibPath)
+			}
+		}
 		logger.Info("starting docker and containerd after migration")
 		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 	case MigrateTypeUserData:
