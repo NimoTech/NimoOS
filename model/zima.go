@@ -13,11 +13,12 @@ package model
 import "time"
 
 type Path struct {
-	Name       string                 `json:"name"`   //File name or document name
-	Path       string                 `json:"path"`   //Full path to file or folder
-	IsDir      bool                   `json:"is_dir"` //Is it a folder
+	Name       string                 `json:"name"`
+	Path       string                 `json:"path"`
+	IsDir      bool                   `json:"is_dir"`
+	IsSymlink  bool                   `json:"is_symlink"`
 	Date       time.Time              `json:"date"`
-	Size       int64                  `json:"size"` //File Size
+	Size       int64                  `json:"size"`
 	Type       string                 `json:"type,omitempty"`
 	Label      string                 `json:"label,omitempty"`
 	Write      bool                   `json:"write"`

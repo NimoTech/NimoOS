@@ -312,20 +312,24 @@ func (c *systemService) GetDirPath(path string) ([]model.Path, error) {
 	if len(path) > 0 {
 		for _, l := range ls {
 			filePath := filepath.Join(path, l.Name())
-			link, err := filepath.EvalSymlinks(filePath)
-			if err != nil {
-				link = filePath
-			}
 			tempFile, err := l.Info()
 			if err != nil {
 				logger.Error("when read dir", zap.Error(err))
 				return []model.Path{}, err
 			}
-			temp := model.Path{Name: l.Name(), Path: filePath, IsDir: l.IsDir(), Date: tempFile.ModTime(), Size: tempFile.Size()}
-			if filePath != link {
-				file, _ := os.Stat(link)
-				temp.IsDir = file.IsDir()
+			// os.Lstat never follows symlinks, so ModeSymlink is set iff the entry itself is a link.
+			linfo, lerr := os.Lstat(filePath)
+			isSymlink := lerr == nil && linfo.Mode()&os.ModeSymlink != 0
+			// For the IsDir flag, follow the symlink so callers get the real type.
+			isDir := l.IsDir()
+			if isSymlink {
+				if file, serr := os.Stat(filePath); serr == nil {
+					isDir = file.IsDir()
+				} else {
+					isDir = false
+				}
 			}
+			temp := model.Path{Name: l.Name(), Path: filePath, IsDir: isDir, IsSymlink: isSymlink, Date: tempFile.ModTime(), Size: tempFile.Size()}
 			dirs = append(dirs, temp)
 		}
 	} else {
@@ -765,7 +769,7 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 			"size": appDataSize,
 		},
 		"images": map[string]interface{}{
-			"path": realImages + " & containerd",
+			"path": realImages + " & .containerd",
 			"size": imagesSize,
 		},
 		"database": map[string]interface{}{

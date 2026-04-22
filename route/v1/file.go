@@ -46,6 +46,7 @@ type ObjResp struct {
 	Name       string                 `json:"name"`
 	Size       int64                  `json:"size"`
 	IsDir      bool                   `json:"is_dir"`
+	IsSymlink  bool                   `json:"is_symlink"`
 	Modified   time.Time              `json:"modified"`
 	Sign       string                 `json:"sign"`
 	Thumb      string                 `json:"thumb"`
@@ -413,6 +414,7 @@ func DirPath(ctx echo.Context) error {
 		if _, ok := fileQueue[info[i].Path]; !ok {
 			t := ObjResp{}
 			t.IsDir = info[i].IsDir
+			t.IsSymlink = info[i].IsSymlink
 			t.Name = info[i].Name
 			t.Modified = info[i].Date
 			t.Date = info[i].Date

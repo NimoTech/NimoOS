@@ -23,7 +23,7 @@ const (
 	MigrateTypeUserData = "database"
 
 	DefaultAppDataPath  = "/DATA/AppData"
-	DefaultImagesPath   = "/DATA/docker"
+	DefaultImagesPath   = "/DATA/.docker"
 	DefaultUserDataPath = "/DATA"
 )
 
@@ -49,18 +49,32 @@ type MigrateStatus struct {
 // MigrateJobs holds all active/completed migration jobs.
 var MigrateJobs sync.Map // map[string]MigrateStatus
 
-var activeMigrationDst string
+// migrationCleanup describes one destination that must be removed when SIGTERM fires.
+// For system-restore units that have already been promoted from staging to anchor,
+// restoreAnchor/restoreSrc are set so that CleanupActiveMigration can re-create the
+// original anchor symlink after removing the partially-restored data.
+type migrationCleanup struct {
+	path          string // path passed to os.RemoveAll
+	restoreAnchor string // if non-empty: re-create symlink restoreAnchor → restoreSrc after removal
+	restoreSrc    string
+}
+
+var activeMigrationCleanups []migrationCleanup
 var activeMigrationMu sync.Mutex
 
 func CleanupActiveMigration() {
 	activeMigrationMu.Lock()
-	dst := activeMigrationDst
+	cleanups := append([]migrationCleanup(nil), activeMigrationCleanups...)
 	activeMigrationMu.Unlock()
-	if dst == "" {
-		return
+	for _, c := range cleanups {
+		logger.Info("removing partial migration destination on shutdown", zap.String("path", c.path))
+		_ = os.RemoveAll(c.path)
+		if c.restoreAnchor != "" {
+			logger.Info("restoring anchor symlink on shutdown",
+				zap.String("anchor", c.restoreAnchor), zap.String("src", c.restoreSrc))
+			_ = os.Symlink(c.restoreSrc, c.restoreAnchor)
+		}
 	}
-	logger.Info("removing partial migration destination on shutdown", zap.String("path", dst))
-	_ = os.RemoveAll(dst)
 }
 
 // ResolveActivePaths detects where the data is actually living by checking config and standard symlinks.
@@ -88,7 +102,7 @@ func ResolveActivePaths() PathConfig {
 
 	cfg.AppData = resolveReal(cfg.AppData, DefaultAppDataPath)
 	
-	// Fast track for Images: anchor is /DATA/docker; follow it to find the real location
+	// Fast track for Images: anchor is /DATA/.docker; follow it to find the real location
 	if resolvedDocker, err := filepath.EvalSymlinks(DefaultImagesPath); err == nil {
 		if cfg.Images != resolvedDocker {
 			cfg.Images = resolvedDocker
@@ -197,7 +211,8 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	var units []migrateUnit
 	var newPath string
 
-	isSystemRestore := (targetMountPoint == "/")
+	// "/DATA" is the user-facing root of the system disk (folder browser never exposes "/").
+	isSystemRestore := targetMountPoint == "/" || targetMountPoint == "/DATA"
 
 	switch migrationType {
 	case MigrateTypeAppData:
@@ -216,7 +231,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		units = append(units, migrateUnit{anchor, src, dst})
 
 	case MigrateTypeImages:
-		for _, name := range []string{"docker", "containerd"} {
+		for _, name := range []string{".docker", ".containerd"} {
 			anchor := "/DATA/" + name
 			src, _ := filepath.EvalSymlinks(anchor)
 			if src == "" {
@@ -228,9 +243,9 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 			units = append(units, migrateUnit{anchor, src, dst})
 		}
-		newPath = filepath.Join(targetMountPoint, "docker")
+		newPath = filepath.Join(targetMountPoint, ".docker")
 		if isSystemRestore {
-			newPath = "/DATA/docker"
+			newPath = "/DATA/.docker"
 		}
 
 	case MigrateTypeUserData:
@@ -255,12 +270,26 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		return "", fmt.Errorf("unknown migration type: %s", migrationType)
 	}
 
+	// Register all destination directories for SIGTERM cleanup.
+	// All units (both isSystemRestore and non-isSystemRestore) rsync into a staging path
+	// (dst + ".migrating") before the data is promoted to its final location.  Tracking
+	// the staging path means a SIGTERM during rsync only removes the partial staging
+	// directory and never touches a pre-existing u.dst that may contain user data.
+	// After staging is promoted the entry is updated in-place (under the lock) to track
+	// the promoted path instead, so a late signal still cleans up correctly.
+	var sigCleanups []migrationCleanup
+	for _, u := range units {
+		if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
+			continue
+		}
+		sigCleanups = append(sigCleanups, migrationCleanup{path: u.dst + ".migrating"})
+	}
 	activeMigrationMu.Lock()
-	activeMigrationDst = newPath
+	activeMigrationCleanups = sigCleanups
 	activeMigrationMu.Unlock()
 	defer func() {
 		activeMigrationMu.Lock()
-		activeMigrationDst = ""
+		activeMigrationCleanups = nil
 		activeMigrationMu.Unlock()
 	}()
 
@@ -276,7 +305,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	// 2. Size tracking — done after service stop so overlay mounts are gone and size is accurate
 	var totalSize int64
 	for _, u := range units {
-		if u.src == u.dst || strings.HasPrefix(u.dst, u.src) {
+		if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
 			continue
 		}
 		sz, _ := localfile.GetFileOrDirSize(u.src)
@@ -288,8 +317,59 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	go trackProgress(jobID, units, totalSize, done)
 
 	// 3. Perform Copies & Cleanup Anchor
+	// processedUnits records every unit for which data has been fully written to dst,
+	// so that all of them can be cleaned up if a later unit fails.
+	var processedUnits []migrateUnit
+
+	// rollbackCopies removes all successfully written destinations in reverse order.
+	// For non-isSystemRestore units it also restores any pre-existing directory that was
+	// moved aside to u.dst+".old" during promotion. For isSystemRestore units it restores
+	// the anchor symlink to its original source.
+	rollbackCopies := func() {
+		for i := len(processedUnits) - 1; i >= 0; i-- {
+			ru := processedUnits[i]
+			if rerr := os.RemoveAll(ru.dst); rerr != nil {
+				logger.Error("rollback cleanup failed", zap.String("dst", ru.dst), zap.Error(rerr))
+				// RemoveAll failed: anchor still contains data. Skip symlink restore — attempting
+				// Symlink on an existing path would fail with EEXIST and leave a confusing second
+				// error. The operator must manually remove the anchor and recreate the symlink.
+				continue
+			}
+			logger.Info("rollback: removed destination", zap.String("dst", ru.dst))
+			if !isSystemRestore {
+				dstOld := ru.dst + ".old"
+				if _, serr := os.Stat(dstOld); serr == nil {
+					if rerr := os.Rename(dstOld, ru.dst); rerr != nil {
+						logger.Error("rollback: failed to restore pre-existing destination",
+							zap.String("path", ru.dst), zap.Error(rerr))
+					} else {
+						logger.Info("rollback: restored pre-existing destination", zap.String("dst", ru.dst))
+					}
+				}
+			}
+			if isSystemRestore && ru.dst == ru.anchor {
+				if serr := os.Symlink(ru.src, ru.anchor); serr != nil {
+					logger.Error("rollback: failed to restore anchor symlink",
+						zap.String("anchor", ru.anchor), zap.String("src", ru.src), zap.Error(serr))
+				} else {
+					logger.Info("rollback: restored anchor symlink",
+						zap.String("anchor", ru.anchor), zap.String("src", ru.src))
+				}
+			}
+		}
+	}
+
+	failCopy := func(err error) (string, error) {
+		close(done)
+		rollbackCopies()
+		if migrationType == MigrateTypeImages {
+			_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+		}
+		return "", err
+	}
+
 	for _, u := range units {
-		if u.src == u.dst || strings.HasPrefix(u.dst, u.src) {
+		if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
 			continue
 		}
 
@@ -303,29 +383,100 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			continue
 		}
 
-		// If we are restoring to system, the destination IS the anchor.
-		// We must sever the symlink connecting them BEFORE we copy, or rsync goes into a black hole.
-		if isSystemRestore && u.dst == u.anchor {
-			_ = os.Remove(u.anchor)
-		}
-
-		_ = os.MkdirAll(u.dst, 0755)
-
 		srcWithSlash := strings.TrimRight(u.src, "/") + "/"
-		dstWithSlash := strings.TrimRight(u.dst, "/") + "/"
 
 		rsyncArgs := []string{"-a", "--one-file-system"}
 		if migrationType == MigrateTypeImages {
 			// Exclude runtime state directories that docker recreates on start
 			rsyncArgs = append(rsyncArgs, "--exclude=rootfs/overlayfs", "--exclude=rootfs/mounts")
 		}
-		rsyncArgs = append(rsyncArgs, srcWithSlash, dstWithSlash)
-		if err := exec.Command("rsync", rsyncArgs...).Run(); err != nil {
-			close(done)
-			if migrationType == MigrateTypeImages {
-				_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+
+		if isSystemRestore && u.dst == u.anchor {
+			// Rsync into a staging directory first so the anchor symlink stays valid until
+			// the copy is confirmed complete. Only then do we atomically swap staging → anchor.
+			// This prevents a broken-anchor state when rsync fails partway through.
+			staging := u.dst + ".migrating"
+			_ = os.RemoveAll(staging) // clean up any leftover from a previous failed attempt
+			if err := os.MkdirAll(staging, 0755); err != nil {
+				return failCopy(fmt.Errorf("failed to create staging dir %s: %w", staging, err))
 			}
-			return "", fmt.Errorf("copy failed during rsync of %s: %w", u.anchor, err)
+
+			if err := exec.Command("rsync", append(rsyncArgs, srcWithSlash, staging+"/")...).Run(); err != nil {
+				_ = os.RemoveAll(staging)
+				return failCopy(fmt.Errorf("copy failed during rsync of %s: %w", u.anchor, err))
+			}
+
+			// Rsync complete: atomically promote staging to the anchor location.
+			if err := os.Remove(u.anchor); err != nil {
+				_ = os.RemoveAll(staging)
+				return failCopy(fmt.Errorf("failed to sever anchor symlink %s: %w", u.anchor, err))
+			}
+			if err := os.Rename(staging, u.anchor); err != nil {
+				// Rename failed after the symlink was already removed — restore the symlink
+				// so the system can still reach the data on the external disk.
+				if serr := os.Symlink(u.src, u.anchor); serr != nil {
+					logger.Error("critical: failed to restore anchor after rename failure",
+						zap.String("anchor", u.anchor), zap.String("src", u.src), zap.Error(serr))
+				}
+				_ = os.RemoveAll(staging)
+				return failCopy(fmt.Errorf("failed to promote staging to anchor %s: %w", u.anchor, err))
+			}
+			// Staging promoted: update SIGTERM cleanup entry from the (now-gone) staging path
+			// to the anchor so that a late signal removes the restored data and re-creates the
+			// original symlink, leaving the system consistent.
+			activeMigrationMu.Lock()
+			for i, c := range activeMigrationCleanups {
+				if c.path == staging {
+					activeMigrationCleanups[i] = migrationCleanup{
+						path:          u.anchor,
+						restoreAnchor: u.anchor,
+						restoreSrc:    u.src,
+					}
+					break
+				}
+			}
+			activeMigrationMu.Unlock()
+			processedUnits = append(processedUnits, u)
+		} else {
+			// Like isSystemRestore, rsync into a staging directory first so that u.dst is
+			// never touched on failure — it may contain pre-existing user data.
+			staging := u.dst + ".migrating"
+			_ = os.RemoveAll(staging) // clean up any leftover from a previous failed attempt
+			if err := os.MkdirAll(staging, 0755); err != nil {
+				return failCopy(fmt.Errorf("failed to create staging dir %s: %w", staging, err))
+			}
+			if err := exec.Command("rsync", append(rsyncArgs, srcWithSlash, staging+"/")...).Run(); err != nil {
+				_ = os.RemoveAll(staging) // clean up partial staging; u.dst is untouched
+				return failCopy(fmt.Errorf("copy failed during rsync of %s: %w", u.anchor, err))
+			}
+			// Rsync complete: promote staging → u.dst.
+			// If u.dst already exists (e.g. from a previous partial migration), move it aside
+			// so os.Rename can place staging atomically into the slot.
+			dstOld := u.dst + ".old"
+			_ = os.RemoveAll(dstOld)
+			if _, err := os.Stat(u.dst); err == nil {
+				if rerr := os.Rename(u.dst, dstOld); rerr != nil {
+					_ = os.RemoveAll(staging)
+					return failCopy(fmt.Errorf("failed to move aside existing destination %s: %w", u.dst, rerr))
+				}
+			}
+			if err := os.Rename(staging, u.dst); err != nil {
+				_ = os.Rename(dstOld, u.dst) // best-effort restore of pre-existing directory
+				_ = os.RemoveAll(staging)
+				return failCopy(fmt.Errorf("failed to promote staging to %s: %w", u.dst, err))
+			}
+			// dstOld is kept alive until migration fully succeeds so that rollbackCopies can
+			// restore it if a later unit fails. It is cleaned up in Phase 4 after all swaps succeed.
+			// Update SIGTERM cleanup entry from staging to the promoted destination.
+			activeMigrationMu.Lock()
+			for i, c := range activeMigrationCleanups {
+				if c.path == staging {
+					activeMigrationCleanups[i] = migrationCleanup{path: u.dst}
+					break
+				}
+			}
+			activeMigrationMu.Unlock()
+			processedUnits = append(processedUnits, u)
 		}
 	}
 	close(done)
@@ -335,27 +486,123 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	//   External → System : remove old external data, no symlink (data lives at anchor)
 	//   System → External : remove physical data at anchor, create symlink anchor → dst
 	//   External → External: remove old external data, update symlink anchor → new dst
-	for _, u := range units {
-		if u.src == u.dst {
-			continue
+	//
+	// failAnchor is a local helper for step-4 failures: for images migrations docker was
+	// stopped at the start of executeMigration and must be restarted even on partial failure.
+	failAnchor := func(err error) (string, error) {
+		if migrationType == MigrateTypeImages {
+			_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 		}
-		// Skip: anchor already correctly points to dst
-		if resolved, err := filepath.EvalSymlinks(u.anchor); err == nil && resolved == u.dst {
-			continue
+		return newPath, err
+	}
+
+	// needsAnchorWork reports whether unit u requires symlink management in step 4.
+	needsAnchorWork := func(u migrateUnit) bool {
+		if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
+			return false
+		}
+		resolved, err := filepath.EvalSymlinks(u.anchor)
+		return !(err == nil && resolved == u.dst)
+	}
+
+	if isSystemRestore {
+		// External → System: data is now physically at anchor. Remove old external sources.
+		// Clear SIGTERM cleanups before touching u.src: from this point a late signal must
+		// not remove the restored anchor or attempt to recreate the external symlink, since
+		// u.src is about to be deleted and restoring a symlink to a deleted path would leave
+		// the system with a broken anchor.
+		activeMigrationMu.Lock()
+		activeMigrationCleanups = nil
+		activeMigrationMu.Unlock()
+
+		for _, u := range units {
+			if u.src != u.anchor {
+				if err := os.RemoveAll(u.src); err != nil {
+					logger.Error("failed to remove old external source after system-restore; stale data remains",
+						zap.String("src", u.src), zap.Error(err))
+				}
+			}
+		}
+	} else {
+		// System → External OR External → External: two-phase symlink swap.
+		//
+		// Phase 1 — atomically swap every anchor to point at its new destination.
+		//   For each unit: rename anchor → anchor.bak (frees the slot), then create symlink.
+		//   If any step fails, roll back ALL symlinks already created (remove symlink,
+		//   rename .bak back) so the system is left fully intact with all anchors pointing
+		//   at the original locations. No old data is deleted until every swap succeeds.
+		//
+		// Phase 2 — only after all swaps succeed, delete the now-superseded old data.
+		//   This prevents the "brain-split" state where some units are migrated and others
+		//   are not, which would leave old data from completed units permanently deleted
+		//   while the partially-migrated system is in an inconsistent state.
+		type anchorSwap struct {
+			u            migrateUnit
+			backupAnchor string
+		}
+		var swapped []anchorSwap
+
+		// Clear SIGTERM cleanups before entering the symlink swap loop. From this point
+		// rollbackSwaps + rollbackCopies own failure recovery; CleanupActiveMigration must
+		// not race with the loop and delete a u.dst that may already be the live anchor target.
+		activeMigrationMu.Lock()
+		activeMigrationCleanups = nil
+		activeMigrationMu.Unlock()
+
+		rollbackSwaps := func() {
+			for i := len(swapped) - 1; i >= 0; i-- {
+				sw := swapped[i]
+				if rerr := os.Remove(sw.u.anchor); rerr != nil {
+					logger.Error("rollback: failed to remove symlink",
+						zap.String("anchor", sw.u.anchor), zap.Error(rerr))
+				}
+				if rerr := os.Rename(sw.backupAnchor, sw.u.anchor); rerr != nil {
+					logger.Error("CRITICAL: rollback rename failed — manual intervention required",
+						zap.String("backup", sw.backupAnchor), zap.String("anchor", sw.u.anchor), zap.Error(rerr))
+				}
+			}
 		}
 
-		if isSystemRestore {
-			// External → System: data is now physically at anchor. Remove old external, no symlink.
-			if u.src != u.anchor {
-				_ = os.RemoveAll(u.src)
+		for _, u := range units {
+			if !needsAnchorWork(u) {
+				continue
 			}
-		} else {
-			// System → External OR External → External: update symlink at anchor → dst
-			if u.src != u.anchor {
-				_ = os.RemoveAll(u.src) // remove old external location
+			backupAnchor := u.anchor + ".bak"
+			_ = os.RemoveAll(backupAnchor) // clean up any leftover from a previous failed attempt
+			if err := os.Rename(u.anchor, backupAnchor); err != nil {
+				logger.Error("failed to backup anchor; rolling back all swaps and copies",
+					zap.String("anchor", u.anchor), zap.Error(err))
+				rollbackSwaps()  // restore anchor symlinks first so no anchor is left dangling
+				rollbackCopies() // then safely remove destination data that is no longer referenced
+				return failAnchor(fmt.Errorf("anchor backup failed for %s: %w", u.anchor, err))
 			}
-			_ = os.RemoveAll(u.anchor)       // remove anchor (symlink or physical data)
-			_ = os.Symlink(u.dst, u.anchor)  // create / update: anchor → dst
+			if err := os.Symlink(u.dst, u.anchor); err != nil {
+				logger.Error("failed to create symlink; rolling back all swaps and copies",
+					zap.String("anchor", u.anchor), zap.String("dst", u.dst), zap.Error(err))
+				_ = os.Rename(backupAnchor, u.anchor) // restore this unit before rolling back others
+				rollbackSwaps()                        // restore anchor symlinks first so no anchor is left dangling
+				rollbackCopies()                       // then safely remove destination data that is no longer referenced
+				return failAnchor(fmt.Errorf("symlink %s → %s creation failed: %w", u.anchor, u.dst, err))
+			}
+			swapped = append(swapped, anchorSwap{u, backupAnchor})
+		}
+
+		// Phase 2: all symlinks live — safe to delete old data.
+		for _, sw := range swapped {
+			if sw.u.src != sw.u.anchor {
+				// External → External: remove old external source.
+				if err := os.RemoveAll(sw.u.src); err != nil {
+					logger.Error("failed to remove old external source; stale data remains",
+						zap.String("src", sw.u.src), zap.Error(err))
+				}
+			}
+			// Remove backup (old system-disk dir for System→External, old symlink for Ext→Ext).
+			if err := os.RemoveAll(sw.backupAnchor); err != nil {
+				logger.Error("failed to remove anchor backup; stale data remains",
+					zap.String("backup", sw.backupAnchor), zap.Error(err))
+			}
+			// Remove pre-existing destination backup preserved for rollback safety in Phase 3.
+			_ = os.RemoveAll(sw.u.dst + ".old")
 		}
 	}
 
@@ -368,7 +615,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		// Ensure /var/lib/docker and /var/lib/containerd always point to /DATA anchors
 		for _, name := range []string{"docker", "containerd"} {
 			varLibPath := "/var/lib/" + name
-			dataAnchor := "/DATA/" + name
+			dataAnchor := "/DATA/." + name
 			if target, err := filepath.EvalSymlinks(varLibPath); err != nil || target != dataAnchor {
 				_ = os.Remove(varLibPath)
 				_ = os.Symlink(dataAnchor, varLibPath)
@@ -398,10 +645,17 @@ func trackProgress(jobID string, units []migrateUnit, totalSize int64, done <-ch
 		case <-ticker.C:
 			var processed int64
 			for _, u := range units {
-				if u.src == u.dst || strings.HasPrefix(u.dst, u.src) {
+				if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
 					continue
 				}
-				p, _ := localfile.GetFileOrDirSize(u.dst)
+				// For isSystemRestore units, rsync writes to a staging path (u.dst + ".migrating")
+				// while u.dst is still a symlink pointing at the old source. Measure the staging
+				// path when it exists so the progress bar reflects actual bytes written.
+				measurePath := u.dst
+				if _, err := os.Stat(u.dst + ".migrating"); err == nil {
+					measurePath = u.dst + ".migrating"
+				}
+				p, _ := localfile.GetFileOrDirSize(measurePath)
 				processed += p
 			}
 			
