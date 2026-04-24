@@ -511,6 +511,9 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 	}
 	close(done)
+	// Rsync complete: jump to 95% so the UI shows "waiting for services" rather than
+	// freezing at a sub-95% value caused by excluded directories (e.g. rootfs/overlayfs).
+	updateProgress(jobID, 95, totalSize, totalSize)
 
 	// 4. Anchor cleanup and symlink management
 	// Three cases for all migration types:
@@ -694,6 +697,13 @@ func trackProgress(jobID string, units []migrateUnit, totalSize int64, done <-ch
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
+	// unitStarted tracks whether a unit's staging directory has been observed at least once.
+	// We only count u.dst (post-promotion) for units that have already had a staging dir —
+	// measuring u.dst for a not-yet-started unit would count stale data from a previous
+	// failed migration attempt and cause a visible progress regression when the unit finally
+	// starts and the stale directory is moved aside.
+	unitStarted := make(map[string]bool, len(units))
+
 	for {
 		select {
 		case <-done:
@@ -704,17 +714,20 @@ func trackProgress(jobID string, units []migrateUnit, totalSize int64, done <-ch
 				if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
 					continue
 				}
-				// For isSystemRestore units, rsync writes to a staging path (u.dst + ".migrating")
-				// while u.dst is still a symlink pointing at the old source. Measure the staging
-				// path when it exists so the progress bar reflects actual bytes written.
-				measurePath := u.dst
-				if _, err := os.Stat(u.dst + ".migrating"); err == nil {
-					measurePath = u.dst + ".migrating"
+				staging := u.dst + ".migrating"
+				if _, err := os.Stat(staging); err == nil {
+					// Staging exists: unit is actively being rsynced.
+					unitStarted[u.dst] = true
+					p, _ := localfile.GetFileOrDirSize(staging)
+					processed += p
+				} else if unitStarted[u.dst] {
+					// Staging was promoted to u.dst; measure the final destination.
+					p, _ := localfile.GetFileOrDirSize(u.dst)
+					processed += p
 				}
-				p, _ := localfile.GetFileOrDirSize(measurePath)
-				processed += p
+				// Unit not yet started: skip entirely so stale data in u.dst is not counted.
 			}
-			
+
 			pct := 0
 			if totalSize > 0 {
 				pct = int(processed * 95 / totalSize)
