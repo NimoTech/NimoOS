@@ -411,6 +411,7 @@ func DirPath(ctx echo.Context) error {
 		if info[i].Name == ".temp" && info[i].IsDir {
 			continue
 		}
+
 		if _, ok := fileQueue[info[i].Path]; !ok {
 			t := ObjResp{}
 			t.IsDir = info[i].IsDir
@@ -454,6 +455,9 @@ func RenamePath(ctx echo.Context) error {
 	if len(op) == 0 || len(np) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if isProtectedName(filepath.Base(np)) {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(np))})
+	}
 	if err := checkPathAccess(ctx, op); err != nil {
 		return err
 	}
@@ -485,6 +489,9 @@ func MkdirAll(ctx echo.Context) error {
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if isProtectedName(filepath.Base(path)) {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(path))})
+	}
 	if err := checkPathAccess(ctx, path); err != nil {
 		return err
 	}
@@ -513,6 +520,9 @@ func PostCreateFile(ctx echo.Context) error {
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if isProtectedName(filepath.Base(path)) {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(path))})
+	}
 	if err := checkPathAccess(ctx, path); err != nil {
 		return err
 	}
@@ -540,6 +550,9 @@ func GetFileUpload(ctx echo.Context) error {
 	chunkNumber := ctx.QueryParam("chunkNumber")
 	totalChunks, _ := strconv.Atoi(utils.DefaultQuery(ctx, "totalChunks", "0"))
 	path := ctx.QueryParam("path")
+	if protected, name := containsProtectedName(relative); protected {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' in path '%s' is protected", name, relative)})
+	}
 	dirPath := ""
 	hash := file.GetHashByContent([]byte(fileName))
 	if err := checkPathAccess(ctx, path); err != nil {
@@ -581,6 +594,9 @@ func PostFileUpload(ctx echo.Context) error {
 	fileName := ctx.FormValue("filename")
 	totalChunks, _ := strconv.Atoi(utils.DefaultPostForm(ctx, "totalChunks", "0"))
 	chunkNumber := ctx.FormValue("chunkNumber")
+	if protected, name := containsProtectedName(relative); protected {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' in path '%s' is protected", name, relative)})
+	}
 	dirPath := ""
 	path := ctx.FormValue("path")
 
@@ -1224,4 +1240,24 @@ func GetPeers(ctx echo.Context) error {
 		}
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: peers})
+}
+
+func isProtectedName(name string) bool {
+	protected := []string{"AppData", "Documents", "Downloads", "Gallery", "Media"}
+	for _, p := range protected {
+		if name == p {
+			return true
+		}
+	}
+	return false
+}
+
+func containsProtectedName(path string) (bool, string) {
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if isProtectedName(part) {
+			return true, part
+		}
+	}
+	return false, ""
 }

@@ -748,6 +748,10 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 
 	if realImages != "/" && realImages != "" {
 		imagesSize, _ = file.GetFileOrDirSize(realImages)
+		containerdPath := filepath.Join(filepath.Dir(realImages), ".containerd")
+		if containerdSize, err := file.GetFileOrDirSize(containerdPath); err == nil {
+			imagesSize += containerdSize
+		}
 	}
 
 	if realUserData != "/" && realUserData != "" {

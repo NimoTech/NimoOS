@@ -1,8 +1,10 @@
 package v2
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/codegen"
@@ -22,6 +24,12 @@ func (s *NimoOS) GetFileTest(ctx echo.Context) error {
 
 func (c *NimoOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadChunkParams) error {
 	identifier := ctx.QueryParam("identifier")
+	relativePath := ctx.QueryParam("relativePath")
+	if protected, name := containsProtectedName(relativePath); protected {
+		return ctx.JSON(http.StatusBadRequest, echo.Map{
+			"message": fmt.Sprintf("System default folder name '%s' in path '%s' is protected", name, relativePath),
+		})
+	}
 	chunkNumber, err := strconv.ParseInt(ctx.QueryParam("chunkNumber"), 10, 64)
 	if err != nil {
 		return ctx.NoContent(http.StatusBadRequest)
@@ -66,6 +74,11 @@ func (c *NimoOS) PostUploadFile(ctx echo.Context) error {
 	identifier := ctx.FormValue("identifier")
 	fileName := ctx.FormValue("filename")
 	relativePath := ctx.FormValue("relativePath")
+	if protected, name := containsProtectedName(relativePath); protected {
+		return ctx.JSON(http.StatusBadRequest, echo.Map{
+			"message": fmt.Sprintf("System default folder name '%s' in path '%s' is protected", name, relativePath),
+		})
+	}
 
 	logger.Info("Upload Request Received", 
 		zap.String("path", path), 
@@ -99,4 +112,24 @@ func (c *NimoOS) PostUploadFile(ctx echo.Context) error {
 		})
 	}
 	return ctx.NoContent(http.StatusOK)
+}
+
+func isProtectedName(name string) bool {
+	protected := []string{"AppData", "Documents", "Downloads", "Gallery", "Media"}
+	for _, p := range protected {
+		if name == p {
+			return true
+		}
+	}
+	return false
+}
+
+func containsProtectedName(path string) (bool, string) {
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if isProtectedName(part) {
+			return true, part
+		}
+	}
+	return false, ""
 }

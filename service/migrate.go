@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -224,10 +225,8 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		dst := filepath.Join(targetMountPoint, "AppData")
 		if isSystemRestore {
 			dst = anchor
-			newPath = anchor
-		} else {
-			newPath = dst
 		}
+		newPath = anchor
 		units = append(units, migrateUnit{anchor, src, dst})
 
 	case MigrateTypeImages:
@@ -243,10 +242,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 			units = append(units, migrateUnit{anchor, src, dst})
 		}
-		newPath = filepath.Join(targetMountPoint, ".docker")
-		if isSystemRestore {
-			newPath = "/DATA/.docker"
-		}
+		newPath = "/DATA/.docker"
 
 	case MigrateTypeUserData:
 		newPath = targetMountPoint
@@ -268,6 +264,31 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 	default:
 		return "", fmt.Errorf("unknown migration type: %s", migrationType)
+	}
+
+	// For system-restore: verify every unit that needs to move data can actually reach its
+	// source. When EvalSymlinks fails (broken symlink), src falls back to the anchor path
+	// itself, making u.src == u.dst — the copy loop treats this as "already done" and skips
+	// it, but the data is still on the inaccessible external disk.  Catch this here so we
+	// never reach Phase 5 and update the path config with a stale value.
+	if isSystemRestore {
+		for _, u := range units {
+			if u.src != u.anchor {
+				// src resolved to a different path via EvalSymlinks — the external disk is
+				// accessible, or will be checked by os.Stat in the copy loop.
+				continue
+			}
+			// src == anchor: either the anchor is already a real directory on the system
+			// disk (fine — nothing to move), or EvalSymlinks failed because the anchor is a
+			// broken symlink (external disk not mounted — must abort).
+			linfo, lerr := os.Lstat(u.anchor)
+			if lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf(
+					"cannot restore %s to system disk: symlink target is not accessible (external disk may not be mounted)",
+					u.anchor,
+				)
+			}
+		}
 	}
 
 	// Register all destination directories for SIGTERM cleanup.
@@ -380,6 +401,16 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 
 		if _, err := os.Stat(u.src); os.IsNotExist(err) {
+			// Source not accessible (external disk not mounted or data missing).
+			// For a system-restore this means we cannot move the data back — treat it as
+			// an error so Phase 5 never updates the path config with a stale value.
+			if isSystemRestore {
+				close(done)
+				if migrationType == MigrateTypeImages {
+					_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+				}
+				return "", fmt.Errorf("source data at %s is not accessible; external disk may not be mounted", u.src)
+			}
 			continue
 		}
 
@@ -589,8 +620,11 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 		// Phase 2: all symlinks live — safe to delete old data.
 		for _, sw := range swapped {
-			if sw.u.src != sw.u.anchor {
-				// External → External: remove old external source.
+			linfo, lerr := os.Lstat(sw.backupAnchor)
+			wasSymlink := lerr == nil && linfo.Mode()&os.ModeSymlink != 0
+
+			if wasSymlink {
+				// External → External (or symlink to elsewhere): remove old source.
 				if err := os.RemoveAll(sw.u.src); err != nil {
 					logger.Error("failed to remove old external source; stale data remains",
 						zap.String("src", sw.u.src), zap.Error(err))
@@ -612,14 +646,36 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		cfg.AppData = newPath
 	case MigrateTypeImages:
 		cfg.Images = newPath
-		// Ensure /var/lib/docker and /var/lib/containerd always point to /DATA anchors
+		// Update config files so Docker and Containerd natively know the data path.
+		// This avoids the fragility of /var/lib/* symlinks.
+		dockerDataRoot := "/DATA/.docker"
+		containerdRoot := "/DATA/.containerd"
+		if !isSystemRestore {
+			// Migrating to external: update configs to the new target paths
+			for _, u := range units {
+				if strings.HasSuffix(u.anchor, "/.docker") {
+					dockerDataRoot = u.dst
+				}
+				if strings.HasSuffix(u.anchor, "/.containerd") {
+					containerdRoot = u.dst
+				}
+			}
+		}
+		// Always clean up any legacy /var/lib symlinks that may exist from old migrations.
 		for _, name := range []string{"docker", "containerd"} {
 			varLibPath := "/var/lib/" + name
-			dataAnchor := "/DATA/." + name
-			if target, err := filepath.EvalSymlinks(varLibPath); err != nil || target != dataAnchor {
+			if linfo, lerr := os.Lstat(varLibPath); lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+				logger.Info("removing legacy /var/lib symlink", zap.String("path", varLibPath))
 				_ = os.Remove(varLibPath)
-				_ = os.Symlink(dataAnchor, varLibPath)
+				// Re-create as a real directory so the daemons can start even without config
+				_ = os.MkdirAll(varLibPath, 0711)
 			}
+		}
+		if err := updateDockerConfig(dockerDataRoot); err != nil {
+			logger.Error("failed to update docker daemon.json", zap.Error(err))
+		}
+		if err := updateContainerdConfig(containerdRoot); err != nil {
+			logger.Error("failed to update containerd config.toml", zap.Error(err))
 		}
 		logger.Info("starting docker and containerd after migration")
 		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
@@ -678,4 +734,52 @@ func updateProgress(jobID string, pct int, processed, total int64) {
 	}
 }
 
+// updateDockerConfig writes or updates /etc/docker/daemon.json with the given data-root.
+func updateDockerConfig(dataRoot string) error {
+	const configPath = "/etc/docker/daemon.json"
+	var cfg map[string]interface{}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		cfg = make(map[string]interface{})
+	} else {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			cfg = make(map[string]interface{})
+		}
+	}
+
+	cfg["data-root"] = dataRoot
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal docker daemon.json: %w", err)
+	}
+	if err := os.MkdirAll("/etc/docker", 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, out, 0644)
+}
+
+// updateContainerdConfig writes or updates /etc/containerd/config.toml with the given root path.
+func updateContainerdConfig(rootPath string) error {
+	const configPath = "/etc/containerd/config.toml"
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		content := fmt.Sprintf("root = %q\nstate = \"/run/containerd\"\n", rootPath)
+		return os.WriteFile(configPath, []byte(content), 0644)
+	}
+
+	content := string(data)
+	rootRegex := regexp.MustCompile(`(?m)^#?\s*root\s*=\s*"[^"]*"`)
+	newRootLine := fmt.Sprintf(`root = %q`, rootPath)
+
+	if rootRegex.MatchString(content) {
+		content = rootRegex.ReplaceAllString(content, newRootLine)
+	} else {
+		content = newRootLine + "\n" + content
+	}
+
+	return os.WriteFile(configPath, []byte(content), 0644)
+}
 
