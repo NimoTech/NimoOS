@@ -7,7 +7,6 @@ import (
 	"io"
 	net2 "net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -680,36 +679,8 @@ func (c *systemService) GetNetSpeed(name string) int {
 }
 
 func (c *systemService) GetNetMaxSpeed(name string) int {
-	ethtoolPath, err := exec.LookPath("ethtool")
-	if err != nil {
-		return 0
-	}
-	data, err := exec.Command(ethtoolPath, name).Output()
-	if err != nil {
-		return 0
-	}
-	maxSpeed := 0
-	inSupported := false
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Supported link modes:") {
-			inSupported = true
-			trimmed = strings.TrimPrefix(trimmed, "Supported link modes:")
-		} else if inSupported && strings.Contains(trimmed, ":") {
-			break
-		}
-		if !inSupported {
-			continue
-		}
-		for _, part := range strings.Fields(trimmed) {
-			if idx := strings.Index(part, "base"); idx > 0 {
-				if speed, err := strconv.Atoi(part[:idx]); err == nil && speed > maxSpeed {
-					maxSpeed = speed
-				}
-			}
-		}
-	}
-	return maxSpeed
+	speed, _ := getNetMaxSpeedViaIoctl(name)
+	return speed
 }
 
 func (c *systemService) GetSystemPaths() map[string]interface{} {
@@ -760,10 +731,6 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 		for _, f := range subFolders {
 			s, _ := file.GetFileOrDirSize(filepath.Join(realUserData, f))
 			userDataSize += s
-		}
-		// If subfolders are empty, but the root userdata directory has content, show the root size
-		if userDataSize == 0 {
-			userDataSize, _ = file.GetFileOrDirSize(realUserData)
 		}
 	}
 

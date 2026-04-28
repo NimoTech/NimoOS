@@ -24,7 +24,7 @@ const (
 	MigrateTypeUserData = "database"
 
 	DefaultAppDataPath  = "/DATA/AppData"
-	DefaultImagesPath   = "/DATA/.docker"
+	DefaultImagesPath   = "/DATA/.system_data/.docker"
 	DefaultUserDataPath = "/DATA"
 )
 
@@ -40,6 +40,7 @@ type MigrateStatus struct {
 	ID            string `json:"id"`
 	Type          string `json:"type"`
 	Status        string `json:"status"` // "running" | "done" | "error"
+	Phase         string `json:"phase"`  // "stopping_services" | "copying" | "starting_services"
 	Progress      int    `json:"progress"`
 	ProcessedSize int64  `json:"processed_size"`
 	TotalSize     int64  `json:"total_size"`
@@ -103,7 +104,7 @@ func ResolveActivePaths() PathConfig {
 
 	cfg.AppData = resolveReal(cfg.AppData, DefaultAppDataPath)
 	
-	// Fast track for Images: anchor is /DATA/.docker; follow it to find the real location
+	// Fast track for Images: anchor is /DATA/.system_data/.docker; follow it to find the real location
 	if resolvedDocker, err := filepath.EvalSymlinks(DefaultImagesPath); err == nil {
 		if cfg.Images != resolvedDocker {
 			cfg.Images = resolvedDocker
@@ -231,7 +232,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 	case MigrateTypeImages:
 		for _, name := range []string{".docker", ".containerd"} {
-			anchor := "/DATA/" + name
+			anchor := "/DATA/.system_data/" + name
 			src, _ := filepath.EvalSymlinks(anchor)
 			if src == "" {
 				src = anchor
@@ -242,7 +243,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 			units = append(units, migrateUnit{anchor, src, dst})
 		}
-		newPath = "/DATA/.docker"
+		newPath = "/DATA/.system_data/.docker"
 
 	case MigrateTypeUserData:
 		newPath = targetMountPoint
@@ -314,8 +315,11 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		activeMigrationMu.Unlock()
 	}()
 
-	// 1. Stop services first for images migration (overlay mounts must be gone before measuring size)
-	if migrationType == MigrateTypeImages {
+	// 1. Stop services before migrating images, app data, or user data.
+	// Images: overlay mounts must be gone before measuring size.
+	// AppData/UserData: containers may write to these dirs during rsync, causing "vanished source files" (exit 24).
+	if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData {
+		setPhase(jobID, "stopping_services")
 		logger.Info("stopping docker and containerd for migration")
 		_ = exec.Command("systemctl", "stop", "docker.socket", "docker", "containerd").Run()
 		// Kill any lingering shim processes that hold overlay mounts after service stop
@@ -332,6 +336,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		sz, _ := localfile.GetFileOrDirSize(u.src)
 		totalSize += sz
 	}
+	setPhase(jobID, "copying")
 	updateProgress(jobID, 1, 0, totalSize)
 
 	done := make(chan struct{})
@@ -383,7 +388,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	failCopy := func(err error) (string, error) {
 		close(done)
 		rollbackCopies()
-		if migrationType == MigrateTypeImages {
+		if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData {
 			_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 		}
 		return "", err
@@ -511,8 +516,8 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 	}
 	close(done)
-	// Rsync complete: jump to 95% so the UI shows "waiting for services" rather than
-	// freezing at a sub-95% value caused by excluded directories (e.g. rootfs/overlayfs).
+	// Rsync complete: jump to 95% and signal that we're restarting services.
+	setPhase(jobID, "starting_services")
 	updateProgress(jobID, 95, totalSize, totalSize)
 
 	// 4. Anchor cleanup and symlink management
@@ -521,10 +526,10 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	//   System → External : remove physical data at anchor, create symlink anchor → dst
 	//   External → External: remove old external data, update symlink anchor → new dst
 	//
-	// failAnchor is a local helper for step-4 failures: for images migrations docker was
-	// stopped at the start of executeMigration and must be restarted even on partial failure.
+	// failAnchor is a local helper for step-4 failures: docker was stopped for images/app_data/user_data
+	// migrations and must be restarted even on partial failure.
 	failAnchor := func(err error) (string, error) {
-		if migrationType == MigrateTypeImages {
+		if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData {
 			_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 		}
 		return newPath, err
@@ -647,12 +652,14 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	switch migrationType {
 	case MigrateTypeAppData:
 		cfg.AppData = newPath
+		logger.Info("starting docker and containerd after app data migration")
+		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 	case MigrateTypeImages:
 		cfg.Images = newPath
 		// Update config files so Docker and Containerd natively know the data path.
 		// This avoids the fragility of /var/lib/* symlinks.
-		dockerDataRoot := "/DATA/.docker"
-		containerdRoot := "/DATA/.containerd"
+		dockerDataRoot := "/DATA/.system_data/.docker"
+		containerdRoot := "/DATA/.system_data/.containerd"
 		if !isSystemRestore {
 			// Migrating to external: update configs to the new target paths
 			for _, u := range units {
@@ -684,6 +691,8 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 	case MigrateTypeUserData:
 		cfg.UserData = newPath
+		logger.Info("starting docker and containerd after user data migration")
+		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 	}
 
 	if err := SavePathConfig(cfg); err != nil {
@@ -743,6 +752,14 @@ func updateProgress(jobID string, pct int, processed, total int64) {
 		s.Progress = pct
 		s.ProcessedSize = processed
 		s.TotalSize = total
+		MigrateJobs.Store(jobID, s)
+	}
+}
+
+func setPhase(jobID, phase string) {
+	if v, ok := MigrateJobs.Load(jobID); ok {
+		s := v.(MigrateStatus)
+		s.Phase = phase
 		MigrateJobs.Store(jobID, s)
 	}
 }

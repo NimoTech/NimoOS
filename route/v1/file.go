@@ -455,6 +455,9 @@ func RenamePath(ctx echo.Context) error {
 	if len(op) == 0 || len(np) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if isProtectedName(filepath.Base(op)) {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(op))})
+	}
 	if isProtectedName(filepath.Base(np)) {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(np))})
 	}
@@ -763,6 +766,12 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 		if err := checkPathAccess(ctx, item.From); err != nil {
 			return err
 		}
+		if isProtectedName(filepath.Base(item.From)) {
+			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(item.From))})
+		}
+		if isAncestorOfSystemPath(item.From) {
+			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("Folder '%s' contains a system-critical directory and cannot be moved", filepath.Base(item.From))})
+		}
 	}
 	if list.To == list.Item[0].From[:strings.LastIndex(list.Item[0].From, "/")] {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SOURCE_DES_SAME, Message: common_err.GetMsg(common_err.SOURCE_DES_SAME)})
@@ -820,10 +829,14 @@ func DeleteFile(ctx echo.Context) error {
 		if err := checkPathAccess(ctx, p); err != nil {
 			return err
 		}
+		if isProtectedName(filepath.Base(p)) {
+			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(p))})
+		}
+		if isAncestorOfSystemPath(p) {
+			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("Folder '%s' contains a system-critical directory and cannot be deleted", filepath.Base(p))})
+		}
 	}
-	//	path := ctx.QueryParam("path")
 
-	//	paths := strings.Split(path, ",")
 	for _, v := range paths {
 		mounted := service.IsMounted(v)
 		if mounted {
@@ -1260,4 +1273,31 @@ func containsProtectedName(path string) (bool, string) {
 		}
 	}
 	return false, ""
+}
+
+// isAncestorOfSystemPath returns true when path is a parent directory of any
+// active system-critical path (AppData, Docker images, user data folders).
+// This prevents deletion or movement of a folder that contains a migrated
+// system directory as a child, which would break the anchor symlinks.
+func isAncestorOfSystemPath(targetPath string) bool {
+	cfg := service.ResolveActivePaths()
+	systemPaths := []string{
+		cfg.AppData,
+		cfg.Images,
+		filepath.Join(cfg.UserData, "Documents"),
+		filepath.Join(cfg.UserData, "Downloads"),
+		filepath.Join(cfg.UserData, "Gallery"),
+		filepath.Join(cfg.UserData, "Media"),
+	}
+	clean := filepath.Clean(targetPath)
+	for _, sp := range systemPaths {
+		if sp == "" || sp == "/" {
+			continue
+		}
+		// sp starts with clean+"/" means clean is a strict ancestor of sp
+		if strings.HasPrefix(filepath.Clean(sp)+"/", clean+"/") && clean != filepath.Clean(sp) {
+			return true
+		}
+	}
+	return false
 }
