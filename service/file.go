@@ -22,13 +22,58 @@ import (
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service/pathlock"
 	"github.com/moby/sys/mountinfo"
 	"go.uber.org/zap"
 )
 
 var FileQueue sync.Map
 
-var OpStrArr []string
+// opQueue replaces the former bare []string OpStrArr.
+// All access goes through EnqueueOp / DequeueOp / PeekOps / ClearOps so
+// concurrent handler goroutines can never race on the slice.
+var opQueue struct {
+	sync.Mutex
+	ids []string
+}
+
+// EnqueueOp adds id to the queue and reports whether this is the first entry
+// (i.e. the caller should kick off ExecOpFile + CheckFileStatus).
+func EnqueueOp(id string) (isFirst bool) {
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	opQueue.ids = append(opQueue.ids, id)
+	return len(opQueue.ids) == 1
+}
+
+// DequeueOp removes id from the queue.
+func DequeueOp(id string) {
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	out := opQueue.ids[:0]
+	for _, v := range opQueue.ids {
+		if v != id {
+			out = append(out, v)
+		}
+	}
+	opQueue.ids = out
+}
+
+// PeekOps returns a snapshot copy of the current queue.
+func PeekOps() []string {
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	cp := make([]string, len(opQueue.ids))
+	copy(cp, opQueue.ids)
+	return cp
+}
+
+// ClearOps empties the queue.
+func ClearOps() {
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	opQueue.ids = nil
+}
 
 type reader struct {
 	ctx context.Context
@@ -90,30 +135,54 @@ func FileOperate(k string) {
 	if temp.ProcessedSize > 0 {
 		return
 	}
+
+	// Hold write locks on every source path and the destination for the
+	// duration of this operation batch.
+	var unlocks []func()
+	for _, item := range temp.Item {
+		unlocks = append(unlocks, pathlock.LockWrite(item.From))
+	}
+	if temp.To != "" {
+		unlocks = append(unlocks, pathlock.LockWrite(temp.To))
+	}
+	defer func() {
+		for _, u := range unlocks {
+			u()
+		}
+	}()
+
 	for i := 0; i < len(temp.Item); i++ {
 		v := temp.Item[i]
 		if temp.Type == "move" {
 			lastPath := v.From[strings.LastIndex(v.From, "/")+1:]
-			if !file.CheckNotExist(temp.To + "/" + lastPath) {
+			dst := temp.To + "/" + lastPath
+			if !file.CheckNotExist(dst) {
 				if temp.Style == "skip" {
 					temp.Item[i].Finished = true
 					continue
-				} else {
-					os.RemoveAll(temp.To + "/" + lastPath)
 				}
+				os.RemoveAll(dst)
 			}
-			err := file.CopyDir(v.From, temp.To, temp.Style)
-			if err == nil {
-				err = os.RemoveAll(v.From)
-				if err != nil {
-					logger.Error("file move error", zap.Any("err", err))
-					err = file.MoveFile(v.From, temp.To+"/"+lastPath)
-					if err != nil {
-						logger.Error("MoveFile error", zap.Any("err", err))
-						continue
-					}
-
-				}
+			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
+				logger.Error("move: copy phase failed", zap.String("from", v.From), zap.Error(err))
+				continue
+			}
+			// Verify destination size matches source before removing source.
+			srcSize, err := file.GetFileOrDirSize(v.From)
+			if err != nil {
+				logger.Error("move: stat source failed", zap.String("from", v.From), zap.Error(err))
+				os.RemoveAll(dst)
+				continue
+			}
+			dstSize, err := file.GetFileOrDirSize(dst)
+			if err != nil || dstSize != srcSize {
+				logger.Error("move: destination size mismatch, aborting remove", zap.String("dst", dst))
+				os.RemoveAll(dst)
+				continue
+			}
+			if err := os.RemoveAll(v.From); err != nil {
+				logger.Error("move: remove source failed", zap.String("from", v.From), zap.Error(err))
+				// Source still intact; dst is a valid copy — leave both, log only.
 			}
 
 		} else if temp.Type == "copy" {
@@ -131,25 +200,21 @@ func FileOperate(k string) {
 }
 
 func ExecOpFile() {
-	len := len(OpStrArr)
-	if len == 0 {
+	ids := PeekOps()
+	if len(ids) == 0 {
 		return
 	}
-	if len > 1 {
-		len = 1
-	}
-	for i := 0; i < len; i++ {
-		go FileOperate(OpStrArr[i])
-	}
+	go FileOperate(ids[0])
 }
 
 // file move or copy and send notify
 func CheckFileStatus() {
 	for {
-		if len(OpStrArr) == 0 {
+		ids := PeekOps()
+		if len(ids) == 0 {
 			return
 		}
-		for _, v := range OpStrArr {
+		for _, v := range ids {
 			var total int64 = 0
 			item, ok := FileQueue.Load(v)
 			if !ok {

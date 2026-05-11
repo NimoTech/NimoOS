@@ -100,7 +100,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 
 		model.State = "NORMAL"
 		list := []notify.File{}
-		OpStrArrbak := OpStrArr
+		OpStrArrbak := PeekOps()
 
 		for _, v := range OpStrArrbak {
 			tempItem, ok := FileQueue.Load(v)
@@ -125,7 +125,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 				task.Finished = true
 				task.Status = "FINISHED"
 				FileQueue.Delete(v)
-				OpStrArr = OpStrArr[1:]
+				DequeueOp(v)
 				go ExecOpFile()
 				list = append(list, task)
 				continue
@@ -170,7 +170,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 			model := notify.NotifyModel{}
 			model.State = "NORMAL"
 			list := []notify.File{}
-			OpStrArrbak := OpStrArr
+			OpStrArrbak := PeekOps()
 
 			for _, v := range OpStrArrbak {
 				tempItem, ok := FileQueue.Load(v)
@@ -194,7 +194,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 					task.Finished = true
 					task.Status = "FINISHED"
 					FileQueue.Delete(v)
-					OpStrArr = OpStrArr[1:]
+					DequeueOp(v)
 					go ExecOpFile()
 					list = append(list, task)
 					continue

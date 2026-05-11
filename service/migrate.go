@@ -13,11 +13,13 @@ import (
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	localfile "github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service/pathlock"
 	"go.uber.org/zap"
 )
 
 const (
-	PathConfigFile = "/var/lib/nimoos/path_config.json"
+	PathConfigFile   = "/var/lib/nimoos/path_config.json"
+	MigrationLockFile = "/var/run/nimoos/migration.lock"
 
 	MigrateTypeAppData  = "app_data"
 	MigrateTypeImages   = "images"
@@ -39,8 +41,9 @@ type PathConfig struct {
 type MigrateStatus struct {
 	ID            string `json:"id"`
 	Type          string `json:"type"`
-	Status        string `json:"status"` // "running" | "done" | "error"
-	Phase         string `json:"phase"`  // "stopping_services" | "copying" | "starting_services"
+	Status        string `json:"status"`       // "running" | "done" | "error"
+	Phase         string `json:"phase"`        // "stopping_services" | "copying" | "starting_services"
+	StoppingApps  int    `json:"stopping_apps"` // number of containers being gracefully stopped
 	Progress      int    `json:"progress"`
 	ProcessedSize int64  `json:"processed_size"`
 	TotalSize     int64  `json:"total_size"`
@@ -212,6 +215,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 	var units []migrateUnit
 	var newPath string
+	var runningContainerIDs []string
 
 	// "/DATA" is the user-facing root of the system disk (folder browser never exposes "/").
 	isSystemRestore := targetMountPoint == "/" || targetMountPoint == "/DATA"
@@ -292,6 +296,24 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 	}
 
+	// Hold write locks on every source path for the entire migration so that
+	// concurrent file deletions or writes from the Files UI cannot modify data
+	// that rsync is in the process of reading.
+	for _, u := range units {
+		if u.src != u.dst {
+			unlock := pathlock.LockWrite(u.src)
+			defer unlock()
+		}
+	}
+
+	// Create a lock file so other services (e.g. AppManagement) can detect
+	// that a migration is in progress and reject mutating requests with a
+	// clear error instead of silently failing.
+	if f, err := os.Create(MigrationLockFile); err == nil {
+		f.Close()
+	}
+	defer os.Remove(MigrationLockFile)
+
 	// Register all destination directories for SIGTERM cleanup.
 	// All units (both isSystemRestore and non-isSystemRestore) rsync into a staging path
 	// (dst + ".migrating") before the data is promoted to its final location.  Tracking
@@ -320,9 +342,25 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	// AppData/UserData: containers may write to these dirs during rsync, causing "vanished source files" (exit 24).
 	if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData {
 		setPhase(jobID, "stopping_services")
-		logger.Info("stopping docker and containerd for migration")
+		logger.Info("stopping containers and docker for migration")
+
+		// Publish the number of running containers so the frontend can show
+		// "Stopping N apps..." instead of a silent spinner. No extra wait is
+		// added here — systemctl stop docker handles graceful shutdown itself.
+		// Save IDs so we can explicitly restart them after migration, rather than
+		// relying solely on Docker's restart-policy mechanism (which can be disrupted
+		// by the pkill -9 containerd-shim below).
+		if out, err := exec.Command("docker", "ps", "-q").Output(); err == nil {
+			runningContainerIDs = strings.Fields(string(out))
+			if len(runningContainerIDs) > 0 {
+				setStoppingApps(jobID, len(runningContainerIDs))
+				logger.Info("stopping docker with running containers", zap.Int("count", len(runningContainerIDs)))
+			}
+		}
+
 		_ = exec.Command("systemctl", "stop", "docker.socket", "docker", "containerd").Run()
-		// Kill any lingering shim processes that hold overlay mounts after service stop
+		setStoppingApps(jobID, 0)
+		// Kill any lingering shim processes that hold overlay mounts after service stop.
 		_ = exec.Command("pkill", "-9", "-f", "containerd-shim").Run()
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -654,6 +692,8 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		cfg.AppData = newPath
 		logger.Info("starting docker and containerd after app data migration")
 		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+		waitForDockerReady(90 * time.Second)
+		startContainersAfterMigration(runningContainerIDs)
 	case MigrateTypeImages:
 		cfg.Images = newPath
 		// Update config files so Docker and Containerd natively know the data path.
@@ -689,10 +729,14 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 		logger.Info("starting docker and containerd after migration")
 		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+		waitForDockerReady(90 * time.Second)
+		startContainersAfterMigration(runningContainerIDs)
 	case MigrateTypeUserData:
 		cfg.UserData = newPath
 		logger.Info("starting docker and containerd after user data migration")
 		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+		waitForDockerReady(90 * time.Second)
+		startContainersAfterMigration(runningContainerIDs)
 	}
 
 	if err := SavePathConfig(cfg); err != nil {
@@ -764,6 +808,14 @@ func setPhase(jobID, phase string) {
 	}
 }
 
+func setStoppingApps(jobID string, count int) {
+	if v, ok := MigrateJobs.Load(jobID); ok {
+		s := v.(MigrateStatus)
+		s.StoppingApps = count
+		MigrateJobs.Store(jobID, s)
+	}
+}
+
 // updateDockerConfig writes or updates /etc/docker/daemon.json with the given data-root.
 func updateDockerConfig(dataRoot string) error {
 	const configPath = "/etc/docker/daemon.json"
@@ -788,6 +840,35 @@ func updateDockerConfig(dataRoot string) error {
 		return err
 	}
 	return os.WriteFile(configPath, out, 0644)
+}
+
+// waitForDockerReady polls until the Docker daemon accepts connections or timeout elapses.
+// It is called after systemctl start so that startContainersAfterMigration does not race
+// against Docker's own initialization.
+func waitForDockerReady(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if exec.Command("docker", "info").Run() == nil {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	logger.Error("docker did not become ready within timeout", zap.Duration("timeout", timeout))
+}
+
+// startContainersAfterMigration explicitly starts the containers that were running before
+// migration began. This is a safety net: Docker's restart-policy mechanism may not fire
+// reliably after the data-root changes or after containerd-shim processes are force-killed.
+func startContainersAfterMigration(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	args := append([]string{"start"}, ids...)
+	if err := exec.Command("docker", args...).Run(); err != nil {
+		logger.Error("failed to restart containers after migration", zap.Strings("ids", ids), zap.Error(err))
+		return
+	}
+	logger.Info("restarted containers after migration", zap.Int("count", len(ids)))
 }
 
 // updateContainerdConfig writes or updates /etc/containerd/config.toml with the given root path.

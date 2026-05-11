@@ -28,6 +28,7 @@ import (
 	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/NimoTech/NimoOS/service"
+	"github.com/NimoTech/NimoOS/service/pathlock"
 	model2 "github.com/NimoTech/NimoOS/service/model"
 
 	"github.com/google/uuid"
@@ -216,6 +217,18 @@ func GetDownloadFile(ctx echo.Context) error {
 			return err
 		}
 	}
+	// Acquire read locks on all requested paths before existence checks so a
+	// concurrent delete cannot race between the Exists() call and ctx.File().
+	var dlUnlocks []func()
+	for _, v := range list {
+		dlUnlocks = append(dlUnlocks, pathlock.LockRead(v))
+	}
+	defer func() {
+		for _, u := range dlUnlocks {
+			u()
+		}
+	}()
+
 	for _, v := range list {
 		if !file.Exists(v) {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
@@ -392,17 +405,15 @@ func DirPath(ctx echo.Context) error {
 	}
 	// Hide the files or folders in operation
 	fileQueue := make(map[string]string)
-	if len(service.OpStrArr) > 0 {
-		for _, v := range service.OpStrArr {
-			v, ok := service.FileQueue.Load(v)
-			if !ok {
-				continue
-			}
-			vt := v.(model.FileOperate)
-			for _, i := range vt.Item {
-				lastPath := i.From[strings.LastIndex(i.From, "/")+1:]
-				fileQueue[vt.To+"/"+lastPath] = i.From
-			}
+	for _, v := range service.PeekOps() {
+		item, ok := service.FileQueue.Load(v)
+		if !ok {
+			continue
+		}
+		vt := item.(model.FileOperate)
+		for _, i := range vt.Item {
+			lastPath := i.From[strings.LastIndex(i.From, "/")+1:]
+			fileQueue[vt.To+"/"+lastPath] = i.From
 		}
 	}
 
@@ -638,18 +649,25 @@ func PostFileUpload(ctx echo.Context) error {
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
 
-		out, err := os.OpenFile(tempDir+chunkNumber, os.O_WRONLY|os.O_CREATE, 0o644)
+		// O_EXCL: if this chunk was already written by a duplicate request, treat
+		// it as success (idempotent) rather than overwriting in-flight data.
+		out, err := os.OpenFile(tempDir+chunkNumber, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
+			if os.IsExist(err) {
+				// Chunk already present — idempotent success.
+				return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
+			}
 			logger.Error("error when trying to open `"+tempDir+chunkNumber+"` for creation", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
 
-		defer out.Close()
-
-		if _, err := io.Copy(out, f); err != nil { // recommend to use https://github.com/iceber/iouring-go for faster copy
+		if _, err := io.Copy(out, f); err != nil {
+			out.Close()
+			os.Remove(tempDir + chunkNumber) // clean up partial chunk
 			logger.Error("error when trying to write to `"+tempDir+chunkNumber+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
+		out.Close()
 
 		fileNum, err := ioutil.ReadDir(tempDir)
 		if err != nil {
@@ -658,19 +676,21 @@ func PostFileUpload(ctx echo.Context) error {
 		}
 
 		if totalChunks == len(fileNum) {
-			// Splice chunks asynchronously so the last chunk response returns immediately.
-			go func() {
-				if err := file.SpliceFiles(tempDir, path, totalChunks, 1); err != nil {
-					logger.Error("error when trying to splice files under `"+tempDir+"`", zap.Error(err))
-					return
-				}
-				// Clean up temp dir after splice completes
-				if err := file.RMDir(tempDir); err != nil {
-					logger.Error("error when trying to remove `"+tempDir+"`", zap.Error(err))
-				}
-			}()
+			// All chunks present — merge synchronously so any failure is returned
+			// to the client instead of being silently lost in a goroutine.
+			unlock := pathlock.LockWrite(path)
+			defer unlock()
+			if err := file.SpliceFiles(tempDir, path, totalChunks, 1); err != nil {
+				logger.Error("error when trying to splice files under `"+tempDir+"`", zap.Error(err))
+				return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			}
+			if err := file.RMDir(tempDir); err != nil {
+				logger.Error("error when trying to remove `"+tempDir+"`", zap.Error(err))
+			}
 		}
 	} else {
+		unlock := pathlock.LockWrite(path)
+		defer unlock()
 		out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
 		if err != nil {
 			logger.Error("error when trying to open `"+path+"` for creation", zap.Error(err))
@@ -799,13 +819,10 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 
 	uid := uuid.NewString()
 	service.FileQueue.Store(uid, list)
-	service.OpStrArr = append(service.OpStrArr, uid)
-	if len(service.OpStrArr) == 1 {
+	if isFirst := service.EnqueueOp(uid); isFirst {
 		go service.ExecOpFile()
 		go service.CheckFileStatus()
-
 		go service.MyService.Notify().SendFileOperateNotify(false)
-
 	}
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
@@ -845,7 +862,9 @@ func DeleteFile(ctx echo.Context) error {
 	}
 
 	for _, v := range paths {
+		unlock := pathlock.LockWrite(v)
 		err := os.RemoveAll(v)
+		unlock()
 		if err != nil {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
 		}
@@ -934,18 +953,10 @@ func DeleteOperateFileOrDir(ctx echo.Context) error {
 	id := ctx.Param("id")
 	if id == "0" {
 		service.FileQueue = sync.Map{}
-		service.OpStrArr = []string{}
+		service.ClearOps()
 	} else {
-
 		service.FileQueue.Delete(id)
-		tempList := []string{}
-		for _, v := range service.OpStrArr {
-			if v != id {
-				tempList = append(tempList, v)
-			}
-		}
-		service.OpStrArr = tempList
-
+		service.DequeueOp(id)
 	}
 
 	go service.MyService.Notify().SendFileOperateNotify(true)
