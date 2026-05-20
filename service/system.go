@@ -67,6 +67,7 @@ type SystemService interface {
 	GetSystemEntry() string
 	GenreateSystemEntry()
 	GetGpuInfo() []string
+	GetGpuStatus() []GpuStatus
 	GetRamDetail() map[string]string
 	SetDiskStandby(minutes int) error
 	GetNetAddr(name string) string
@@ -602,6 +603,66 @@ func (c *systemService) GetGpuInfo() []string {
 		}
 	}
 	return gpuList
+}
+
+// GpuStatus is one GPU's runtime metrics.
+type GpuStatus struct {
+	Index             int     `json:"index"`
+	Name              string  `json:"name"`
+	Vendor            string  `json:"vendor"`
+	UtilizationGpu    float64 `json:"utilization_gpu"`
+	UtilizationMemory float64 `json:"utilization_memory"`
+	MemoryTotal       uint64  `json:"memory_total"`
+	MemoryUsed        uint64  `json:"memory_used"`
+	Temperature       float64 `json:"temperature"`
+}
+
+func (c *systemService) GetGpuStatus() []GpuStatus {
+	gpus := []GpuStatus{}
+	gpus = append(gpus, queryNvidiaGpuStatus()...)
+	return gpus
+}
+
+func queryNvidiaGpuStatus() []GpuStatus {
+	out, err := command.ExecResultStr("nvidia-smi --query-gpu=index,name,utilization.gpu,memory.total,memory.used,temperature.gpu --format=csv,noheader,nounits")
+	if err != nil {
+		return nil
+	}
+	gpus := []GpuStatus{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) < 6 {
+			continue
+		}
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		g := GpuStatus{Vendor: "nvidia", Name: parts[1]}
+		if v, err := strconv.Atoi(parts[0]); err == nil {
+			g.Index = v
+		}
+		if v, err := strconv.ParseFloat(parts[2], 64); err == nil {
+			g.UtilizationGpu = v
+		}
+		if v, err := strconv.ParseUint(parts[3], 10, 64); err == nil {
+			g.MemoryTotal = v * 1024 * 1024
+		}
+		if v, err := strconv.ParseUint(parts[4], 10, 64); err == nil {
+			g.MemoryUsed = v * 1024 * 1024
+		}
+		if g.MemoryTotal > 0 {
+			g.UtilizationMemory = float64(g.MemoryUsed) / float64(g.MemoryTotal) * 100
+		}
+		if v, err := strconv.ParseFloat(parts[5], 64); err == nil {
+			g.Temperature = v
+		}
+		gpus = append(gpus, g)
+	}
+	return gpus
 }
 
 func (c *systemService) GetRamDetail() map[string]string {

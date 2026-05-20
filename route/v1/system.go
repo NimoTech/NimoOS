@@ -290,6 +290,7 @@ func GetSystemUtilization(ctx echo.Context) error {
 		}
 	}
 	data["net"] = newNet
+	data["gpu"] = service.MyService.System().GetGpuStatus()
 	systemMap := service.MyService.Notify().GetSystemTempMap()
 	systemMap.Range(func(key, value interface{}) bool {
 		data[key.(string)] = value
