@@ -41,6 +41,22 @@ func InitFunction() {
 	//go InitZerotier()
 }
 
+func readLocalVersionInfo() string {
+	version := common.VERSION
+	versionFile := "/etc/nimoos/version.json"
+	if file.Exists(versionFile) {
+		type localVersionJSON struct {
+			Version string `json:"version"`
+		}
+		var local localVersionJSON
+		data := file.ReadFullFile(versionFile)
+		if json.Unmarshal(data, &local) == nil && local.Version != "" {
+			version = local.Version
+		}
+	}
+	return version
+}
+
 func InitInfo() {
 	mb := model.BaseInfo{}
 	if file.Exists(config.AppInfo.DBPath + "/baseinfo.conf") {
@@ -58,7 +74,7 @@ func InitInfo() {
 		logger.Error("GetMacAddress", zap.String("error", err.Error()))
 	}
 	mb.Hash = encryption.GetMD5ByStr(mac)
-	mb.Version = common.VERSION
+	mb.Version = readLocalVersionInfo()
 	osRelease, _ := file1.ReadOSRelease()
 
 	mb.DriveModel = osRelease["MODEL"]

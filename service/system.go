@@ -85,12 +85,22 @@ type SystemService interface {
 	GetSystemPaths() map[string]interface{}
 	StartMigrateAppPath(jobID, migrationType, targetMountPoint string)
 	GetMigrateStatus(jobID string) (MigrateStatus, bool)
+	GetVersion() string
 }
 type systemService struct{}
 
+func (s *systemService) GetVersion() string {
+	version := common.VERSION
+	local, err := readLocalVersionInfo()
+	if err == nil && local.Version != "" {
+		version = local.Version
+	}
+	return version
+}
+
 func (c *systemService) GetDeviceInfo() model.DeviceInfo {
 	m := model.DeviceInfo{}
-	m.OS_Version = common.VERSION
+	m.OS_Version = c.GetVersion()
 	err, portStr := MyService.Gateway().GetPort()
 	if err != nil {
 		m.Port = 80
@@ -624,15 +634,12 @@ type UpgradeCheckResult struct {
 
 func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 	result := &UpgradeCheckResult{
-		CurrentVersion: common.VERSION,
+		CurrentVersion: s.GetVersion(),
 	}
 
 	local, err := readLocalVersionInfo()
 	if err != nil {
 		return result
-	}
-	if local.Version != "" {
-		result.CurrentVersion = local.Version
 	}
 
 	remote, err := fetchRemoteVersionJSON(local.UpdateServer)

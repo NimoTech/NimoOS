@@ -16,7 +16,6 @@ import (
 	http2 "github.com/NimoTech/NimoOS-Common/utils/http"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS-Common/utils/port"
-	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/NimoTech/NimoOS/pkg/config"
 	"github.com/NimoTech/NimoOS/pkg/utils"
@@ -127,7 +126,7 @@ func GetSystemConfigDebug(ctx echo.Context) error {
 	 - Remote Version: %s
 	 - Browser: $Browser$ 
 	 - Version: $Version$
-`, sys.OS, common.VERSION, disk.Total>>20, disk.Used>>20, array, version.Version)
+`, sys.OS, service.MyService.System().GetVersion(), disk.Total>>20, disk.Used>>20, array, version.Version)
 
 	//	array = append(array, fmt.Sprintf("disk,total:%v,used:%v,UsedPercent:%v", disk.Total>>20, disk.Used>>20, disk.UsedPercent))
 
@@ -213,7 +212,7 @@ func GetSystemBaseInfo(ctx echo.Context) error {
 	}
 	data := map[string]string{
 		"device_id": encryption.GetMD5ByStr(mac),
-		"version":   common.VERSION,
+		"version":   service.MyService.System().GetVersion(),
 		"model":     service.MyService.System().GetDeviceTree(),
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{
