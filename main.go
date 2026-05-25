@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/NimoTech/NimoOS-Common/external"
 	"github.com/NimoTech/NimoOS-Common/model"
 	"github.com/NimoTech/NimoOS-Common/utils/command"
 	"github.com/NimoTech/NimoOS-Common/utils/constants"
@@ -128,6 +129,9 @@ func main() {
 			"doc": v2DocRouter,
 		},
 	}
+
+	// Start the Intel GPU monitor (no-op if intel_gpu_top is missing).
+	external.StartIntelGpuMonitor()
 
 	crontab := cron.New(cron.WithSeconds())
 	if _, err := crontab.AddFunc("@every 5s", route.SendAllHardwareStatusBySocket); err != nil {

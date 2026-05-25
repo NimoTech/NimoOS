@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NimoTech/NimoOS-Common/external"
 	"github.com/NimoTech/NimoOS-Common/utils/command"
 	exec2 "github.com/NimoTech/NimoOS-Common/utils/exec"
 
@@ -67,6 +68,7 @@ type SystemService interface {
 	GetSystemEntry() string
 	GenreateSystemEntry()
 	GetGpuInfo() []string
+	GetGpuUtilization() []GpuUtilization
 	GetRamDetail() map[string]string
 	SetDiskStandby(minutes int) error
 	GetNetAddr(name string) string
@@ -602,6 +604,36 @@ func (c *systemService) GetGpuInfo() []string {
 		}
 	}
 	return gpuList
+}
+
+// GpuUtilization is the per-device live snapshot consumed by the frontend
+// widget (see NimoOS-UI/src/widgets/Gpu.vue). Field names match the keys the
+// widget expects on `hardwareInfo.gpu[*]` / `sys_gpu[*]`.
+type GpuUtilization struct {
+	Name              string  `json:"name"`
+	UtilizationGpu    float64 `json:"utilization_gpu"`
+	UtilizationMemory float64 `json:"utilization_memory"`
+	MemoryTotal       int64   `json:"memory_total"`
+	Temperature       float64 `json:"temperature"`
+	PowerW            float64 `json:"power_w,omitempty"`
+	FreqMHz           float64 `json:"freq_mhz,omitempty"`
+}
+
+func (c *systemService) GetGpuUtilization() []GpuUtilization {
+	stats := []GpuUtilization{}
+	if s, ok := external.GetIntelGpuStat(); ok {
+		name := "GPU"
+		if names := c.GetGpuInfo(); len(names) > 0 {
+			name = names[0]
+		}
+		stats = append(stats, GpuUtilization{
+			Name:           name,
+			UtilizationGpu: s.UtilizationGpu,
+			PowerW:         s.PowerW,
+			FreqMHz:        s.FreqMHz,
+		})
+	}
+	return stats
 }
 
 func (c *systemService) GetRamDetail() map[string]string {
