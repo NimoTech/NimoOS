@@ -948,23 +948,67 @@ func GetCPUThermalZone() string {
 	return path
 }
 
-func (s *systemService) GetCPUTemperature() int {
-	outPut := ""
-	path := GetCPUThermalZone()
-	if len(path) > 0 {
-		outPut = string(file.ReadFullFile(path + "/temp"))
-	} else {
-		outPut = string(file.ReadFullFile("/sys/class/hwmon/hwmon0/temp1_input"))
-		if len(outPut) == 0 {
-			outPut = "0"
+// GetCPUHwmonPath finds the hwmon device that reports CPU temperature, by
+// matching the driver name. Covers AMD (k10temp/zenpower), Intel (coretemp),
+// and ARM SoCs (cpu_thermal). ACPI thermal zones often report 0 on AMD, so
+// hwmon is the reliable source.
+func GetCPUHwmonPath() string {
+	keyName := "cpu_hwmon_path"
+	if result, ok := Cache.Get(keyName); ok {
+		if path, ok := result.(string); ok {
+			return path
 		}
 	}
 
-	celsius, _ := strconv.Atoi(strings.TrimSpace(outPut))
-
-	if celsius > 1000 {
-		celsius = celsius / 1000
+	cpuDrivers := []string{"k10temp", "zenpower", "coretemp", "cpu_thermal"}
+	entries, err := os.ReadDir("/sys/class/hwmon")
+	if err != nil {
+		Cache.SetDefault(keyName, "")
+		return ""
 	}
+	for _, e := range entries {
+		hwPath := "/sys/class/hwmon/" + e.Name()
+		name := strings.TrimSpace(string(file.ReadFullFile(hwPath + "/name")))
+		for _, d := range cpuDrivers {
+			if name == d {
+				Cache.SetDefault(keyName, hwPath)
+				return hwPath
+			}
+		}
+	}
+	Cache.SetDefault(keyName, "")
+	return ""
+}
+
+func (s *systemService) GetCPUTemperature() int {
+	celsius := 0
+
+	// Prefer hwmon — ACPI thermal_zone reports 0 on many AMD systems.
+	if hwPath := GetCPUHwmonPath(); hwPath != "" {
+		raw := strings.TrimSpace(string(file.ReadFullFile(hwPath + "/temp1_input")))
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			if v > 1000 {
+				v = v / 1000
+			}
+			celsius = v
+		}
+	}
+
+	if celsius == 0 {
+		outPut := ""
+		path := GetCPUThermalZone()
+		if len(path) > 0 {
+			outPut = string(file.ReadFullFile(path + "/temp"))
+		} else {
+			outPut = string(file.ReadFullFile("/sys/class/hwmon/hwmon0/temp1_input"))
+		}
+		v, _ := strconv.Atoi(strings.TrimSpace(outPut))
+		if v > 1000 {
+			v = v / 1000
+		}
+		celsius = v
+	}
+
 	return celsius
 }
 

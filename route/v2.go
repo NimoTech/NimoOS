@@ -194,9 +194,14 @@ func InitFile() http.Handler {
 		}
 		filePath := r.URL.Query().Get("path")
 		fileName := path.Base(filePath)
-		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
+		// Default to attachment (download). inline=1 lets the browser render the
+		// file in-tab (PDF/image preview, + #page=N navigation via Range support).
+		disposition := "attachment"
+		if r.URL.Query().Get("inline") == "1" {
+			disposition = "inline"
+		}
+		w.Header().Add("Content-Disposition", disposition+"; filename*=utf-8''"+url.PathEscape(fileName))
 		http.ServeFile(w, r, filePath)
-		// http.ServeFile(w, r, filePath)
 	})
 }
 
