@@ -14,20 +14,20 @@ import (
 	"time"
 
 	http2 "github.com/NimoTech/NimoOS-Common/utils/http"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS-Common/utils/port"
-	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/NimoTech/NimoOS/pkg/config"
 	"github.com/NimoTech/NimoOS/pkg/utils"
 	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
 	"github.com/NimoTech/NimoOS/pkg/utils/encryption"
-	"github.com/NimoTech/NimoOS/pkg/utils/version"
 	"github.com/NimoTech/NimoOS/service"
 	model2 "github.com/NimoTech/NimoOS/service/model"
 	"github.com/NimoTech/NimoOS/types"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // @Summary check version
@@ -38,21 +38,46 @@ import (
 // @Success 200 {string} string "ok"
 // @Router /sys/version/check [get]
 func GetSystemCheckVersion(ctx echo.Context) error {
-	need, version := version.IsNeedUpdate(service.MyService.Casa().GetNimoosVersion())
-	if need {
+	checkResult := service.MyService.System().CheckUpdate()
+
+	if checkResult.HasUpdate {
 		installLog := model2.AppNotify{}
 		installLog.State = 0
-		installLog.Message = "New version " + version.Version + " is ready, ready to upgrade"
+		installLog.Message = "New version " + checkResult.LatestVersion + " is ready, ready to upgrade"
 		installLog.Type = types.NOTIFY_TYPE_NEED_CONFIRM
 		installLog.CreatedAt = strconv.FormatInt(time.Now().Unix(), 10)
 		installLog.UpdatedAt = strconv.FormatInt(time.Now().Unix(), 10)
 		installLog.Name = "NimoOS System"
 		service.MyService.Notify().AddLog(installLog)
 	}
-	data := make(map[string]interface{}, 3)
-	data["need_update"] = need
-	data["version"] = version
-	data["current_version"] = common.VERSION
+
+	if !checkResult.HasUpdate {
+		data := make(map[string]interface{}, 2)
+		data["need_update"] = false
+		data["current_version"] = checkResult.CurrentVersion
+		return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
+	}
+
+	ver := model.Version{
+		Version:   checkResult.LatestVersion,
+		ChangeLog: checkResult.Changelog,
+	}
+
+	data := make(map[string]interface{}, 6)
+	data["need_update"] = true
+	data["version"] = ver
+	data["current_version"] = checkResult.CurrentVersion
+	data["latest_version"] = checkResult.LatestVersion
+	data["is_downloaded"] = checkResult.IsDownloaded
+
+	if !checkResult.IsDownloaded && utils.DefaultQuery(ctx, "trigger_download", "0") == "1" {
+		go func() {
+			if err := service.MyService.System().DownloadUpdate(); err != nil {
+				logger.Error("triggered download failed", zap.Error(err))
+			}
+		}()
+	}
+
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
 }
 
@@ -64,9 +89,12 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 // @Success 200 {string} string "ok"
 // @Router /sys/update [post]
 func SystemUpdate(ctx echo.Context) error {
-	need, version := version.IsNeedUpdate(service.MyService.Casa().GetNimoosVersion())
-	if need {
-		service.MyService.System().UpdateSystemVersion(version.Version)
+	err := service.MyService.System().UpdateSystemVersion("")
+	if err != nil {
+		return ctx.JSON(common_err.SUCCESS, model.Result{
+			Success: common_err.SERVICE_ERROR,
+			Message: err.Error(),
+		})
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
@@ -98,7 +126,7 @@ func GetSystemConfigDebug(ctx echo.Context) error {
 	 - Remote Version: %s
 	 - Browser: $Browser$ 
 	 - Version: $Version$
-`, sys.OS, common.VERSION, disk.Total>>20, disk.Used>>20, array, version.Version)
+`, sys.OS, service.MyService.System().GetVersion(), disk.Total>>20, disk.Used>>20, array, version.Version)
 
 	//	array = append(array, fmt.Sprintf("disk,total:%v,used:%v,UsedPercent:%v", disk.Total>>20, disk.Used>>20, disk.UsedPercent))
 
@@ -184,7 +212,7 @@ func GetSystemBaseInfo(ctx echo.Context) error {
 	}
 	data := map[string]string{
 		"device_id": encryption.GetMD5ByStr(mac),
-		"version":   common.VERSION,
+		"version":   service.MyService.System().GetVersion(),
 		"model":     service.MyService.System().GetDeviceTree(),
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{
@@ -291,6 +319,7 @@ func GetSystemUtilization(ctx echo.Context) error {
 		}
 	}
 	data["net"] = newNet
+	data["gpu"] = service.MyService.System().GetGpuStatus()
 	systemMap := service.MyService.Notify().GetSystemTempMap()
 	systemMap.Range(func(key, value interface{}) bool {
 		data[key.(string)] = value
@@ -505,7 +534,7 @@ func PutDiskStandby(ctx echo.Context) error {
 	if err := ctx.Bind(&data); err != nil {
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
 	}
-	
+
 	minutesVal, ok := data["minutes"]
 	if !ok {
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: "minutes is required"})

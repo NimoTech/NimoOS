@@ -1,12 +1,18 @@
 package service
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	net2 "net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -36,7 +42,10 @@ import (
 )
 
 type SystemService interface {
-	UpdateSystemVersion(version string)
+	UpdateSystemVersion(version string) error
+	CheckUpdate() *UpgradeCheckResult
+	DownloadUpdate() error
+	StartDailyDownloadChecker()
 	GetSystemConfigDebug() []string
 	GetNimoOSLogs(lineNumber int) string
 	UpdateAssist()
@@ -69,6 +78,7 @@ type SystemService interface {
 	GenreateSystemEntry()
 	GetGpuInfo() []string
 	GetGpuUtilization() []GpuUtilization
+	GetGpuStatus() []GpuStatus
 	GetRamDetail() map[string]string
 	SetDiskStandby(minutes int) error
 	GetNetAddr(name string) string
@@ -77,12 +87,22 @@ type SystemService interface {
 	GetSystemPaths() map[string]interface{}
 	StartMigrateAppPath(jobID, migrationType, targetMountPoint string)
 	GetMigrateStatus(jobID string) (MigrateStatus, bool)
+	GetVersion() string
 }
 type systemService struct{}
 
+func (s *systemService) GetVersion() string {
+	version := common.VERSION
+	local, err := readLocalVersionInfo()
+	if err == nil && local.Version != "" {
+		version = local.Version
+	}
+	return version
+}
+
 func (c *systemService) GetDeviceInfo() model.DeviceInfo {
 	m := model.DeviceInfo{}
-	m.OS_Version = common.VERSION
+	m.OS_Version = c.GetVersion()
 	err, portStr := MyService.Gateway().GetPort()
 	if err != nil {
 		m.Port = 80
@@ -410,23 +430,412 @@ func (c *systemService) GetNet(physics bool) []string {
 	return result
 }
 
-func (s *systemService) UpdateSystemVersion(version string) {
+func (s *systemService) UpdateSystemVersion(version string) error {
 	keyName := "casa_version"
 	Cache.Delete(keyName)
-	if file.Exists(config.AppInfo.LogPath + "/upgrade.log") {
-		os.Remove(config.AppInfo.LogPath + "/upgrade.log")
-	}
-	file.CreateFile(config.AppInfo.LogPath + "/upgrade.log")
-	// go command2.OnlyExec("curl -fsSL https://raw.githubusercontent.com/LinkLeong/nimoos-alpha/main/update.sh | bash")
-	if len(config.ServerInfo.UpdateUrl) > 0 {
-		go command.OnlyExec("curl -fsSL " + config.ServerInfo.UpdateUrl + " | bash")
-	} else {
-		osRelease, _ := file.ReadOSRelease()
-		go command.OnlyExec("curl -fsSL https://get.nimoos.io/update?t=" + osRelease["MANUFACTURER"] + " | bash")
+
+	upgradeDir := "/var/lib/nimoos_data/upgrade"
+	entries, err := os.ReadDir(upgradeDir)
+	if err != nil {
+		return fmt.Errorf("upgrade directory not found: %v", err)
 	}
 
-	// s.log.Error(config.AppInfo.ProjectPath + "/shell/tool.sh -r " + version)
-	// s.log.Error(command2.ExecResultStr(config.AppInfo.ProjectPath + "/shell/tool.sh -r " + version))
+	var latestBundle string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		bundleDir := filepath.Join(upgradeDir, entry.Name())
+		bundleEntries, _ := os.ReadDir(bundleDir)
+		for _, be := range bundleEntries {
+			if !be.IsDir() && filepath.Ext(be.Name()) == ".raucb" {
+				latestBundle = filepath.Join(bundleDir, be.Name())
+			}
+		}
+	}
+
+	if latestBundle == "" {
+		return fmt.Errorf("no downloaded upgrade bundle found")
+	}
+
+	go func() {
+		logger.Info("starting system upgrade", zap.String("bundle", latestBundle))
+
+		cmd := exec.Command("/usr/libexec/nimo_upgrade.sh", latestBundle)
+		output, err := cmd.CombinedOutput()
+
+		if err != nil || !strings.Contains(string(output), "NimoOS upgrade successfully") {
+			logger.Error("system upgrade failed", zap.Error(err), zap.String("log", string(output)))
+			return
+		}
+
+		logger.Info("system upgrade successful, rebooting")
+		time.Sleep(3 * time.Second)
+		command.OnlyExec("systemctl reboot")
+	}()
+
+	return nil
+}
+
+func (s *systemService) IsUpgradeDownloaded(version string) bool {
+	upgradeDir := "/var/lib/nimoos_data/upgrade/v" + version
+	entries, err := os.ReadDir(upgradeDir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".raucb" {
+			return true
+		}
+	}
+	return false
+}
+
+type remoteVersion struct {
+	Versions []versionInfo `json:"versions"`
+}
+
+type localVersionJSON struct {
+	Version      string `json:"version"`
+	UpdateServer string `json:"update_server"`
+	Platform     string `json:"platform"`
+	HardwareID   string `json:"hardware_id"`
+}
+
+func readLocalVersionInfo() (*localVersionJSON, error) {
+	versionFile := "/etc/nimoos/version.json"
+	if _, err := os.Stat(versionFile); os.IsNotExist(err) {
+		return nil, fmt.Errorf("version file not found")
+	}
+	data, err := os.ReadFile(versionFile)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read version file: %v", err)
+	}
+	var local localVersionJSON
+	if err := json.Unmarshal(data, &local); err != nil {
+		return nil, fmt.Errorf("cannot parse version file: %v", err)
+	}
+	if local.Version == "" {
+		return nil, fmt.Errorf("version field is empty")
+	}
+	return &local, nil
+}
+
+func fetchRemoteVersionJSON(server string) (*remoteVersion, error) {
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	resp, err := httpClient.Get(server + "/releases/version.json")
+	if err != nil {
+		return nil, fmt.Errorf("cannot fetch remote version: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read remote version: %v", err)
+	}
+	var remote remoteVersion
+	if err := json.Unmarshal(body, &remote); err != nil {
+		return nil, fmt.Errorf("cannot parse remote version: %v", err)
+	}
+	return &remote, nil
+}
+
+type compatibleRule struct {
+	Platform   []string `json:"platform,omitempty"`
+	HardwareID []string `json:"hardware_id,omitempty"`
+	MinVersion string   `json:"min_version,omitempty"`
+	MaxVersion string   `json:"max_version,omitempty"`
+}
+
+type versionInfo struct {
+	Version     string          `json:"version"`
+	Changelog   string          `json:"changelog"`
+	DownloadURL string          `json:"download_url"`
+	SHA256      string          `json:"sha256"`
+	Size        int             `json:"size"`
+	Compatible  *compatibleRule `json:"compatible,omitempty"`
+}
+
+func compareVersions(v1, v2 string) int {
+	p1 := strings.Split(v1, ".")
+	p2 := strings.Split(v2, ".")
+	for i := 0; i < 3; i++ {
+		n1, _ := strconv.Atoi(p1[i])
+		n2, _ := strconv.Atoi(p2[i])
+		if n1 > n2 {
+			return 1
+		}
+		if n1 < n2 {
+			return -1
+		}
+	}
+	return 0
+}
+
+func isVersionCompatible(v versionInfo, currentVersion, platform, hardwareID string) bool {
+	if v.Compatible == nil {
+		return true
+	}
+	if len(v.Compatible.Platform) > 0 && !containsString(v.Compatible.Platform, platform) {
+		return false
+	}
+	if len(v.Compatible.HardwareID) > 0 && !containsString(v.Compatible.HardwareID, hardwareID) {
+		return false
+	}
+	if v.Compatible.MinVersion != "" && compareVersions(currentVersion, v.Compatible.MinVersion) < 0 {
+		return false
+	}
+	if v.Compatible.MaxVersion != "" && compareVersions(currentVersion, v.Compatible.MaxVersion) > 0 {
+		return false
+	}
+	return true
+}
+
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func findHighestCompatibleVersion(versions []versionInfo, currentVersion, platform, hardwareID string) *versionInfo {
+	var best *versionInfo
+	var bestNums []int
+	for i, v := range versions {
+		if !isVersionCompatible(v, currentVersion, platform, hardwareID) {
+			continue
+		}
+		parts := strings.Split(v.Version, ".")
+		nums := make([]int, 3)
+		for j, p := range parts {
+			nums[j], _ = strconv.Atoi(p)
+		}
+		if best == nil {
+			best = &versions[i]
+			bestNums = nums
+		} else {
+			if nums[0] > bestNums[0] || (nums[0] == bestNums[0] && nums[1] > bestNums[1]) || (nums[0] == bestNums[0] && nums[1] == bestNums[1] && nums[2] > bestNums[2]) {
+				best = &versions[i]
+				bestNums = nums
+			}
+		}
+	}
+	return best
+}
+
+type UpgradeCheckResult struct {
+	HasUpdate      bool   `json:"has_update"`
+	CurrentVersion string `json:"current_version"`
+	LatestVersion  string `json:"latest_version"`
+	IsDownloaded   bool   `json:"is_downloaded"`
+	Changelog      string `json:"changelog"`
+	Size           int    `json:"size"`
+	Error          string `json:"error,omitempty"`
+}
+
+func (s *systemService) CheckUpdate() *UpgradeCheckResult {
+	result := &UpgradeCheckResult{
+		CurrentVersion: s.GetVersion(),
+	}
+
+	local, err := readLocalVersionInfo()
+	if err != nil {
+		return result
+	}
+
+	remote, err := fetchRemoteVersionJSON(local.UpdateServer)
+	if err != nil {
+		return result
+	}
+
+	bestVersion := findHighestCompatibleVersion(remote.Versions, result.CurrentVersion, local.Platform, local.HardwareID)
+	if bestVersion == nil {
+		return result
+	}
+
+	result.LatestVersion = bestVersion.Version
+	result.Size = bestVersion.Size
+
+	changelogParts := []string{}
+	curParts := make([]int, 3)
+	curVerParts := strings.Split(result.CurrentVersion, ".")
+	for i, p := range curVerParts {
+		curParts[i], _ = strconv.Atoi(p)
+	}
+
+	for _, v := range remote.Versions {
+		if !isVersionCompatible(v, result.CurrentVersion, local.Platform, local.HardwareID) {
+			continue
+		}
+		verParts := strings.Split(v.Version, ".")
+		verNums := make([]int, 3)
+		for i, p := range verParts {
+			verNums[i], _ = strconv.Atoi(p)
+		}
+		if verNums[0] > curParts[0] || (verNums[0] == curParts[0] && verNums[1] > curParts[1]) || (verNums[0] == curParts[0] && verNums[1] == curParts[1] && verNums[2] > curParts[2]) {
+			changelogParts = append(changelogParts, "v"+v.Version+":\n"+v.Changelog)
+		}
+	}
+	result.Changelog = strings.Join(changelogParts, "\n\n")
+
+	if compareVersions(result.LatestVersion, result.CurrentVersion) <= 0 {
+		return result
+	}
+
+	downloadDir := "/var/lib/nimoos_data/upgrade/v" + bestVersion.Version
+	if entries, err := os.ReadDir(downloadDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".raucb" {
+				result.IsDownloaded = true
+				break
+			}
+		}
+	}
+
+	result.HasUpdate = true
+	return result
+}
+
+func (s *systemService) DownloadUpdate() error {
+	logger.Info("DownloadUpdate: starting")
+	check := s.CheckUpdate()
+	if !check.HasUpdate {
+		logger.Info("DownloadUpdate: no update available from CheckUpdate")
+		return fmt.Errorf("no update available")
+	}
+	if check.IsDownloaded {
+		logger.Info("DownloadUpdate: already downloaded")
+		return nil
+	}
+
+	local, err := readLocalVersionInfo()
+	if err != nil {
+		logger.Error("DownloadUpdate: cannot read local version", zap.Error(err))
+		return fmt.Errorf("cannot read local version: %v", err)
+	}
+
+	remote, err := fetchRemoteVersionJSON(local.UpdateServer)
+	if err != nil {
+		logger.Error("DownloadUpdate: cannot fetch remote version", zap.Error(err))
+		return err
+	}
+
+	bestVersion := findHighestCompatibleVersion(remote.Versions, local.Version, local.Platform, local.HardwareID)
+	if bestVersion == nil {
+		logger.Error("DownloadUpdate: no compatible version found")
+		return fmt.Errorf("no compatible version found for this platform")
+	}
+
+	logger.Info("DownloadUpdate: selected version", zap.String("version", bestVersion.Version), zap.String("url", bestVersion.DownloadURL))
+
+	downloadDir := "/var/lib/nimoos_data/upgrade/v" + bestVersion.Version
+	os.MkdirAll(downloadDir, 0755)
+
+	tmpFile := filepath.Join(downloadDir, "nimo_update_"+bestVersion.Version+".raucb.tmp")
+	finalFile := filepath.Join(downloadDir, "nimo_update_"+bestVersion.Version+".raucb")
+
+	if _, err := os.Stat(finalFile); err == nil {
+		logger.Info("DownloadUpdate: final file already exists")
+		return nil
+	}
+
+	fullURL := local.UpdateServer + bestVersion.DownloadURL
+	logger.Info("DownloadUpdate: downloading", zap.String("url", fullURL))
+	downloadClient := &http.Client{Timeout: 5 * time.Minute}
+	dlResp, err := downloadClient.Get(fullURL)
+	if err != nil {
+		logger.Error("DownloadUpdate: download failed", zap.Error(err), zap.String("url", fullURL))
+		return fmt.Errorf("download failed: %v", err)
+	}
+	defer dlResp.Body.Close()
+
+	if dlResp.StatusCode != http.StatusOK {
+		logger.Error("DownloadUpdate: download bad status", zap.Int("status", dlResp.StatusCode))
+		return fmt.Errorf("download failed: status %d", dlResp.StatusCode)
+	}
+
+	out, err := os.Create(tmpFile)
+	if err != nil {
+		logger.Error("DownloadUpdate: cannot create temp file", zap.Error(err))
+		return fmt.Errorf("cannot create temp file: %v", err)
+	}
+
+	written, err := io.Copy(out, dlResp.Body)
+	if err != nil {
+		out.Close()
+		os.Remove(tmpFile)
+		logger.Error("DownloadUpdate: download write failed", zap.Error(err))
+		return fmt.Errorf("download write failed: %v", err)
+	}
+	logger.Info("DownloadUpdate: downloaded bytes", zap.Int64("bytes", written))
+	out.Close()
+
+	hasher := sha256.New()
+	content, err := os.ReadFile(tmpFile)
+	if err != nil {
+		os.Remove(tmpFile)
+		logger.Error("DownloadUpdate: cannot read temp file for checksum", zap.Error(err))
+		return fmt.Errorf("cannot read temp file for checksum: %v", err)
+	}
+	hasher.Write(content)
+	actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
+
+	if !strings.EqualFold(actualSHA256, bestVersion.SHA256) {
+		os.Remove(tmpFile)
+		logger.Error("DownloadUpdate: SHA256 mismatch", zap.String("expected", bestVersion.SHA256), zap.String("actual", actualSHA256))
+		return fmt.Errorf("SHA256 mismatch")
+	}
+
+	if err := os.Rename(tmpFile, finalFile); err != nil {
+		os.Remove(tmpFile)
+		logger.Error("DownloadUpdate: rename failed", zap.Error(err))
+		return fmt.Errorf("rename failed: %v", err)
+	}
+
+	logger.Info("DownloadUpdate: download complete", zap.String("file", finalFile))
+
+	// Cleanup old upgrade directories
+	upgradeDir := "/var/lib/nimoos_data/upgrade"
+	entries, _ := os.ReadDir(upgradeDir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if entry.Name() == "v"+bestVersion.Version {
+			continue
+		}
+		os.RemoveAll(filepath.Join(upgradeDir, entry.Name()))
+	}
+
+	properties := map[string]string{
+		"version": bestVersion.Version,
+	}
+	MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:upgrade:downloaded", properties)
+
+	return nil
+}
+
+func (s *systemService) StartDailyDownloadChecker() {
+	go func() {
+		rand.Seed(time.Now().UnixNano())
+		for {
+			now := time.Now()
+			next := time.Date(now.Year(), now.Month(), now.Day(), 2, 0, 0, 0, now.Location())
+			if !now.Before(next) {
+				next = next.Add(24 * time.Hour)
+			}
+			delay := time.Duration(rand.Intn(10800)) * time.Second
+			next = next.Add(delay)
+
+			time.Sleep(time.Until(next))
+
+			check := s.CheckUpdate()
+			if check.HasUpdate && !check.IsDownloaded {
+				s.DownloadUpdate()
+			}
+		}
+	}()
 }
 
 func (s *systemService) UpdateAssist() {
@@ -541,23 +950,67 @@ func GetCPUThermalZone() string {
 	return path
 }
 
-func (s *systemService) GetCPUTemperature() int {
-	outPut := ""
-	path := GetCPUThermalZone()
-	if len(path) > 0 {
-		outPut = string(file.ReadFullFile(path + "/temp"))
-	} else {
-		outPut = string(file.ReadFullFile("/sys/class/hwmon/hwmon0/temp1_input"))
-		if len(outPut) == 0 {
-			outPut = "0"
+// GetCPUHwmonPath finds the hwmon device that reports CPU temperature, by
+// matching the driver name. Covers AMD (k10temp/zenpower), Intel (coretemp),
+// and ARM SoCs (cpu_thermal). ACPI thermal zones often report 0 on AMD, so
+// hwmon is the reliable source.
+func GetCPUHwmonPath() string {
+	keyName := "cpu_hwmon_path"
+	if result, ok := Cache.Get(keyName); ok {
+		if path, ok := result.(string); ok {
+			return path
 		}
 	}
 
-	celsius, _ := strconv.Atoi(strings.TrimSpace(outPut))
-
-	if celsius > 1000 {
-		celsius = celsius / 1000
+	cpuDrivers := []string{"k10temp", "zenpower", "coretemp", "cpu_thermal"}
+	entries, err := os.ReadDir("/sys/class/hwmon")
+	if err != nil {
+		Cache.SetDefault(keyName, "")
+		return ""
 	}
+	for _, e := range entries {
+		hwPath := "/sys/class/hwmon/" + e.Name()
+		name := strings.TrimSpace(string(file.ReadFullFile(hwPath + "/name")))
+		for _, d := range cpuDrivers {
+			if name == d {
+				Cache.SetDefault(keyName, hwPath)
+				return hwPath
+			}
+		}
+	}
+	Cache.SetDefault(keyName, "")
+	return ""
+}
+
+func (s *systemService) GetCPUTemperature() int {
+	celsius := 0
+
+	// Prefer hwmon — ACPI thermal_zone reports 0 on many AMD systems.
+	if hwPath := GetCPUHwmonPath(); hwPath != "" {
+		raw := strings.TrimSpace(string(file.ReadFullFile(hwPath + "/temp1_input")))
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			if v > 1000 {
+				v = v / 1000
+			}
+			celsius = v
+		}
+	}
+
+	if celsius == 0 {
+		outPut := ""
+		path := GetCPUThermalZone()
+		if len(path) > 0 {
+			outPut = string(file.ReadFullFile(path + "/temp"))
+		} else {
+			outPut = string(file.ReadFullFile("/sys/class/hwmon/hwmon0/temp1_input"))
+		}
+		v, _ := strconv.Atoi(strings.TrimSpace(outPut))
+		if v > 1000 {
+			v = v / 1000
+		}
+		celsius = v
+	}
+
 	return celsius
 }
 
@@ -634,6 +1087,66 @@ func (c *systemService) GetGpuUtilization() []GpuUtilization {
 		})
 	}
 	return stats
+}
+
+// GpuStatus is one GPU's runtime metrics.
+type GpuStatus struct {
+	Index             int     `json:"index"`
+	Name              string  `json:"name"`
+	Vendor            string  `json:"vendor"`
+	UtilizationGpu    float64 `json:"utilization_gpu"`
+	UtilizationMemory float64 `json:"utilization_memory"`
+	MemoryTotal       uint64  `json:"memory_total"`
+	MemoryUsed        uint64  `json:"memory_used"`
+	Temperature       float64 `json:"temperature"`
+}
+
+func (c *systemService) GetGpuStatus() []GpuStatus {
+	gpus := []GpuStatus{}
+	gpus = append(gpus, queryNvidiaGpuStatus()...)
+	return gpus
+}
+
+func queryNvidiaGpuStatus() []GpuStatus {
+	out, err := command.ExecResultStr("nvidia-smi --query-gpu=index,name,utilization.gpu,memory.total,memory.used,temperature.gpu --format=csv,noheader,nounits")
+	if err != nil {
+		return nil
+	}
+	gpus := []GpuStatus{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) < 6 {
+			continue
+		}
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		g := GpuStatus{Vendor: "nvidia", Name: parts[1]}
+		if v, err := strconv.Atoi(parts[0]); err == nil {
+			g.Index = v
+		}
+		if v, err := strconv.ParseFloat(parts[2], 64); err == nil {
+			g.UtilizationGpu = v
+		}
+		if v, err := strconv.ParseUint(parts[3], 10, 64); err == nil {
+			g.MemoryTotal = v * 1024 * 1024
+		}
+		if v, err := strconv.ParseUint(parts[4], 10, 64); err == nil {
+			g.MemoryUsed = v * 1024 * 1024
+		}
+		if g.MemoryTotal > 0 {
+			g.UtilizationMemory = float64(g.MemoryUsed) / float64(g.MemoryTotal) * 100
+		}
+		if v, err := strconv.ParseFloat(parts[5], 64); err == nil {
+			g.Temperature = v
+		}
+		gpus = append(gpus, g)
+	}
+	return gpus
 }
 
 func (c *systemService) GetRamDetail() map[string]string {

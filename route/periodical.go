@@ -80,6 +80,8 @@ func SendAllHardwareStatusBySocket() {
 	body["sys_gpu"] = service.MyService.System().GetGpuUtilization()
 
 	body["sys_net"] = newNet
+
+	body["sys_gpu"] = service.MyService.System().GetGpuStatus()
 	systemTempMap := service.MyService.Notify().GetSystemTempMap()
 	systemTempMap.Range(func(key, value interface{}) bool {
 		body[key.(string)] = value

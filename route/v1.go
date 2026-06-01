@@ -7,10 +7,9 @@ import (
 
 	"github.com/NimoTech/NimoOS-Common/external"
 	"github.com/NimoTech/NimoOS-Common/utils/jwt"
-	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/pkg/config"
-	"github.com/NimoTech/NimoOS/service"
 	v1 "github.com/NimoTech/NimoOS/route/v1"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
 )
@@ -34,7 +33,7 @@ func InitV1Router() http.Handler {
 
 	e.GET("/v1/sys/version/check", v1.GetSystemCheckVersion)
 	e.GET("/v1/sys/version/current", func(ctx echo.Context) error {
-		return ctx.String(200, common.VERSION)
+		return ctx.String(200, service.MyService.System().GetVersion())
 	})
 	e.GET("/ping", func(ctx echo.Context) error {
 		return ctx.String(200, "pong")
