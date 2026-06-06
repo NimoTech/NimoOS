@@ -2,7 +2,7 @@ package common
 
 const (
 	SERVICENAME = "nimoos"
-	VERSION     = "0.4.15"
+	VERSION     = "1.9.0-alpha1"
 	BODY        = " "
 	RANW_NAME   = "Nimo-RemoteAccess"
 )
