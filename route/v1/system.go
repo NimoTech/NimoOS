@@ -231,6 +231,8 @@ func GetSystemBaseInfo(ctx echo.Context) error {
 // @Router /sys/hardware/info [get]
 func GetSystemHardwareInfo(ctx echo.Context) error {
 	data := make(map[string]interface{})
+	data["version"] = service.MyService.System().GetVersion()
+	data["hardware_id"] = service.MyService.System().GetHardwareID()
 	data["drive_model"] = service.MyService.System().GetDeviceTree()
 	data["arch"] = runtime.GOARCH
 
@@ -238,6 +240,7 @@ func GetSystemHardwareInfo(ctx echo.Context) error {
 	if cpuInfo := service.MyService.System().GetCpuInfo(); len(cpuInfo) > 0 {
 		data["cpu_model"] = cpuInfo[0].ModelName
 		data["cpu_cores"] = service.MyService.System().GetCpuCoreNum()
+		data["cpu_freq"] = cpuInfo[0].Mhz
 	}
 
 	// RAM

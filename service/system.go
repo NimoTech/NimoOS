@@ -86,6 +86,7 @@ type SystemService interface {
 	StartMigrateAppPath(jobID, migrationType, targetMountPoint string)
 	GetMigrateStatus(jobID string) (MigrateStatus, bool)
 	GetVersion() string
+	GetHardwareID() string
 }
 type systemService struct{}
 
@@ -96,6 +97,14 @@ func (s *systemService) GetVersion() string {
 		version = local.Version
 	}
 	return version
+}
+
+func (s *systemService) GetHardwareID() string {
+	local, err := readLocalVersionInfo()
+	if err != nil {
+		return ""
+	}
+	return local.HardwareID
 }
 
 func (c *systemService) GetDeviceInfo() model.DeviceInfo {
