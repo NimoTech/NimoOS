@@ -233,6 +233,7 @@ func GetSystemHardwareInfo(ctx echo.Context) error {
 	data := make(map[string]interface{})
 	data["version"] = service.MyService.System().GetVersion()
 	data["hardware_id"] = service.MyService.System().GetHardwareID()
+	data["hardware_name"] = service.MyService.System().GetHardwareName()
 	data["drive_model"] = service.MyService.System().GetDeviceTree()
 	data["arch"] = runtime.GOARCH
 
