@@ -2,6 +2,8 @@ package v2
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -87,4 +89,61 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 // validateFileUploadMetadata is the production entry point.
 func validateFileUploadMetadata(hook handler.HookEvent) (handler.HTTPResponse, handler.FileInfoChanges, error) {
 	return validateFileUploadMetadataWithQuota(hook, statfsDATA)
+}
+
+// uniqueDestPath returns a path that does not conflict with an existing file.
+// If dest already exists, it appends (1), (2), … before the extension
+// (or at the end if there is no extension).
+func uniqueDestPath(dest string) string {
+	if _, err := os.Stat(dest); os.IsNotExist(err) {
+		return dest
+	}
+	dir := filepath.Dir(dest)
+	base := filepath.Base(dest)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 1; ; i++ {
+		cand := filepath.Join(dir, fmt.Sprintf("%s(%d)%s", stem, i, ext))
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			return cand
+		}
+	}
+}
+
+// ingestToTarget moves a completed staging file to join(targetPath, relativePath).
+// It creates intermediate directories, renames with a suffix on collision, falls back
+// to copy+delete when os.Rename fails across devices, and removes the .info sidecar.
+// It returns the final on-disk path.
+func ingestToTarget(stagedPath, targetPath, relativePath string) (string, error) {
+	dest := filepath.Join(targetPath, relativePath)
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return "", fmt.Errorf("mkdir target dir: %w", err)
+	}
+	dest = uniqueDestPath(dest)
+
+	if err := os.Rename(stagedPath, dest); err != nil {
+		if cerr := copyFileV2(stagedPath, dest); cerr != nil {
+			return "", fmt.Errorf("rename and copy both failed: %w / %v", err, cerr)
+		}
+		os.Remove(stagedPath) //nolint:errcheck
+	}
+	os.Remove(stagedPath + ".info") //nolint:errcheck
+	return dest, nil
+}
+
+func copyFileV2(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return nil
 }
