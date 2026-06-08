@@ -2,15 +2,10 @@ package v2
 
 import (
 	"github.com/NimoTech/NimoOS/codegen"
-	"github.com/NimoTech/NimoOS/service"
 )
 
-type NimoOS struct {
-	fileUploadService *service.FileUploadService
-}
+type NimoOS struct{}
 
 func NewNimoOS() codegen.ServerInterface {
-	return &NimoOS{
-		fileUploadService: service.NewFileUploadService(),
-	}
+	return &NimoOS{}
 }
