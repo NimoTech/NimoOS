@@ -141,8 +141,13 @@ func copyFileV2(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst) // 清理半写损坏文件
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst) // Close 失败同样视为写入失败，清理
 		return err
 	}
 	return nil
