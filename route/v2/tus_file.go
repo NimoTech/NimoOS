@@ -3,13 +3,18 @@ package v2
 import (
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
+	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
+	"go.uber.org/zap"
 )
 
 // FileUploadMaxSizeForTest exposes the upload size limit for tests.
@@ -151,4 +156,82 @@ func copyFileV2(src, dst string) error {
 		return err
 	}
 	return nil
+}
+
+const fileTusBasePath = "/v2/nimoos/file/upload-tus"
+
+// relativeLocationWriter 把 tusd 生成的绝对 Location header 改写成 path-only，
+// 与 Photos 同理(Gateway 代理后 Host 为内部地址)。
+type relativeLocationWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (w *relativeLocationWriter) WriteHeader(status int) {
+	if !w.wrote {
+		w.wrote = true
+		if loc := w.Header().Get("Location"); loc != "" {
+			if u, err := url.Parse(loc); err == nil && u.Path != "" {
+				w.Header().Set("Location", u.Path)
+			}
+		}
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *relativeLocationWriter) Write(b []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *relativeLocationWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func withRelativeLocation(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(&relativeLocationWriter{ResponseWriter: w}, r)
+	})
+}
+
+// NewFileTUSHandler 创建 Files 用 tusd handler：staging 存储 + 创建校验 +
+// 完成后移动到用户目标路径。返回 http.Handler 供 echo.WrapHandler 使用。
+func NewFileTUSHandler() (http.Handler, error) {
+	if err := os.MkdirAll(common.FileUploadStagingDir, 0700); err != nil {
+		return nil, fmt.Errorf("mkdir staging: %w", err)
+	}
+	store := filestore.New(common.FileUploadStagingDir)
+	composer := handler.NewStoreComposer()
+	store.UseIn(composer)
+
+	tusH, err := handler.NewHandler(handler.Config{
+		BasePath:                fileTusBasePath + "/",
+		StoreComposer:           composer,
+		NotifyCompleteUploads:   true,
+		MaxSize:                 common.FileUploadMaxSize,
+		PreUploadCreateCallback: validateFileUploadMetadata,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		for event := range tusH.CompleteUploads {
+			stagedPath := filepath.Join(common.FileUploadStagingDir, event.Upload.ID)
+			targetPath := event.Upload.MetaData["targetPath"]
+			relativePath := event.Upload.MetaData["relativePath"]
+			if relativePath == "" {
+				relativePath = event.Upload.MetaData["filename"]
+			}
+			dest, ierr := ingestToTarget(stagedPath, targetPath, relativePath)
+			if ierr != nil {
+				logger.Error("Files tus ingest failed",
+					zap.String("id", event.Upload.ID), zap.Error(ierr))
+				continue
+			}
+			logger.Info("Files tus upload complete", zap.String("dest", dest))
+		}
+	}()
+
+	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
 }
