@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
@@ -233,5 +234,44 @@ func NewFileTUSHandler() (http.Handler, error) {
 		}
 	}()
 
+	startStagingGC()
 	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
+}
+
+// sweepStaging 删除 dir 中修改时间早于 ttlSeconds 的文件(连带 .info)。
+// 返回删除的主文件数。.info sidecar 不单独计数。
+func sweepStaging(dir string, ttlSeconds int64, now time.Time) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	cutoff := now.Add(-time.Duration(ttlSeconds) * time.Second)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".info") {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			p := filepath.Join(dir, e.Name())
+			os.Remove(p)           //nolint:errcheck
+			os.Remove(p + ".info") //nolint:errcheck
+			removed++
+		}
+	}
+	return removed
+}
+
+// startStagingGC 启动后台定时 GC(每 6 小时跑一次)。在 NewFileTUSHandler 里调用。
+func startStagingGC() {
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			sweepStaging(common.FileUploadStagingDir, common.FileUploadStagingTTLSeconds, time.Now())
+		}
+	}()
 }
