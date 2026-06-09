@@ -120,12 +120,20 @@ func uniqueDestPath(dest string) string {
 // It creates intermediate directories, renames with a suffix on collision, falls back
 // to copy+delete when os.Rename fails across devices, and removes the .info sidecar.
 // It returns the final on-disk path.
-func ingestToTarget(stagedPath, targetPath, relativePath string) (string, error) {
+//
+// When resumed is true the upload is a re-send of a file the client already
+// started (typically it finished server-side but the client refreshed before
+// recording it as done, then re-queued it). In that case we overwrite the
+// existing target instead of creating a "(1)" duplicate. Fresh uploads still get
+// a unique name on collision.
+func ingestToTarget(stagedPath, targetPath, relativePath string, resumed bool) (string, error) {
 	dest := filepath.Join(targetPath, relativePath)
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return "", fmt.Errorf("mkdir target dir: %w", err)
 	}
-	dest = uniqueDestPath(dest)
+	if !resumed {
+		dest = uniqueDestPath(dest)
+	}
 
 	if err := os.Rename(stagedPath, dest); err != nil {
 		if cerr := copyFileV2(stagedPath, dest); cerr != nil {
@@ -224,7 +232,8 @@ func NewFileTUSHandler() (http.Handler, error) {
 			if relativePath == "" {
 				relativePath = event.Upload.MetaData["filename"]
 			}
-			dest, ierr := ingestToTarget(stagedPath, targetPath, relativePath)
+			resumed := event.Upload.MetaData["resumed"] == "1"
+			dest, ierr := ingestToTarget(stagedPath, targetPath, relativePath, resumed)
 			if ierr != nil {
 				logger.Error("Files tus ingest failed",
 					zap.String("id", event.Upload.ID), zap.Error(ierr))

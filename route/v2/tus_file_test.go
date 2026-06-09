@@ -86,7 +86,7 @@ func TestIngestToTarget(t *testing.T) {
 	os.WriteFile(staged, []byte("hello"), 0644)
 	os.WriteFile(staged+".info", []byte("{}"), 0644)
 
-	dest, err := ingestToTarget(staged, target, "sub/a.txt")
+	dest, err := ingestToTarget(staged, target, "sub/a.txt", false)
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
@@ -111,12 +111,37 @@ func TestIngestToTargetSameName(t *testing.T) {
 	os.WriteFile(filepath.Join(target, "a.txt"), []byte("old"), 0644)
 	staged := filepath.Join(staging, "uploadid")
 	os.WriteFile(staged, []byte("new"), 0644)
-	dest, err := ingestToTarget(staged, target, "a.txt")
+	dest, err := ingestToTarget(staged, target, "a.txt", false)
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
 	if filepath.Base(dest) != "a(1).txt" {
 		t.Fatalf("dest base = %s want a(1).txt", filepath.Base(dest))
+	}
+}
+
+// A resumed re-upload of a file that already landed must overwrite the original
+// instead of creating a "(1)" duplicate.
+func TestIngestToTargetResumedOverwrites(t *testing.T) {
+	staging := t.TempDir()
+	target := t.TempDir()
+	os.WriteFile(filepath.Join(target, "a.txt"), []byte("old"), 0644)
+	staged := filepath.Join(staging, "uploadid")
+	os.WriteFile(staged, []byte("new"), 0644)
+	dest, err := ingestToTarget(staged, target, "a.txt", true)
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if filepath.Base(dest) != "a.txt" {
+		t.Fatalf("dest base = %s want a.txt (overwrite, no duplicate)", filepath.Base(dest))
+	}
+	b, _ := os.ReadFile(dest)
+	if string(b) != "new" {
+		t.Fatalf("content = %q want new", string(b))
+	}
+	// No "(1)" duplicate must have been created.
+	if _, err := os.Stat(filepath.Join(target, "a(1).txt")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected duplicate a(1).txt created")
 	}
 }
 
