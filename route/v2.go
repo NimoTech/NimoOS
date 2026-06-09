@@ -135,6 +135,10 @@ func InitV2Router() http.Handler {
 			if strings.Contains(c.Request().URL.Path, "/file/upload-tus") {
 				return true
 			}
+			// upload-precheck 端点不在 OpenAPI 规格里，跳过校验。
+			if strings.Contains(c.Request().URL.Path, "/file/upload-precheck") {
+				return true
+			}
 			return false
 		},
 		Options: openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
@@ -157,6 +161,8 @@ func InitV2Router() http.Handler {
 		e.Any(V2APIPath+"/file/upload-tus", echo.WrapHandler(tusH))
 		e.Any(V2APIPath+"/file/upload-tus/*", echo.WrapHandler(tusH))
 	}
+
+	e.POST(V2APIPath+"/file/upload-precheck", v2Route.FileUploadPrecheck)
 
 	e.Any("/v2/nimoos/testecho", func(c echo.Context) error {
 		return c.String(200, "echo works at "+c.Request().URL.Path)
