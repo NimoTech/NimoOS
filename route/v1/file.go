@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -836,6 +838,16 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 // @Param body body string true "paths eg ["/a/b/c","/d/e/f"]"
 // @Success 200 {string} string "ok"
 // @Router /file/delete [delete]
+// deletedMediaExts mirrors NimoOS-Photos' supportedExts: the image/video types
+// it indexes. Used to scope the nimoos:media:deleted event to deletions Photos
+// actually cares about. Keep the two lists in sync when adding formats.
+var deletedMediaExts = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".heic": true, ".webp": true,
+	".gif": true, ".bmp": true, ".tiff": true, ".tif": true, ".avif": true,
+	".mp4": true, ".mov": true, ".mkv": true, ".avi": true, ".webm": true,
+	".m4v": true, ".3gp": true,
+}
+
 func DeleteFile(ctx echo.Context) error {
 	paths := []string{}
 	ctx.Bind(&paths)
@@ -869,6 +881,41 @@ func DeleteFile(ctx echo.Context) error {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
 		}
 	}
+
+	// Publish the deleted media paths so Photos can clean up its index/CLIP
+	// vectors in real time. Scoped to media on purpose (hence the event name):
+	// only paths that are image/video files — or extensionless paths that may
+	// be directories whose contents can't be inspected after RemoveAll — are
+	// included; a delete batch with no such path publishes nothing.
+	// properties["paths"] is a JSON array of absolute paths. Fire-and-forget:
+	// failure to publish must never fail the delete itself.
+	go func(deleted []string) {
+		media := deleted[:0]
+		for _, p := range deleted {
+			ext := strings.ToLower(filepath.Ext(filepath.Base(p)))
+			if ext == "" || deletedMediaExts[ext] {
+				media = append(media, p)
+			}
+		}
+		if len(media) == 0 {
+			return
+		}
+		b, err := json.Marshal(media)
+		if err != nil {
+			return
+		}
+		response, err := service.MyService.MessageBus().PublishEventWithResponse(
+			context.Background(), common.SERVICENAME, "nimoos:media:deleted",
+			map[string]string{"paths": string(b)},
+		)
+		if err != nil {
+			logger.Error("failed to publish nimoos:media:deleted", zap.Error(err))
+			return
+		}
+		if response.StatusCode() != http.StatusOK {
+			logger.Error("failed to publish nimoos:media:deleted", zap.String("status", response.Status()))
+		}
+	}(append([]string(nil), paths...))
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
