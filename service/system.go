@@ -88,6 +88,8 @@ type SystemService interface {
 	StartMigrateAppPath(jobID, migrationType, targetMountPoint string)
 	GetMigrateStatus(jobID string) (MigrateStatus, bool)
 	GetVersion() string
+	GetHardwareID() string
+	GetHardwareName() string
 }
 type systemService struct{}
 
@@ -98,6 +100,22 @@ func (s *systemService) GetVersion() string {
 		version = local.Version
 	}
 	return version
+}
+
+func (s *systemService) GetHardwareID() string {
+	local, err := readLocalVersionInfo()
+	if err != nil {
+		return ""
+	}
+	return local.HardwareID
+}
+
+func (s *systemService) GetHardwareName() string {
+	local, err := readLocalVersionInfo()
+	if err != nil {
+		return ""
+	}
+	return local.HardwareName
 }
 
 func (c *systemService) GetDeviceInfo() model.DeviceInfo {
@@ -500,6 +518,7 @@ type localVersionJSON struct {
 	UpdateServer string `json:"update_server"`
 	Platform     string `json:"platform"`
 	HardwareID   string `json:"hardware_id"`
+	HardwareName string `json:"hardware_name"`
 }
 
 func readLocalVersionInfo() (*localVersionJSON, error) {
@@ -1152,14 +1171,14 @@ func queryNvidiaGpuStatus() []GpuStatus {
 func (c *systemService) GetRamDetail() map[string]string {
 	data := make(map[string]string)
 	// Speed
-	if output, err := command.OnlyExec("sudo dmidecode -t memory | grep 'Speed' | head -n 1"); err == nil {
+	if output, err := command.OnlyExec("dmidecode -t memory | grep 'Speed:' | grep -v 'Supported' | head -n 1"); err == nil {
 		parts := strings.Split(output, ":")
 		if len(parts) > 1 {
 			data["speed"] = strings.TrimSpace(parts[1])
 		}
 	}
-	// Type
-	if output, err := command.OnlyExec("sudo dmidecode -t memory | grep 'Type:' | head -n 1"); err == nil {
+	// Type — grep '^[[:space:]]*Type:' to avoid matching Error Correction Type / PMIC Device Type
+	if output, err := command.OnlyExec("dmidecode -t memory | grep -E '^[[:space:]]*Type:' | head -n 1"); err == nil {
 		parts := strings.Split(output, ":")
 		if len(parts) > 1 {
 			data["type"] = strings.TrimSpace(parts[1])
