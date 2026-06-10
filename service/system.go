@@ -509,10 +509,6 @@ func (s *systemService) IsUpgradeDownloaded(version string) bool {
 	return false
 }
 
-type remoteVersion struct {
-	Versions []versionInfo `json:"versions"`
-}
-
 type localVersionJSON struct {
 	Version      string `json:"version"`
 	UpdateServer string `json:"update_server"`
@@ -540,22 +536,83 @@ func readLocalVersionInfo() (*localVersionJSON, error) {
 	return &local, nil
 }
 
-func fetchRemoteVersionJSON(server string) (*remoteVersion, error) {
-	httpClient := &http.Client{Timeout: 15 * time.Second}
-	resp, err := httpClient.Get(server + "/releases/version.json")
+type upgradeCheckResponse struct {
+	Success int    `json:"success"`
+	Message string `json:"message"`
+	Data    *struct {
+		NeedUpdate     bool   `json:"need_update"`
+		CurrentVersion string `json:"current_version"`
+		LatestVersion  string `json:"latest_version"`
+		Version        *struct {
+			Version     string `json:"version"`
+			ChangeLog   string `json:"change_log"`
+			SHA256      string `json:"sha256"`
+			Size        int    `json:"size"`
+			DownloadURL string `json:"download_url"`
+		} `json:"version"`
+	} `json:"data"`
+}
+
+// checkCloudUpdate 调用云端 OTA 服务检查更新。
+// 云端 API: GET {update_server}/v1/sys/version?current_version=X
+// 请求头: X-Nimo-Platform, X-Nimo-Hardware-ID
+// 返回: (hasUpdate, versionInfo, error)
+//   - 404 表示无可用更新 → hasUpdate=false, error=nil
+//   - 503 表示服务不可用 → hasUpdate=false, error=nil（静默降级）
+//   - 其他错误 → hasUpdate=false, error=err（调用方决定是否重试）
+func checkCloudUpdate(server, currentVersion, platform, hardwareID string) (bool, *versionInfo, error) {
+	url := fmt.Sprintf("%s/v1/sys/version?current_version=%s", server, currentVersion)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("cannot fetch remote version: %v", err)
+		return false, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("X-Nimo-Platform", platform)
+	req.Header.Set("X-Nimo-Hardware-ID", hardwareID)
+
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, nil, fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// 404: 无可用更新（静默处理）
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil, nil
+	}
+	// 503: 服务不可用（静默降级）
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		logger.Info("checkCloudUpdate: cloud service unavailable (503)")
+		return false, nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return false, nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read remote version: %v", err)
+		return false, nil, fmt.Errorf("read response: %w", err)
 	}
-	var remote remoteVersion
-	if err := json.Unmarshal(body, &remote); err != nil {
-		return nil, fmt.Errorf("cannot parse remote version: %v", err)
+
+	var result upgradeCheckResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return false, nil, fmt.Errorf("parse response: %w", err)
 	}
-	return &remote, nil
+
+	if result.Data == nil || result.Data.Version == nil {
+		return false, nil, nil
+	}
+
+	vi := &versionInfo{
+		Version:     result.Data.Version.Version,
+		Changelog:   result.Data.Version.ChangeLog,
+		DownloadURL: result.Data.Version.DownloadURL,
+		SHA256:      result.Data.Version.SHA256,
+		Size:        result.Data.Version.Size,
+	}
+
+	return true, vi, nil
 }
 
 type compatibleRule struct {
@@ -663,40 +720,18 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 		return result
 	}
 
-	remote, err := fetchRemoteVersionJSON(local.UpdateServer)
+	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, result.CurrentVersion, local.Platform, local.HardwareID)
 	if err != nil {
+		logger.Info("CheckUpdate: cloud check failed, will retry later", zap.Error(err))
 		return result
 	}
-
-	bestVersion := findHighestCompatibleVersion(remote.Versions, result.CurrentVersion, local.Platform, local.HardwareID)
-	if bestVersion == nil {
+	if !hasUpdate || bestVersion == nil {
 		return result
 	}
 
 	result.LatestVersion = bestVersion.Version
 	result.Size = bestVersion.Size
-
-	changelogParts := []string{}
-	curParts := make([]int, 3)
-	curVerParts := strings.Split(result.CurrentVersion, ".")
-	for i, p := range curVerParts {
-		curParts[i], _ = strconv.Atoi(p)
-	}
-
-	for _, v := range remote.Versions {
-		if !isVersionCompatible(v, result.CurrentVersion, local.Platform, local.HardwareID) {
-			continue
-		}
-		verParts := strings.Split(v.Version, ".")
-		verNums := make([]int, 3)
-		for i, p := range verParts {
-			verNums[i], _ = strconv.Atoi(p)
-		}
-		if verNums[0] > curParts[0] || (verNums[0] == curParts[0] && verNums[1] > curParts[1]) || (verNums[0] == curParts[0] && verNums[1] == curParts[1] && verNums[2] > curParts[2]) {
-			changelogParts = append(changelogParts, "v"+v.Version+":\n"+v.Changelog)
-		}
-	}
-	result.Changelog = strings.Join(changelogParts, "\n\n")
+	result.Changelog = bestVersion.Changelog
 
 	if compareVersions(result.LatestVersion, result.CurrentVersion) <= 0 {
 		return result
@@ -734,14 +769,12 @@ func (s *systemService) DownloadUpdate() error {
 		return fmt.Errorf("cannot read local version: %v", err)
 	}
 
-	remote, err := fetchRemoteVersionJSON(local.UpdateServer)
+	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID)
 	if err != nil {
-		logger.Error("DownloadUpdate: cannot fetch remote version", zap.Error(err))
-		return err
+		logger.Error("DownloadUpdate: cloud check failed", zap.Error(err))
+		return fmt.Errorf("cloud check failed: %v", err)
 	}
-
-	bestVersion := findHighestCompatibleVersion(remote.Versions, local.Version, local.Platform, local.HardwareID)
-	if bestVersion == nil {
+	if !hasUpdate || bestVersion == nil {
 		logger.Error("DownloadUpdate: no compatible version found")
 		return fmt.Errorf("no compatible version found for this platform")
 	}
@@ -756,40 +789,108 @@ func (s *systemService) DownloadUpdate() error {
 
 	if _, err := os.Stat(finalFile); err == nil {
 		logger.Info("DownloadUpdate: final file already exists")
+		// 已下载完成，仍须广播事件让前端响应
+		properties := map[string]string{"version": bestVersion.Version}
+		MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:upgrade:downloaded", properties)
 		return nil
 	}
 
+	// 断点续传：检查已有 .tmp 文件大小
+	var resumeOffset int64
+	if fi, err := os.Stat(tmpFile); err == nil {
+		resumeOffset = fi.Size()
+		logger.Info("DownloadUpdate: resuming from offset", zap.Int64("offset", resumeOffset))
+	}
+
+	// 云端 /releases/* 返回 302 重定向到 S3 预签名 URL
+	// 使用 transport 级超时，不设总超时，避免大文件被中断
 	fullURL := local.UpdateServer + bestVersion.DownloadURL
-	logger.Info("DownloadUpdate: downloading", zap.String("url", fullURL))
-	downloadClient := &http.Client{Timeout: 5 * time.Minute}
-	dlResp, err := downloadClient.Get(fullURL)
+	logger.Info("DownloadUpdate: downloading", zap.String("url", fullURL),
+		zap.Int64("resume_offset", resumeOffset))
+
+	transport := &http.Transport{
+		ResponseHeaderTimeout: 2 * time.Minute,  // 等响应头最多 2 分钟（含 TLS 握手）
+		IdleConnTimeout:       10 * time.Minute, // 连接空闲超时，大文件下载足够长
+	}
+	downloadClient := &http.Client{Transport: transport, Timeout: 0}
+
+	req, err := http.NewRequest("GET", fullURL, nil)
 	if err != nil {
-		logger.Error("DownloadUpdate: download failed", zap.Error(err), zap.String("url", fullURL))
-		return fmt.Errorf("download failed: %v", err)
+		return fmt.Errorf("create download request: %w", err)
+	}
+	if resumeOffset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+	}
+
+	dlResp, err := downloadClient.Do(req)
+	if err != nil {
+		logger.Error("DownloadUpdate: download request failed", zap.Error(err), zap.String("url", fullURL))
+		return fmt.Errorf("download request failed: %v", err)
 	}
 	defer dlResp.Body.Close()
 
-	if dlResp.StatusCode != http.StatusOK {
+	// 非 200/206 说明下载失败（如预签名 URL 过期、S3 错误等），
+	// 刷新 URL 重试一次
+	if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
+		logger.Info("DownloadUpdate: download failed with status, refreshing URL",
+			zap.Int("status", dlResp.StatusCode))
+		dlResp.Body.Close()
+		hasUpdate, bestVersion, err = checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID)
+		if err != nil || !hasUpdate || bestVersion == nil {
+			return fmt.Errorf("version check failed after download error")
+		}
+		fullURL = local.UpdateServer + bestVersion.DownloadURL
+		req, _ = http.NewRequest("GET", fullURL, nil)
+		if resumeOffset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+		}
+		dlResp, err = downloadClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("download failed after URL refresh: %w", err)
+		}
+		defer dlResp.Body.Close()
+
+		if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
+			logger.Error("DownloadUpdate: retry still failed", zap.Int("status", dlResp.StatusCode))
+			return fmt.Errorf("download failed: status %d after retry", dlResp.StatusCode)
+		}
+	}
+
+	// 206 = 断点续传部分内容，200 = 全新下载（Range 被忽略时）
+	if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
 		logger.Error("DownloadUpdate: download bad status", zap.Int("status", dlResp.StatusCode))
 		return fmt.Errorf("download failed: status %d", dlResp.StatusCode)
 	}
 
-	out, err := os.Create(tmpFile)
+	// 根据响应码决定文件打开模式：
+	//   206 → 追加续传
+	//   200 → 覆盖全新下载（Server 忽略了 Range 请求头）
+	openFlags := os.O_CREATE | os.O_WRONLY
+	if dlResp.StatusCode == http.StatusPartialContent {
+		openFlags |= os.O_APPEND
+		logger.Info("DownloadUpdate: Server accepted Range, appending to existing file")
+	} else {
+		openFlags |= os.O_TRUNC
+		resumeOffset = 0
+		logger.Info("DownloadUpdate: Server ignored Range, downloading from scratch")
+	}
+
+	out, err := os.OpenFile(tmpFile, openFlags, 0644)
 	if err != nil {
-		logger.Error("DownloadUpdate: cannot create temp file", zap.Error(err))
-		return fmt.Errorf("cannot create temp file: %v", err)
+		return fmt.Errorf("cannot open temp file: %w", err)
 	}
 
 	written, err := io.Copy(out, dlResp.Body)
 	if err != nil {
 		out.Close()
-		os.Remove(tmpFile)
-		logger.Error("DownloadUpdate: download write failed", zap.Error(err))
-		return fmt.Errorf("download write failed: %v", err)
+		logger.Error("DownloadUpdate: download write interrupted", zap.Error(err),
+			zap.Int64("progress_bytes", resumeOffset+written))
+		return fmt.Errorf("download interrupted at %d bytes, will retry later", resumeOffset)
 	}
 	logger.Info("DownloadUpdate: downloaded bytes", zap.Int64("bytes", written))
 	out.Close()
 
+	// 校验已完成文件（含续传累积部分完整 SHA256）
 	hasher := sha256.New()
 	content, err := os.ReadFile(tmpFile)
 	if err != nil {
