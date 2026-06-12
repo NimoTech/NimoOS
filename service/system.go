@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -476,18 +477,33 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 		return fmt.Errorf("no downloaded upgrade bundle found")
 	}
 
+	local, _ := readLocalVersionInfo()
+	currentVersion := s.GetVersion()
+	targetVersion := version
+
 	go func() {
 		logger.Info("starting system upgrade", zap.String("bundle", latestBundle))
+
+		// 上报 installing 状态
+		if local != nil {
+			reportUpgradeResult(local.UpdateServer, local.DeviceID, currentVersion, targetVersion, "installing", "")
+		}
 
 		cmd := exec.Command("/usr/libexec/nimo_upgrade.sh", latestBundle)
 		output, err := cmd.CombinedOutput()
 
 		if err != nil || !strings.Contains(string(output), "NimoOS upgrade successfully") {
 			logger.Error("system upgrade failed", zap.Error(err), zap.String("log", string(output)))
+			if local != nil {
+				reportUpgradeResult(local.UpdateServer, local.DeviceID, currentVersion, targetVersion, "failed", "rauc_install_failed")
+			}
 			return
 		}
 
 		logger.Info("system upgrade successful, rebooting")
+		if local != nil {
+			reportUpgradeResult(local.UpdateServer, local.DeviceID, currentVersion, targetVersion, "completed", "")
+		}
 		time.Sleep(3 * time.Second)
 		command.OnlyExec("systemctl reboot")
 	}()
@@ -515,6 +531,7 @@ type localVersionJSON struct {
 	Platform     string `json:"platform"`
 	HardwareID   string `json:"hardware_id"`
 	HardwareName string `json:"hardware_name"`
+	DeviceID     string `json:"device_id"`
 }
 
 func readLocalVersionInfo() (*localVersionJSON, error) {
@@ -533,7 +550,59 @@ func readLocalVersionInfo() (*localVersionJSON, error) {
 	if local.Version == "" {
 		return nil, fmt.Errorf("version field is empty")
 	}
+
+	// 如果没有 device_id，从 /etc/machine-id 读取
+	if local.DeviceID == "" {
+		if mid, err := os.ReadFile("/etc/machine-id"); err == nil {
+			local.DeviceID = strings.TrimSpace(string(mid))
+		}
+	}
+
 	return &local, nil
+}
+
+// generateCookie 生成 NimoOS-Cookie 头：SHA256(device_id + ":" + secret)[:16]
+func generateCookie(deviceID string) string {
+	data := deviceID + ":" + common.CookieSecret
+	h := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(h[:16])
+}
+
+// readRAUCBootStatus 读取 A/B 两个分区的 boot_status 和当前启动分区
+// 返回格式："{A的状态},{B的状态},booted:{启动分区}"，如 "good,bad,booted:A"
+func readRAUCBootStatus() string {
+	output, err := command.OnlyExec("rauc status --output-format=json 2>/dev/null")
+	if err != nil {
+		return ""
+	}
+
+	booted := gjson.Get(output, "booted").String()
+	statusA, statusB := "", ""
+	for _, slot := range gjson.Get(output, "slots").Array() {
+		for _, v := range slot.Map() {
+			bootname := v.Get("bootname").String()
+			status := v.Get("boot_status").String()
+			if bootname == "A" && status != "" {
+				statusA = status
+			} else if bootname == "B" && status != "" {
+				statusB = status
+			}
+		}
+	}
+
+	if statusA == "" && statusB == "" {
+		return ""
+	}
+	if statusA == "" {
+		statusA = "unknown"
+	}
+	if statusB == "" {
+		statusB = "unknown"
+	}
+	if booted == "" {
+		return statusA + "," + statusB
+	}
+	return statusA + "," + statusB + ",booted:" + booted
 }
 
 type upgradeCheckResponse struct {
@@ -555,19 +624,25 @@ type upgradeCheckResponse struct {
 
 // checkCloudUpdate 调用云端 OTA 服务检查更新。
 // 云端 API: GET {update_server}/v1/sys/version?current_version=X
-// 请求头: X-Nimo-Platform, X-Nimo-Hardware-ID
+// 使用 NimoOS-Cookie 鉴权：deviceID + timestamp + CookieSecret 的 SHA256[:16]
 // 返回: (hasUpdate, versionInfo, error)
+//   - 401 表示鉴权失败 → hasUpdate=false, error=nil（静默降级，可能是密钥过期）
 //   - 404 表示无可用更新 → hasUpdate=false, error=nil
 //   - 503 表示服务不可用 → hasUpdate=false, error=nil（静默降级）
 //   - 其他错误 → hasUpdate=false, error=err（调用方决定是否重试）
-func checkCloudUpdate(server, currentVersion, platform, hardwareID string) (bool, *versionInfo, error) {
+func checkCloudUpdate(server, currentVersion, platform, hardwareID, deviceID string) (bool, *versionInfo, error) {
 	url := fmt.Sprintf("%s/v1/sys/version?current_version=%s", server, currentVersion)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return false, nil, fmt.Errorf("create request: %w", err)
 	}
+
+	// NimoOS-Cookie 鉴权头
+	req.Header.Set("X-Nimo-Device-ID", deviceID)
+	req.Header.Set("X-Nimo-Cookie", generateCookie(deviceID))
 	req.Header.Set("X-Nimo-Platform", platform)
 	req.Header.Set("X-Nimo-Hardware-ID", hardwareID)
+	req.Header.Set("X-Nimo-RAUC-Status", readRAUCBootStatus())
 
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 	resp, err := httpClient.Do(req)
@@ -576,6 +651,11 @@ func checkCloudUpdate(server, currentVersion, platform, hardwareID string) (bool
 	}
 	defer resp.Body.Close()
 
+	// 401: 鉴权失败（静默降级）
+	if resp.StatusCode == http.StatusUnauthorized {
+		logger.Info("checkCloudUpdate: authentication failed (401)")
+		return false, nil, nil
+	}
 	// 404: 无可用更新（静默处理）
 	if resp.StatusCode == http.StatusNotFound {
 		return false, nil, nil
@@ -613,6 +693,50 @@ func checkCloudUpdate(server, currentVersion, platform, hardwareID string) (bool
 	}
 
 	return true, vi, nil
+}
+
+// reportUpgradeResult 上报升级结果到云端
+// status: "completed" 或 "failed"
+// Cookie 算法与 checkCloudUpdate 一致：SHA256(device_id + ":" + secret)[:16]
+func reportUpgradeResult(server, deviceID, fromVersion, toVersion, status, errorMsg string) {
+	url := fmt.Sprintf("%s/v1/sys/report", server)
+
+	body := map[string]interface{}{
+		"device_id":     deviceID,
+		"event":         "upgrade_result",
+		"from_version":  fromVersion,
+		"to_version":    toVersion,
+		"status":        status,
+		"error_message": errorMsg,
+	}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		logger.Error("reportUpgradeResult: marshal failed", zap.Error(err))
+		return
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	if err != nil {
+		logger.Error("reportUpgradeResult: create request failed", zap.Error(err))
+		return
+	}
+
+	// NimoOS-Cookie 鉴权头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Nimo-Device-ID", deviceID)
+	req.Header.Set("X-Nimo-Cookie", generateCookie(deviceID))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Error("reportUpgradeResult: request failed", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Error("reportUpgradeResult: unexpected status", zap.Int("status", resp.StatusCode))
+	}
 }
 
 type compatibleRule struct {
@@ -720,7 +844,7 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 		return result
 	}
 
-	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, result.CurrentVersion, local.Platform, local.HardwareID)
+	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, result.CurrentVersion, local.Platform, local.HardwareID, local.DeviceID)
 	if err != nil {
 		logger.Info("CheckUpdate: cloud check failed, will retry later", zap.Error(err))
 		return result
@@ -769,7 +893,7 @@ func (s *systemService) DownloadUpdate() error {
 		return fmt.Errorf("cannot read local version: %v", err)
 	}
 
-	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID)
+	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID, local.DeviceID)
 	if err != nil {
 		logger.Error("DownloadUpdate: cloud check failed", zap.Error(err))
 		return fmt.Errorf("cloud check failed: %v", err)
@@ -783,6 +907,9 @@ func (s *systemService) DownloadUpdate() error {
 
 	downloadDir := "/var/lib/nimoos_data/upgrade/v" + bestVersion.Version
 	os.MkdirAll(downloadDir, 0755)
+
+	// 上报 downloading 状态
+	reportUpgradeResult(local.UpdateServer, local.DeviceID, local.Version, bestVersion.Version, "downloading", "")
 
 	tmpFile := filepath.Join(downloadDir, "nimo_update_"+bestVersion.Version+".raucb.tmp")
 	finalFile := filepath.Join(downloadDir, "nimo_update_"+bestVersion.Version+".raucb")
@@ -835,7 +962,7 @@ func (s *systemService) DownloadUpdate() error {
 		logger.Info("DownloadUpdate: download failed with status, refreshing URL",
 			zap.Int("status", dlResp.StatusCode))
 		dlResp.Body.Close()
-		hasUpdate, bestVersion, err = checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID)
+		hasUpdate, bestVersion, err = checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID, local.DeviceID)
 		if err != nil || !hasUpdate || bestVersion == nil {
 			return fmt.Errorf("version check failed after download error")
 		}
@@ -904,6 +1031,7 @@ func (s *systemService) DownloadUpdate() error {
 	if !strings.EqualFold(actualSHA256, bestVersion.SHA256) {
 		os.Remove(tmpFile)
 		logger.Error("DownloadUpdate: SHA256 mismatch", zap.String("expected", bestVersion.SHA256), zap.String("actual", actualSHA256))
+		reportUpgradeResult(local.UpdateServer, local.DeviceID, local.Version, bestVersion.Version, "failed", "sha256_mismatch")
 		return fmt.Errorf("SHA256 mismatch")
 	}
 
