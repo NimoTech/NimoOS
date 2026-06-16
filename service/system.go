@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/external"
@@ -46,6 +47,8 @@ type SystemService interface {
 	UpdateSystemVersion(version string) error
 	CheckUpdate() *UpgradeCheckResult
 	DownloadUpdate() error
+	CancelDownload()
+	GetDownloadStatus() (string, int) // 返回 (status, progress)
 	StartDailyDownloadChecker()
 	GetSystemConfigDebug() []string
 	GetNimoOSLogs(lineNumber int) string
@@ -92,7 +95,20 @@ type SystemService interface {
 	GetHardwareID() string
 	GetHardwareName() string
 }
-type systemService struct{}
+
+// downloaderState 管理系统升级包下载协程的生命周期
+type downloaderState struct {
+	mu          sync.RWMutex
+	status      string // "idle" | "running" | "paused" | "completed" | "failed"
+	version     string
+	progress    int // 0-100
+	cancel      context.CancelFunc
+	downloadDir string // 当前下载目录，用于取消时清理 .tmp
+}
+
+type systemService struct {
+	downloader downloaderState
+}
 
 func (s *systemService) GetVersion() string {
 	version := common.VERSION
@@ -477,12 +493,16 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 		return fmt.Errorf("no downloaded upgrade bundle found")
 	}
 
+	// 从目录名提取目标版本号：/var/lib/nimoos_data/upgrade/v1.0.1/ → 1.0.1
+	bundleDir := filepath.Dir(latestBundle)
+	targetVersion := strings.TrimPrefix(filepath.Base(bundleDir), "v")
+
 	local, _ := readLocalVersionInfo()
 	currentVersion := s.GetVersion()
-	targetVersion := version
 
 	go func() {
-		logger.Info("starting system upgrade", zap.String("bundle", latestBundle))
+		logger.Info("starting system upgrade", zap.String("bundle", latestBundle),
+			zap.String("target", targetVersion))
 
 		// 上报 installing 状态
 		if local != nil {
@@ -825,13 +845,16 @@ func findHighestCompatibleVersion(versions []versionInfo, currentVersion, platfo
 }
 
 type UpgradeCheckResult struct {
-	HasUpdate      bool   `json:"has_update"`
-	CurrentVersion string `json:"current_version"`
-	LatestVersion  string `json:"latest_version"`
-	IsDownloaded   bool   `json:"is_downloaded"`
-	Changelog      string `json:"changelog"`
-	Size           int    `json:"size"`
-	Error          string `json:"error,omitempty"`
+	HasUpdate        bool   `json:"has_update"`
+	CurrentVersion   string `json:"current_version"`
+	LatestVersion    string `json:"latest_version"`
+	IsDownloaded     bool   `json:"is_downloaded"`
+	IsDownloading    bool   `json:"is_downloading"`              // 协程 running，有下载进程在跑
+	IsPaused         bool   `json:"is_paused"`                   // .tmp 残留但协程 idle，可断点续传
+	DownloadProgress int    `json:"download_progress,omitempty"` // 0-100
+	Changelog        string `json:"changelog"`
+	Size             int    `json:"size"`
+	Error            string `json:"error,omitempty"`
 }
 
 func (s *systemService) CheckUpdate() *UpgradeCheckResult {
@@ -864,12 +887,31 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 	downloadDir := "/var/lib/nimoos_data/upgrade/v" + bestVersion.Version
 	if entries, err := os.ReadDir(downloadDir); err == nil {
 		for _, entry := range entries {
-			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".raucb" {
+			if entry.IsDir() {
+				continue
+			}
+			ext := filepath.Ext(entry.Name())
+			if ext == ".raucb" {
 				result.IsDownloaded = true
 				break
 			}
+			if ext == ".tmp" {
+				result.IsPaused = true
+			}
 		}
 	}
+
+	// 如果 downloader 协程正在跑，覆盖为 downloading（优先级高于 paused）
+	s.downloader.mu.RLock()
+	if s.downloader.status == "running" {
+		result.IsDownloading = true
+		result.IsPaused = false
+		result.DownloadProgress = s.downloader.progress
+	} else if s.downloader.status == "paused" {
+		result.IsPaused = true
+		result.DownloadProgress = s.downloader.progress
+	}
+	s.downloader.mu.RUnlock()
 
 	result.HasUpdate = true
 	return result
@@ -877,36 +919,108 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 
 func (s *systemService) DownloadUpdate() error {
 	logger.Info("DownloadUpdate: starting")
-	check := s.CheckUpdate()
-	if !check.HasUpdate {
-		logger.Info("DownloadUpdate: no update available from CheckUpdate")
-		return fmt.Errorf("no update available")
-	}
-	if check.IsDownloaded {
-		logger.Info("DownloadUpdate: already downloaded")
+
+	// 检查协程状态
+	s.downloader.mu.Lock()
+	if s.downloader.status == "running" {
+		s.downloader.mu.Unlock()
+		logger.Info("DownloadUpdate: downloader goroutine already running")
 		return nil
 	}
+	// 重置状态
+	s.downloader.status = "running"
+	s.downloader.progress = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	s.downloader.cancel = cancel
+	s.downloader.mu.Unlock()
+
+	go s.runDownload(ctx)
+	return nil
+}
+
+func (s *systemService) CancelDownload() {
+	s.downloader.mu.RLock()
+	cancel := s.downloader.cancel
+	dlDir := s.downloader.downloadDir
+	s.downloader.mu.RUnlock()
+
+	// 取消下载协程
+	if cancel != nil {
+		cancel()
+	}
+
+	// 清理 .tmp 文件回到初始状态
+	if dlDir != "" {
+		entries, _ := os.ReadDir(dlDir)
+		for _, entry := range entries {
+			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".tmp" {
+				os.Remove(filepath.Join(dlDir, entry.Name()))
+			}
+		}
+	}
+
+	s.downloader.mu.Lock()
+	s.downloader.status = "idle"
+	s.downloader.progress = 0
+	s.downloader.cancel = nil
+	s.downloader.mu.Unlock()
+}
+
+func (s *systemService) GetDownloadStatus() (string, int) {
+	s.downloader.mu.RLock()
+	defer s.downloader.mu.RUnlock()
+	return s.downloader.status, s.downloader.progress
+}
+
+// runDownload 是实际下载逻辑，在独立协程中运行
+func (s *systemService) runDownload(ctx context.Context) {
+	logger.Info("runDownload: goroutine started")
 
 	local, err := readLocalVersionInfo()
 	if err != nil {
-		logger.Error("DownloadUpdate: cannot read local version", zap.Error(err))
-		return fmt.Errorf("cannot read local version: %v", err)
+		logger.Error("runDownload: cannot read local version", zap.Error(err))
+		s.setDownloaderStatus("failed")
+		return
 	}
 
+	check := s.CheckUpdate()
+	if !check.HasUpdate {
+		logger.Info("runDownload: no update available")
+		s.setDownloaderStatus("failed")
+		return
+	}
+	if check.IsDownloaded {
+		logger.Info("runDownload: already downloaded")
+		s.setDownloaderStatus("completed")
+		return
+	}
+
+	// 重新查云端获取 downloadURL
 	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID, local.DeviceID)
 	if err != nil {
-		logger.Error("DownloadUpdate: cloud check failed", zap.Error(err))
-		return fmt.Errorf("cloud check failed: %v", err)
+		logger.Error("runDownload: cloud check failed", zap.Error(err))
+		s.setDownloaderStatus("failed")
+		return
 	}
 	if !hasUpdate || bestVersion == nil {
-		logger.Error("DownloadUpdate: no compatible version found")
-		return fmt.Errorf("no compatible version found for this platform")
+		logger.Error("runDownload: no compatible version found")
+		s.setDownloaderStatus("failed")
+		return
 	}
 
-	logger.Info("DownloadUpdate: selected version", zap.String("version", bestVersion.Version), zap.String("url", bestVersion.DownloadURL))
+	// 保存版本号
+	s.downloader.mu.Lock()
+	s.downloader.version = bestVersion.Version
+	s.downloader.mu.Unlock()
+
+	logger.Info("runDownload: selected version", zap.String("version", bestVersion.Version), zap.String("url", bestVersion.DownloadURL))
 
 	downloadDir := "/var/lib/nimoos_data/upgrade/v" + bestVersion.Version
 	os.MkdirAll(downloadDir, 0755)
+
+	s.downloader.mu.Lock()
+	s.downloader.downloadDir = downloadDir
+	s.downloader.mu.Unlock()
 
 	// 上报 downloading 状态
 	reportUpgradeResult(local.UpdateServer, local.DeviceID, local.Version, bestVersion.Version, "downloading", "")
@@ -915,35 +1029,34 @@ func (s *systemService) DownloadUpdate() error {
 	finalFile := filepath.Join(downloadDir, "nimo_update_"+bestVersion.Version+".raucb")
 
 	if _, err := os.Stat(finalFile); err == nil {
-		logger.Info("DownloadUpdate: final file already exists")
-		// 已下载完成，仍须广播事件让前端响应
+		logger.Info("runDownload: final file already exists")
 		properties := map[string]string{"version": bestVersion.Version}
 		MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:upgrade:downloaded", properties)
-		return nil
+		s.setDownloaderStatus("completed")
+		return
 	}
 
 	// 断点续传：检查已有 .tmp 文件大小
 	var resumeOffset int64
 	if fi, err := os.Stat(tmpFile); err == nil {
 		resumeOffset = fi.Size()
-		logger.Info("DownloadUpdate: resuming from offset", zap.Int64("offset", resumeOffset))
+		logger.Info("runDownload: resuming from offset", zap.Int64("offset", resumeOffset))
 	}
 
-	// 云端 /releases/* 返回 302 重定向到 S3 预签名 URL
-	// 使用 transport 级超时，不设总超时，避免大文件被中断
 	fullURL := local.UpdateServer + bestVersion.DownloadURL
-	logger.Info("DownloadUpdate: downloading", zap.String("url", fullURL),
-		zap.Int64("resume_offset", resumeOffset))
+	logger.Info("runDownload: downloading", zap.String("url", fullURL), zap.Int64("resume_offset", resumeOffset))
 
 	transport := &http.Transport{
-		ResponseHeaderTimeout: 2 * time.Minute,  // 等响应头最多 2 分钟（含 TLS 握手）
-		IdleConnTimeout:       10 * time.Minute, // 连接空闲超时，大文件下载足够长
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       10 * time.Minute,
 	}
 	downloadClient := &http.Client{Transport: transport, Timeout: 0}
 
-	req, err := http.NewRequest("GET", fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
-		return fmt.Errorf("create download request: %w", err)
+		logger.Error("runDownload: create request failed", zap.Error(err))
+		s.setDownloaderStatus("failed")
+		return
 	}
 	if resumeOffset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
@@ -951,99 +1064,147 @@ func (s *systemService) DownloadUpdate() error {
 
 	dlResp, err := downloadClient.Do(req)
 	if err != nil {
-		logger.Error("DownloadUpdate: download request failed", zap.Error(err), zap.String("url", fullURL))
-		return fmt.Errorf("download request failed: %v", err)
+		logger.Error("runDownload: download request failed", zap.Error(err))
+		s.setDownloaderStatus("failed")
+		return
 	}
 	defer dlResp.Body.Close()
 
-	// 非 200/206 说明下载失败（如预签名 URL 过期、S3 错误等），
-	// 刷新 URL 重试一次
+	// 非 200/206 刷新 URL 重试一次
 	if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
-		logger.Info("DownloadUpdate: download failed with status, refreshing URL",
-			zap.Int("status", dlResp.StatusCode))
+		logger.Info("runDownload: download failed with status, refreshing URL", zap.Int("status", dlResp.StatusCode))
 		dlResp.Body.Close()
 		hasUpdate, bestVersion, err = checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID, local.DeviceID)
 		if err != nil || !hasUpdate || bestVersion == nil {
-			return fmt.Errorf("version check failed after download error")
+			logger.Error("runDownload: version check failed after download error")
+			s.setDownloaderStatus("failed")
+			return
 		}
 		fullURL = local.UpdateServer + bestVersion.DownloadURL
-		req, _ = http.NewRequest("GET", fullURL, nil)
+		req, _ = http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if resumeOffset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
 		}
 		dlResp, err = downloadClient.Do(req)
 		if err != nil {
-			return fmt.Errorf("download failed after URL refresh: %w", err)
+			logger.Error("runDownload: retry request failed", zap.Error(err))
+			s.setDownloaderStatus("failed")
+			return
 		}
 		defer dlResp.Body.Close()
-
 		if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
-			logger.Error("DownloadUpdate: retry still failed", zap.Int("status", dlResp.StatusCode))
-			return fmt.Errorf("download failed: status %d after retry", dlResp.StatusCode)
+			logger.Error("runDownload: retry still failed", zap.Int("status", dlResp.StatusCode))
+			s.setDownloaderStatus("failed")
+			return
 		}
 	}
 
-	// 206 = 断点续传部分内容，200 = 全新下载（Range 被忽略时）
-	if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
-		logger.Error("DownloadUpdate: download bad status", zap.Int("status", dlResp.StatusCode))
-		return fmt.Errorf("download failed: status %d", dlResp.StatusCode)
-	}
-
-	// 根据响应码决定文件打开模式：
-	//   206 → 追加续传
-	//   200 → 覆盖全新下载（Server 忽略了 Range 请求头）
+	// 根据响应码决定文件打开模式
 	openFlags := os.O_CREATE | os.O_WRONLY
 	if dlResp.StatusCode == http.StatusPartialContent {
 		openFlags |= os.O_APPEND
-		logger.Info("DownloadUpdate: Server accepted Range, appending to existing file")
+		logger.Info("runDownload: Server accepted Range, appending to existing file")
 	} else {
 		openFlags |= os.O_TRUNC
 		resumeOffset = 0
-		logger.Info("DownloadUpdate: Server ignored Range, downloading from scratch")
+		logger.Info("runDownload: Server ignored Range, downloading from scratch")
 	}
 
 	out, err := os.OpenFile(tmpFile, openFlags, 0644)
 	if err != nil {
-		return fmt.Errorf("cannot open temp file: %w", err)
+		logger.Error("runDownload: cannot open temp file", zap.Error(err))
+		s.setDownloaderStatus("failed")
+		return
+	}
+	defer out.Close()
+
+	// 分段写入 + 进度推送
+	buf := make([]byte, 256*1024) // 256KB buffer
+	var totalWritten int64
+	totalSize := int64(bestVersion.Size)
+	lastPublishedProgress := -1
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("runDownload: cancelled, .tmp already cleaned up by CancelDownload")
+			return
+		default:
+		}
+
+		n, readErr := dlResp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
+				logger.Error("runDownload: write failed", zap.Error(writeErr))
+				s.setDownloaderStatus("failed")
+				return
+			}
+			totalWritten += int64(n)
+			// 计算进度百分比
+			progress := 0
+			if totalSize > 0 {
+				// resumeOffset 是续传起始偏移，累计到 totalWritten 中
+				progress = int((resumeOffset + totalWritten) * 100 / totalSize)
+				if progress > 100 {
+					progress = 100
+				}
+			}
+			s.downloader.mu.Lock()
+			s.downloader.progress = progress
+			s.downloader.mu.Unlock()
+
+			// 每次进度变化 ≥ 1 才推送事件
+			if progress-lastPublishedProgress >= 1 || progress == 100 {
+				lastPublishedProgress = progress
+				props := map[string]string{
+					"version":  bestVersion.Version,
+					"progress": strconv.Itoa(progress),
+				}
+				MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:upgrade:progress", props)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			logger.Error("runDownload: read interrupted", zap.Error(readErr), zap.Int64("progress_bytes", resumeOffset+totalWritten))
+			s.setDownloaderStatus("paused") // 网络中断 = 保留 .tmp 供续传
+			return
+		}
 	}
 
-	written, err := io.Copy(out, dlResp.Body)
-	if err != nil {
-		out.Close()
-		logger.Error("DownloadUpdate: download write interrupted", zap.Error(err),
-			zap.Int64("progress_bytes", resumeOffset+written))
-		return fmt.Errorf("download interrupted at %d bytes, will retry later", resumeOffset)
-	}
-	logger.Info("DownloadUpdate: downloaded bytes", zap.Int64("bytes", written))
 	out.Close()
+	logger.Info("runDownload: downloaded bytes", zap.Int64("total_bytes", resumeOffset+totalWritten))
 
-	// 校验已完成文件（含续传累积部分完整 SHA256）
+	// SHA256 校验
 	hasher := sha256.New()
 	content, err := os.ReadFile(tmpFile)
 	if err != nil {
 		os.Remove(tmpFile)
-		logger.Error("DownloadUpdate: cannot read temp file for checksum", zap.Error(err))
-		return fmt.Errorf("cannot read temp file for checksum: %v", err)
+		logger.Error("runDownload: cannot read temp file for checksum", zap.Error(err))
+		s.setDownloaderStatus("failed")
+		return
 	}
 	hasher.Write(content)
 	actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
 
 	if !strings.EqualFold(actualSHA256, bestVersion.SHA256) {
 		os.Remove(tmpFile)
-		logger.Error("DownloadUpdate: SHA256 mismatch", zap.String("expected", bestVersion.SHA256), zap.String("actual", actualSHA256))
+		logger.Error("runDownload: SHA256 mismatch", zap.String("expected", bestVersion.SHA256), zap.String("actual", actualSHA256))
 		reportUpgradeResult(local.UpdateServer, local.DeviceID, local.Version, bestVersion.Version, "failed", "sha256_mismatch")
-		return fmt.Errorf("SHA256 mismatch")
+		s.setDownloaderStatus("failed")
+		return
 	}
 
 	if err := os.Rename(tmpFile, finalFile); err != nil {
 		os.Remove(tmpFile)
-		logger.Error("DownloadUpdate: rename failed", zap.Error(err))
-		return fmt.Errorf("rename failed: %v", err)
+		logger.Error("runDownload: rename failed", zap.Error(err))
+		s.setDownloaderStatus("failed")
+		return
 	}
 
-	logger.Info("DownloadUpdate: download complete", zap.String("file", finalFile))
+	logger.Info("runDownload: download complete", zap.String("file", finalFile))
 
-	// Cleanup old upgrade directories
+	// 清理旧版本目录
 	upgradeDir := "/var/lib/nimoos_data/upgrade"
 	entries, _ := os.ReadDir(upgradeDir)
 	for _, entry := range entries {
@@ -1056,12 +1217,19 @@ func (s *systemService) DownloadUpdate() error {
 		os.RemoveAll(filepath.Join(upgradeDir, entry.Name()))
 	}
 
-	properties := map[string]string{
-		"version": bestVersion.Version,
-	}
+	properties := map[string]string{"version": bestVersion.Version}
 	MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:upgrade:downloaded", properties)
+	s.setDownloaderStatus("completed")
+}
 
-	return nil
+// setDownloaderStatus 线程安全地设置 downloader 状态
+func (s *systemService) setDownloaderStatus(status string) {
+	s.downloader.mu.Lock()
+	defer s.downloader.mu.Unlock()
+	s.downloader.status = status
+	if status == "completed" || status == "failed" {
+		s.downloader.cancel = nil
+	}
 }
 
 func (s *systemService) StartDailyDownloadChecker() {
@@ -1079,7 +1247,8 @@ func (s *systemService) StartDailyDownloadChecker() {
 			time.Sleep(time.Until(next))
 
 			check := s.CheckUpdate()
-			if check.HasUpdate && !check.IsDownloaded {
+			if check.HasUpdate && !check.IsDownloaded && !check.IsDownloading {
+				// DownloadUpdate 内部启动协程，立即返回
 				s.DownloadUpdate()
 			}
 		}

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	http2 "github.com/NimoTech/NimoOS-Common/utils/http"
-	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS-Common/utils/port"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/NimoTech/NimoOS/pkg/config"
@@ -27,7 +26,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
-	"go.uber.org/zap"
 )
 
 // @Summary check version
@@ -63,19 +61,19 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 		ChangeLog: checkResult.Changelog,
 	}
 
-	data := make(map[string]interface{}, 6)
+	data := make(map[string]interface{}, 8)
 	data["need_update"] = true
 	data["version"] = ver
 	data["current_version"] = checkResult.CurrentVersion
 	data["latest_version"] = checkResult.LatestVersion
 	data["is_downloaded"] = checkResult.IsDownloaded
+	data["is_downloading"] = checkResult.IsDownloading
+	data["is_paused"] = checkResult.IsPaused
+	data["download_progress"] = checkResult.DownloadProgress
 
-	if !checkResult.IsDownloaded && utils.DefaultQuery(ctx, "trigger_download", "0") == "1" {
-		go func() {
-			if err := service.MyService.System().DownloadUpdate(); err != nil {
-				logger.Error("triggered download failed", zap.Error(err))
-			}
-		}()
+	if !checkResult.IsDownloaded && !checkResult.IsDownloading && utils.DefaultQuery(ctx, "trigger_download", "0") == "1" {
+		// DownloadUpdate 内部启动协程，立即返回
+		service.MyService.System().DownloadUpdate()
 	}
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
@@ -96,6 +94,18 @@ func SystemUpdate(ctx echo.Context) error {
 			Message: err.Error(),
 		})
 	}
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
+}
+
+// @Summary cancel download
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {string} string "ok"
+// @Router /sys/download/cancel [post]
+func CancelDownload(ctx echo.Context) error {
+	service.MyService.System().CancelDownload()
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
 

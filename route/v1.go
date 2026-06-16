@@ -88,6 +88,7 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/version", v1.GetSystemCheckVersion) // version/check
 
 			v1SysGroup.POST("/update", v1.SystemUpdate)
+			v1SysGroup.POST("/download/cancel", v1.CancelDownload)
 
 			v1SysGroup.GET("/hardware", v1.GetSystemHardwareInfo) // hardware/info
 			v1SysGroup.GET("/baseinfo", v1.GetSystemBaseInfo)
