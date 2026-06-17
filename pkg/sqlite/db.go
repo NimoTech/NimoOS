@@ -41,7 +41,7 @@ func GetDb(dbPath string) *gorm.DB {
 	c.SetConnMaxIdleTime(time.Second * 1000)
 	gdb = db
 
-	err = db.AutoMigrate(&model2.AppNotify{}, model2.SharesDBModel{}, model2.ConnectionsDBModel{}, model2.PeerDriveDBModel{})
+	err = db.AutoMigrate(&model2.AppNotify{}, model2.SharesDBModel{}, model2.ConnectionsDBModel{}, model2.PeerDriveDBModel{}, &model2.UploadTaskDBModel{})
 	if err != nil {
 		fmt.Println(err)
 	}
