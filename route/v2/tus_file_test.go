@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/tus/tusd/v2/pkg/handler"
 )
@@ -206,30 +205,3 @@ func TestIngestToTargetWithPolicy(t *testing.T) {
 	})
 }
 
-func TestSweepStaging(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-
-	oldF := filepath.Join(dir, "old")
-	os.WriteFile(oldF, []byte("x"), 0644)
-	os.WriteFile(oldF+".info", []byte("{}"), 0644)
-	old := now.Add(-8 * 24 * time.Hour)
-	os.Chtimes(oldF, old, old)
-
-	newF := filepath.Join(dir, "new")
-	os.WriteFile(newF, []byte("x"), 0644)
-
-	removed := sweepStaging(dir, 7*24*60*60, now)
-	if removed != 1 {
-		t.Fatalf("removed = %d want 1", removed)
-	}
-	if _, err := os.Stat(oldF); !os.IsNotExist(err) {
-		t.Fatalf("old file should be gone")
-	}
-	if _, err := os.Stat(oldF + ".info"); !os.IsNotExist(err) {
-		t.Fatalf("old .info should be gone")
-	}
-	if _, err := os.Stat(newF); err != nil {
-		t.Fatalf("new file should remain")
-	}
-}

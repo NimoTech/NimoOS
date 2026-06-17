@@ -310,30 +310,3 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
 }
 
-// sweepStaging 删除 dir 中修改时间早于 ttlSeconds 的文件(连带 .info)。
-// 返回删除的主文件数。.info sidecar 不单独计数。
-// 保留供测试使用。
-func sweepStaging(dir string, ttlSeconds int64, now time.Time) int {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	cutoff := now.Add(-time.Duration(ttlSeconds) * time.Second)
-	removed := 0
-	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".info") {
-			continue
-		}
-		info, ierr := e.Info()
-		if ierr != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			p := filepath.Join(dir, e.Name())
-			os.Remove(p)           //nolint:errcheck
-			os.Remove(p + ".info") //nolint:errcheck
-			removed++
-		}
-	}
-	return removed
-}
