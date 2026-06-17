@@ -32,7 +32,7 @@ func (s *TaskStore) ListActiveByOwner(owner string) ([]model.UploadTaskDBModel, 
 
 func (s *TaskStore) UpdateOffset(id string, offset, expiresAt int64) error {
 	return s.db.Model(&model.UploadTaskDBModel{}).Where("id = ?", id).
-		Updates(map[string]interface{}{"offset": offset, "expires_at": expiresAt}).Error
+		Updates(map[string]interface{}{"uploaded_offset": offset, "expires_at": expiresAt}).Error
 }
 
 func (s *TaskStore) SetStatus(id, status string, expiresAt int64) error {

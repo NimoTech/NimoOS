@@ -22,7 +22,7 @@ type UploadTaskDBModel struct {
 	Fingerprint  string `gorm:"column:fingerprint;index" json:"fingerprint"`
 	ContentHash  string `gorm:"column:content_hash;index" json:"content_hash"`
 	UploadURL    string `gorm:"column:upload_url" json:"upload_url"`
-	Offset       int64  `gorm:"column:offset" json:"offset"`
+	Offset       int64  `gorm:"column:uploaded_offset" json:"offset"`
 	Status       string `gorm:"column:status;index" json:"status"`
 	RetryCount   int    `gorm:"column:retry_count" json:"retry_count"`
 	Error        string `gorm:"column:error" json:"error"`
