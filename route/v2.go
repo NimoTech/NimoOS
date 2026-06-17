@@ -142,8 +142,11 @@ func InitV2Router() http.Handler {
 				return true
 			}
 			// uploads 任务管理端点不在 OpenAPI 规格里，跳过校验。
-			if strings.Contains(c.Request().URL.Path, "/file/uploads") {
-				return true
+			{
+				p := c.Request().URL.Path
+				if p == V2APIPath+"/file/uploads" || strings.HasPrefix(p, V2APIPath+"/file/uploads/") {
+					return true
+				}
 			}
 			return false
 		},

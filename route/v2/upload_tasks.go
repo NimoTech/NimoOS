@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func ListUploads(c echo.Context) error {
 func GetUpload(c echo.Context) error {
 	owner := c.Request().Header.Get("user_id")
 	t, err := taskStore.Get(c.Param("id"))
-	if err == gorm.ErrRecordNotFound || (err == nil && t.OwnerUserID != owner) {
+	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && t.OwnerUserID != owner) {
 		return echo.NewHTTPError(http.StatusNotFound, "not found")
 	}
 	if err != nil {
@@ -46,6 +47,14 @@ func GetUpload(c echo.Context) error {
 // CancelUpload: POST /v2/nimoos/file/uploads/:id/cancel —— 幂等,始终 200。
 func CancelUpload(c echo.Context) error {
 	id := c.Param("id")
+	owner := c.Request().Header.Get("user_id")
+	t, err := taskStore.Get(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && t.OwnerUserID != owner) {
+		return echo.NewHTTPError(http.StatusNotFound, "not found")
+	}
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
 	expires := time.Now().Unix() + common.UploadCanceledTTLSeconds
 	canceled, err := taskStore.Cancel(id, expires)
 	if err != nil {

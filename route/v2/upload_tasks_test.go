@@ -94,3 +94,55 @@ func TestCancelUploadIdempotentAndCleansStaging(t *testing.T) {
 		t.Fatalf("second cancel code=%d", code)
 	}
 }
+
+// TestCancelUploadIDOR 确保 owner="2" 无法取消 owner="1" 的任务。
+func TestCancelUploadIDOR(t *testing.T) {
+	s := setupTaskStore(t)
+	SetTaskStore(s)
+	_ = s.Create(&model.UploadTaskDBModel{ID: "y", OwnerUserID: "1", Status: model.UploadStatusUploading})
+
+	// 造 staging 文件，用于断言文件未被删除
+	dir := stagingDirForTest()
+	_ = os.MkdirAll(dir, 0700)
+	stagingFile := filepath.Join(dir, "y")
+	infoFile := filepath.Join(dir, "y.info")
+	_ = os.WriteFile(stagingFile, []byte("d"), 0600)
+	_ = os.WriteFile(infoFile, []byte("{}"), 0600)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/v2/nimoos/file/uploads/y/cancel", nil)
+	req.Header.Set("user_id", "2") // 不同 owner
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues("y")
+
+	err := CancelUpload(c)
+
+	// 应返回 404(通过 echo.HTTPError 或 handler 直接写入)
+	if err != nil {
+		he, ok := err.(*echo.HTTPError)
+		if !ok || he.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 HTTPError, got %v", err)
+		}
+	} else if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+
+	// 任务状态仍为 uploading，未被取消
+	got, getErr := s.Get("y")
+	if getErr != nil {
+		t.Fatalf("Get task failed: %v", getErr)
+	}
+	if got.Status != model.UploadStatusUploading {
+		t.Fatalf("task status should still be uploading, got %s", got.Status)
+	}
+
+	// staging 文件未被删除
+	if _, statErr := os.Stat(stagingFile); os.IsNotExist(statErr) {
+		t.Fatal("staging file should NOT have been removed by unauthorized cancel")
+	}
+	if _, statErr := os.Stat(infoFile); os.IsNotExist(statErr) {
+		t.Fatal("staging .info file should NOT have been removed by unauthorized cancel")
+	}
+}
