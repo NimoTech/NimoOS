@@ -13,6 +13,8 @@ import (
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/service/model"
+	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
 	"go.uber.org/zap"
@@ -230,25 +232,55 @@ func withRelativeLocation(h http.Handler) http.Handler {
 
 // NewFileTUSHandler 创建 Files 用 tusd handler：staging 存储 + 创建校验 +
 // 完成后移动到用户目标路径。返回 http.Handler 供 echo.WrapHandler 使用。
-func NewFileTUSHandler() (http.Handler, error) {
+func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 	if err := os.MkdirAll(common.FileUploadStagingDir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir staging: %w", err)
 	}
-	store := filestore.New(common.FileUploadStagingDir)
+	st := filestore.New(common.FileUploadStagingDir)
 	composer := handler.NewStoreComposer()
-	store.UseIn(composer)
+	st.UseIn(composer)
 
 	tusH, err := handler.NewHandler(handler.Config{
-		BasePath:                fileTusBasePath + "/",
-		StoreComposer:           composer,
-		NotifyCompleteUploads:   true,
-		MaxSize:                 common.FileUploadMaxSize,
-		PreUploadCreateCallback: validateFileUploadMetadata,
+		BasePath:                 fileTusBasePath + "/",
+		StoreComposer:            composer,
+		NotifyCompleteUploads:    true,
+		NotifyCreatedUploads:     true,
+		NotifyUploadProgress:     true,
+		NotifyTerminatedUploads:  true,
+		MaxSize:                  common.FileUploadMaxSize,
+		PreUploadCreateCallback:  validateFileUploadMetadata,
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	// 创建:写任务行。
+	go func() {
+		for ev := range tusH.CreatedUploads {
+			task := upload.NewTaskFromHook(ev, time.Now())
+			if cerr := store.Create(task); cerr != nil {
+				logger.Error("upload task create failed", zap.String("id", ev.Upload.ID), zap.Error(cerr))
+			}
+		}
+	}()
+
+	// 进度:节流更新 offset(每次事件即更新 offset 与 expires;tusd 已按 chunk 粒度发,足够稀疏)。
+	go func() {
+		for ev := range tusH.UploadProgress {
+			_ = store.UpdateOffset(ev.Upload.ID, ev.Upload.Offset,
+				time.Now().Unix()+common.UploadIdleTimeoutSeconds)
+		}
+	}()
+
+	// 终止(协议 DELETE):标记 canceled。
+	go func() {
+		for ev := range tusH.TerminatedUploads {
+			_ = store.SetStatus(ev.Upload.ID, model.UploadStatusCanceled,
+				time.Now().Unix()+common.UploadCanceledTTLSeconds)
+		}
+	}()
+
+	// 完成:ingest + 置 completed / failed。
 	go func() {
 		for event := range tusH.CompleteUploads {
 			stagedPath := filepath.Join(common.FileUploadStagingDir, event.Upload.ID)
@@ -257,23 +289,30 @@ func NewFileTUSHandler() (http.Handler, error) {
 			if relativePath == "" {
 				relativePath = event.Upload.MetaData["filename"]
 			}
-			resumed := event.Upload.MetaData["resumed"] == "1"
-			dest, ierr := ingestToTarget(stagedPath, targetPath, relativePath, resumed)
+			policy := event.Upload.MetaData["conflictPolicy"]
+			if policy == "" && event.Upload.MetaData["resumed"] == "1" {
+				policy = "overwrite"
+			}
+			dest, _, ierr := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
 			if ierr != nil {
 				logger.Error("Files tus ingest failed",
 					zap.String("id", event.Upload.ID), zap.Error(ierr))
+				_ = store.SetFailed(event.Upload.ID, ierr.Error(),
+					time.Now().Unix(), time.Now().Unix()+common.UploadCanceledTTLSeconds)
 				continue
 			}
+			_ = store.SetStatus(event.Upload.ID, model.UploadStatusCompleted, 0)
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
 		}
 	}()
 
-	startStagingGC()
+	upload.StartGC(store)
 	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
 }
 
 // sweepStaging 删除 dir 中修改时间早于 ttlSeconds 的文件(连带 .info)。
 // 返回删除的主文件数。.info sidecar 不单独计数。
+// 保留供测试使用。
 func sweepStaging(dir string, ttlSeconds int64, now time.Time) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -297,15 +336,4 @@ func sweepStaging(dir string, ttlSeconds int64, now time.Time) int {
 		}
 	}
 	return removed
-}
-
-// startStagingGC 启动后台定时 GC(每 6 小时跑一次)。在 NewFileTUSHandler 里调用。
-func startStagingGC() {
-	go func() {
-		ticker := time.NewTicker(6 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			sweepStaging(common.FileUploadStagingDir, common.FileUploadStagingTTLSeconds, time.Now())
-		}
-	}()
 }
