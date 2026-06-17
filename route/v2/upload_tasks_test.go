@@ -95,6 +95,42 @@ func TestCancelUploadIdempotentAndCleansStaging(t *testing.T) {
 	}
 }
 
+// TestGetUploadIDOR 确保 owner="2" 无法读取 owner="1" 的任务(GetUpload 越权应返回 404)。
+func TestGetUploadIDOR(t *testing.T) {
+	s := setupTaskStore(t)
+	SetTaskStore(s)
+	_ = s.Create(&model.UploadTaskDBModel{ID: "z", OwnerUserID: "1", Status: model.UploadStatusUploading})
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/v2/nimoos/file/uploads/z", nil)
+	req.Header.Set("user_id", "2") // 不同 owner
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues("z")
+
+	err := GetUpload(c)
+
+	// 应返回 404
+	if err != nil {
+		he, ok := err.(*echo.HTTPError)
+		if !ok || he.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 HTTPError, got %v", err)
+		}
+	} else if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+
+	// 任务状态未被修改,owner="1" 仍可查
+	got, getErr := s.Get("z")
+	if getErr != nil {
+		t.Fatalf("Get task failed: %v", getErr)
+	}
+	if got.Status != model.UploadStatusUploading {
+		t.Fatalf("task status should still be uploading, got %s", got.Status)
+	}
+}
+
 // TestCancelUploadIDOR 确保 owner="2" 无法取消 owner="1" 的任务。
 func TestCancelUploadIDOR(t *testing.T) {
 	s := setupTaskStore(t)

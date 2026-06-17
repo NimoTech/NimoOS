@@ -1,6 +1,8 @@
 package upload
 
 import (
+	"errors"
+
 	"github.com/NimoTech/NimoOS/service/model"
 	"gorm.io/gorm"
 )
@@ -51,7 +53,7 @@ func (s *TaskStore) SetFailed(id, errMsg string, lastErrorAt, expiresAt int64) e
 // Cancel 幂等地取消任意非终态任务。不存在 / 已 completed / 已 canceled → (false, nil)。
 func (s *TaskStore) Cancel(id string, expiresAt int64) (bool, error) {
 	t, err := s.Get(id)
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, nil
 	}
 	if err != nil {

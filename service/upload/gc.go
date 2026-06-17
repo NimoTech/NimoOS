@@ -12,11 +12,21 @@ import (
 )
 
 // GCConfig 控制分级清理。生产用 DefaultGCConfig 从 common 常量构造。
+//
+// 注意:SweepTasks 实际只读取 StagingDir 与 PausedTTL。
+// IdleTimeout 和 CanceledTTL 不被 SweepTasks 使用——它们由"写侧"
+// 在设置 expires_at 时直接取 common 常量:
+//   - 取消/失败时用 common.UploadCanceledTTLSeconds
+//   - 进度更新时用 common.UploadIdleTimeoutSeconds
+//
+// 因此修改 cfg.CanceledTTL / cfg.IdleTimeout **不会**影响 GC 行为;
+// 如需调整这两项 TTL,请修改对应的 common 常量。
+// 字段保留以备未来统一化改造。
 type GCConfig struct {
 	StagingDir  string
-	IdleTimeout int64 // uploading 无进展降级 paused
-	PausedTTL   int64 // paused staging 保留
-	CanceledTTL int64 // canceled/failed 清理
+	IdleTimeout int64 // uploading 无进展降级 paused(仅由写侧用,SweepTasks 不读)
+	PausedTTL   int64 // paused staging 保留(SweepTasks 读取)
+	CanceledTTL int64 // canceled/failed 清理(仅由写侧用,SweepTasks 不读)
 }
 
 func DefaultGCConfig() GCConfig {

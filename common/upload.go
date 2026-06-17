@@ -10,9 +10,6 @@ const (
 	// FileUploadMaxSize 单文件上限 20 GB（与 Photos 对齐）。
 	FileUploadMaxSize = int64(20 * 1024 * 1024 * 1024)
 
-	// FileUploadStagingTTLSeconds 是 staging 中未完成上传的过期秒数（7 天），
-	// 供 GC 清理。
-	FileUploadStagingTTLSeconds = int64(7 * 24 * 60 * 60)
 )
 
 // 分级缓存清理 TTL(秒)。可后续提升为配置项;当前以常量提供默认值。
