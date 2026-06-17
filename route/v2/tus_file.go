@@ -127,22 +127,47 @@ func uniqueDestPath(dest string) string {
 // existing target instead of creating a "(1)" duplicate. Fresh uploads still get
 // a unique name on collision.
 func ingestToTarget(stagedPath, targetPath, relativePath string, resumed bool) (string, error) {
+	policy := "rename"
+	if resumed {
+		policy = "overwrite"
+	}
+	dest, _, err := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
+	return dest, err
+}
+
+// ingestToTargetWithPolicy 按冲突策略把 staging 文件落到 join(targetPath, relativePath)。
+// policy: "overwrite" 覆盖 / "rename" 加(n) / "skip" 已存在则跳过 / ""=rename。
+func ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy string) (string, bool, error) {
 	dest := filepath.Join(targetPath, relativePath)
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return "", fmt.Errorf("mkdir target dir: %w", err)
+		return "", false, fmt.Errorf("mkdir target dir: %w", err)
 	}
-	if !resumed {
-		dest = uniqueDestPath(dest)
+	_, statErr := os.Stat(dest)
+	exists := statErr == nil
+
+	switch policy {
+	case "skip":
+		if exists {
+			os.Remove(stagedPath)          //nolint:errcheck
+			os.Remove(stagedPath + ".info") //nolint:errcheck
+			return dest, true, nil
+		}
+	case "overwrite":
+		// 直接落到 dest,覆盖。
+	default: // "rename" / ""
+		if exists {
+			dest = uniqueDestPath(dest)
+		}
 	}
 
 	if err := os.Rename(stagedPath, dest); err != nil {
 		if cerr := copyFileV2(stagedPath, dest); cerr != nil {
-			return "", fmt.Errorf("rename and copy both failed: %w / %v", err, cerr)
+			return "", false, fmt.Errorf("rename and copy both failed: %w / %v", err, cerr)
 		}
 		os.Remove(stagedPath) //nolint:errcheck
 	}
 	os.Remove(stagedPath + ".info") //nolint:errcheck
-	return dest, nil
+	return dest, false, nil
 }
 
 func copyFileV2(src, dst string) error {

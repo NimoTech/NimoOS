@@ -145,6 +145,67 @@ func TestIngestToTargetResumedOverwrites(t *testing.T) {
 	}
 }
 
+func TestIngestToTargetWithPolicy(t *testing.T) {
+	mk := func(t *testing.T, dir, name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("skip 已存在则不覆盖", func(t *testing.T) {
+		stg := t.TempDir()
+		tgt := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
+		staged := mk(t, stg, "up1", "NEW")
+		_ = os.WriteFile(staged+".info", []byte("{}"), 0644)
+
+		dest, skipped, err := ingestToTargetWithPolicy(staged, tgt, "a.txt", "skip")
+		if err != nil || !skipped {
+			t.Fatalf("want skipped, got dest=%s skipped=%v err=%v", dest, skipped, err)
+		}
+		b, _ := os.ReadFile(filepath.Join(tgt, "a.txt"))
+		if string(b) != "OLD" {
+			t.Fatalf("skip must keep old content, got %s", b)
+		}
+		if _, err := os.Stat(staged); !os.IsNotExist(err) {
+			t.Fatal("skip must remove staging file")
+		}
+	})
+
+	t.Run("overwrite 覆盖同名", func(t *testing.T) {
+		stg := t.TempDir()
+		tgt := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
+		staged := mk(t, stg, "up2", "NEW")
+
+		dest, skipped, err := ingestToTargetWithPolicy(staged, tgt, "a.txt", "overwrite")
+		if err != nil || skipped {
+			t.Fatalf("overwrite err=%v skipped=%v", err, skipped)
+		}
+		b, _ := os.ReadFile(dest)
+		if string(b) != "NEW" {
+			t.Fatalf("overwrite must replace, got %s", b)
+		}
+	})
+
+	t.Run("rename 加序号", func(t *testing.T) {
+		stg := t.TempDir()
+		tgt := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
+		staged := mk(t, stg, "up3", "NEW")
+
+		dest, _, err := ingestToTargetWithPolicy(staged, tgt, "a.txt", "rename")
+		if err != nil {
+			t.Fatalf("rename err=%v", err)
+		}
+		if filepath.Base(dest) != "a(1).txt" {
+			t.Fatalf("rename expected a(1).txt, got %s", filepath.Base(dest))
+		}
+	})
+}
+
 func TestSweepStaging(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
