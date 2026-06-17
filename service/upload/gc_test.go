@@ -1,0 +1,66 @@
+package upload
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/NimoTech/NimoOS/service/model"
+)
+
+func writeStagingFile(t *testing.T, dir, id string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, id), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".info"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSweepTasksTieredCleanup(t *testing.T) {
+	s := newTestStore(t)
+	dir := t.TempDir()
+	now := time.Unix(10_000, 0)
+	cfg := GCConfig{StagingDir: dir, IdleTimeout: 600, PausedTTL: 1000, CanceledTTL: 60}
+
+	// canceled 已过期 → 删 staging + 删行
+	_ = s.Create(&model.UploadTaskDBModel{ID: "cancel1", Status: model.UploadStatusCanceled, ExpiresAt: 9_000})
+	writeStagingFile(t, dir, "cancel1")
+	// uploading 已过期(僵死)→ 降级 paused,不删 staging
+	_ = s.Create(&model.UploadTaskDBModel{ID: "idle1", Status: model.UploadStatusUploading, ExpiresAt: 9_000})
+	writeStagingFile(t, dir, "idle1")
+	// paused 未过期 → 不动
+	_ = s.Create(&model.UploadTaskDBModel{ID: "keep1", Status: model.UploadStatusPaused, ExpiresAt: 99_999})
+	writeStagingFile(t, dir, "keep1")
+	// completed expires=0 → 永不入集合
+	_ = s.Create(&model.UploadTaskDBModel{ID: "done1", Status: model.UploadStatusCompleted, ExpiresAt: 0})
+
+	transitioned, deleted, err := SweepTasks(s, cfg, now)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if transitioned != 1 || deleted != 1 {
+		t.Fatalf("want transitioned=1 deleted=1, got %d/%d", transitioned, deleted)
+	}
+	// cancel1 行已删、staging 已清
+	if _, err := s.Get("cancel1"); err == nil {
+		t.Fatal("cancel1 row should be deleted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cancel1")); !os.IsNotExist(err) {
+		t.Fatal("cancel1 staging should be gone")
+	}
+	// idle1 降级 paused,staging 还在,expires 重设
+	idle, _ := s.Get("idle1")
+	if idle.Status != model.UploadStatusPaused || idle.ExpiresAt != now.Unix()+cfg.PausedTTL {
+		t.Fatalf("idle1 should become paused with refreshed expires: %+v", idle)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "idle1")); err != nil {
+		t.Fatal("idle1 staging must remain")
+	}
+	// keep1 不变
+	if k, _ := s.Get("keep1"); k.Status != model.UploadStatusPaused {
+		t.Fatal("keep1 must stay paused")
+	}
+}

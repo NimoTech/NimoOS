@@ -14,3 +14,15 @@ const (
 	// 供 GC 清理。
 	FileUploadStagingTTLSeconds = int64(7 * 24 * 60 * 60)
 )
+
+// 分级缓存清理 TTL(秒)。可后续提升为配置项;当前以常量提供默认值。
+const (
+	// UploadIdleTimeoutSeconds: uploading 任务多久无进展降级为 paused(6 小时)。
+	UploadIdleTimeoutSeconds = int64(6 * 60 * 60)
+	// UploadPausedTTLSeconds: paused(待重传)staging 保留窗口(3 天)。
+	UploadPausedTTLSeconds = int64(3 * 24 * 60 * 60)
+	// UploadCanceledTTLSeconds: canceled/failed 多久清理(1 小时)。
+	UploadCanceledTTLSeconds = int64(60 * 60)
+	// UploadGCIntervalSeconds: GC 协程运行间隔(1 小时)。
+	UploadGCIntervalSeconds = int64(60 * 60)
+)
