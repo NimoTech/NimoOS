@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
 	"go.uber.org/zap"
@@ -127,22 +129,47 @@ func uniqueDestPath(dest string) string {
 // existing target instead of creating a "(1)" duplicate. Fresh uploads still get
 // a unique name on collision.
 func ingestToTarget(stagedPath, targetPath, relativePath string, resumed bool) (string, error) {
+	policy := "rename"
+	if resumed {
+		policy = "overwrite"
+	}
+	dest, _, err := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
+	return dest, err
+}
+
+// ingestToTargetWithPolicy 按冲突策略把 staging 文件落到 join(targetPath, relativePath)。
+// policy: "overwrite" 覆盖 / "rename" 加(n) / "skip" 已存在则跳过 / ""=rename。
+func ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy string) (string, bool, error) {
 	dest := filepath.Join(targetPath, relativePath)
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return "", fmt.Errorf("mkdir target dir: %w", err)
+		return "", false, fmt.Errorf("mkdir target dir: %w", err)
 	}
-	if !resumed {
-		dest = uniqueDestPath(dest)
+	_, statErr := os.Stat(dest)
+	exists := statErr == nil
+
+	switch policy {
+	case "skip":
+		if exists {
+			os.Remove(stagedPath)          //nolint:errcheck
+			os.Remove(stagedPath + ".info") //nolint:errcheck
+			return dest, true, nil
+		}
+	case "overwrite":
+		// 直接落到 dest,覆盖。
+	default: // "rename" / ""
+		if exists {
+			dest = uniqueDestPath(dest)
+		}
 	}
 
 	if err := os.Rename(stagedPath, dest); err != nil {
 		if cerr := copyFileV2(stagedPath, dest); cerr != nil {
-			return "", fmt.Errorf("rename and copy both failed: %w / %v", err, cerr)
+			return "", false, fmt.Errorf("rename and copy both failed: %w / %v", err, cerr)
 		}
 		os.Remove(stagedPath) //nolint:errcheck
 	}
 	os.Remove(stagedPath + ".info") //nolint:errcheck
-	return dest, nil
+	return dest, false, nil
 }
 
 func copyFileV2(src, dst string) error {
@@ -205,25 +232,55 @@ func withRelativeLocation(h http.Handler) http.Handler {
 
 // NewFileTUSHandler 创建 Files 用 tusd handler：staging 存储 + 创建校验 +
 // 完成后移动到用户目标路径。返回 http.Handler 供 echo.WrapHandler 使用。
-func NewFileTUSHandler() (http.Handler, error) {
+func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 	if err := os.MkdirAll(common.FileUploadStagingDir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir staging: %w", err)
 	}
-	store := filestore.New(common.FileUploadStagingDir)
+	st := filestore.New(common.FileUploadStagingDir)
 	composer := handler.NewStoreComposer()
-	store.UseIn(composer)
+	st.UseIn(composer)
 
 	tusH, err := handler.NewHandler(handler.Config{
-		BasePath:                fileTusBasePath + "/",
-		StoreComposer:           composer,
-		NotifyCompleteUploads:   true,
-		MaxSize:                 common.FileUploadMaxSize,
-		PreUploadCreateCallback: validateFileUploadMetadata,
+		BasePath:                 fileTusBasePath + "/",
+		StoreComposer:            composer,
+		NotifyCompleteUploads:    true,
+		NotifyCreatedUploads:     true,
+		NotifyUploadProgress:     true,
+		NotifyTerminatedUploads:  true,
+		MaxSize:                  common.FileUploadMaxSize,
+		PreUploadCreateCallback:  validateFileUploadMetadata,
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	// 创建:写任务行。
+	go func() {
+		for ev := range tusH.CreatedUploads {
+			task := upload.NewTaskFromHook(ev, time.Now())
+			if cerr := store.Create(task); cerr != nil {
+				logger.Error("upload task create failed", zap.String("id", ev.Upload.ID), zap.Error(cerr))
+			}
+		}
+	}()
+
+	// 进度:节流更新 offset(每次事件即更新 offset 与 expires;tusd 已按 chunk 粒度发,足够稀疏)。
+	go func() {
+		for ev := range tusH.UploadProgress {
+			_ = store.UpdateOffset(ev.Upload.ID, ev.Upload.Offset,
+				time.Now().Unix()+common.UploadIdleTimeoutSeconds)
+		}
+	}()
+
+	// 终止(协议 DELETE):标记 canceled。
+	go func() {
+		for ev := range tusH.TerminatedUploads {
+			_ = store.SetStatus(ev.Upload.ID, commonUpload.UploadStatusCanceled,
+				time.Now().Unix()+common.UploadCanceledTTLSeconds)
+		}
+	}()
+
+	// 完成:ingest + 置 completed / failed。
 	go func() {
 		for event := range tusH.CompleteUploads {
 			stagedPath := filepath.Join(common.FileUploadStagingDir, event.Upload.ID)
@@ -232,55 +289,24 @@ func NewFileTUSHandler() (http.Handler, error) {
 			if relativePath == "" {
 				relativePath = event.Upload.MetaData["filename"]
 			}
-			resumed := event.Upload.MetaData["resumed"] == "1"
-			dest, ierr := ingestToTarget(stagedPath, targetPath, relativePath, resumed)
+			policy := event.Upload.MetaData["conflictPolicy"]
+			if policy == "" && event.Upload.MetaData["resumed"] == "1" {
+				policy = "overwrite"
+			}
+			dest, _, ierr := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
 			if ierr != nil {
 				logger.Error("Files tus ingest failed",
 					zap.String("id", event.Upload.ID), zap.Error(ierr))
+				_ = store.SetFailed(event.Upload.ID, ierr.Error(),
+					time.Now().Unix(), time.Now().Unix()+common.UploadCanceledTTLSeconds)
 				continue
 			}
+			_ = store.SetStatus(event.Upload.ID, commonUpload.UploadStatusCompleted, 0)
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
 		}
 	}()
 
-	startStagingGC()
+	commonUpload.StartGC(store, upload.DefaultGCConfig())
 	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
 }
 
-// sweepStaging 删除 dir 中修改时间早于 ttlSeconds 的文件(连带 .info)。
-// 返回删除的主文件数。.info sidecar 不单独计数。
-func sweepStaging(dir string, ttlSeconds int64, now time.Time) int {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	cutoff := now.Add(-time.Duration(ttlSeconds) * time.Second)
-	removed := 0
-	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".info") {
-			continue
-		}
-		info, ierr := e.Info()
-		if ierr != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			p := filepath.Join(dir, e.Name())
-			os.Remove(p)           //nolint:errcheck
-			os.Remove(p + ".info") //nolint:errcheck
-			removed++
-		}
-	}
-	return removed
-}
-
-// startStagingGC 启动后台定时 GC(每 6 小时跑一次)。在 NewFileTUSHandler 里调用。
-func startStagingGC() {
-	go func() {
-		ticker := time.NewTicker(6 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			sweepStaging(common.FileUploadStagingDir, common.FileUploadStagingTTLSeconds, time.Now())
-		}
-	}()
-}
