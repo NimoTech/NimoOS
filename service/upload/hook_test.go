@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/NimoTech/NimoOS/common"
-	"github.com/NimoTech/NimoOS/service/model"
+	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/tus/tusd/v2/pkg/handler"
 )
 
@@ -35,7 +35,7 @@ func TestNewTaskFromHook(t *testing.T) {
 	now := time.Unix(1000, 0)
 	got := NewTaskFromHook(ev, now)
 
-	if got.ID != "up123" || got.OwnerUserID != "42" || got.Status != model.UploadStatusUploading {
+	if got.ID != "up123" || got.OwnerUserID != "42" || got.Status != commonUpload.UploadStatusUploading {
 		t.Fatalf("core fields: %+v", got)
 	}
 	if got.Filename != "a.bin" || got.TargetPath != "/DATA/Documents" || got.RelativePath != "sub/a.bin" {

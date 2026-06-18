@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/NimoTech/NimoOS/common"
-	"github.com/NimoTech/NimoOS/service/model"
+	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"go.uber.org/zap"
 )
@@ -45,19 +45,19 @@ func removeStaging(dir, id string) {
 
 // SweepTasks 对所有 expires_at>0 且 <=now 的任务执行分级清理。
 func SweepTasks(s *TaskStore, cfg GCConfig, now time.Time) (transitioned, deleted int, err error) {
-	var due []model.UploadTaskDBModel
-	if e := s.db.Where("expires_at > 0 AND expires_at <= ?", now.Unix()).Find(&due).Error; e != nil {
+	due, e := s.ListDueForGC(now.Unix())
+	if e != nil {
 		return 0, 0, e
 	}
 	for _, t := range due {
 		switch t.Status {
-		case model.UploadStatusUploading:
+		case commonUpload.UploadStatusUploading:
 			// 僵死上传:降级 paused,保留 staging,刷新过期。
-			if e := s.SetStatus(t.ID, model.UploadStatusPaused, now.Unix()+cfg.PausedTTL); e != nil {
+			if e := s.SetStatus(t.ID, commonUpload.UploadStatusPaused, now.Unix()+cfg.PausedTTL); e != nil {
 				return transitioned, deleted, e
 			}
 			transitioned++
-		case model.UploadStatusPaused, model.UploadStatusFailed, model.UploadStatusCanceled:
+		case commonUpload.UploadStatusPaused, commonUpload.UploadStatusFailed, commonUpload.UploadStatusCanceled:
 			removeStaging(cfg.StagingDir, t.ID)
 			if e := s.Delete(t.ID); e != nil {
 				return transitioned, deleted, e

@@ -5,12 +5,12 @@ import (
 	"time"
 
 	"github.com/NimoTech/NimoOS/common"
-	"github.com/NimoTech/NimoOS/service/model"
+	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/tus/tusd/v2/pkg/handler"
 )
 
 // NewTaskFromHook 把一次 tus CreatedUploads 事件映射为一条 uploading 任务行。
-func NewTaskFromHook(ev handler.HookEvent, now time.Time) *model.UploadTaskDBModel {
+func NewTaskFromHook(ev handler.HookEvent, now time.Time) *commonUpload.UploadTask {
 	meta := ev.Upload.MetaData
 	rel := meta["relativePath"]
 	if rel == "" {
@@ -20,7 +20,7 @@ func NewTaskFromHook(ev handler.HookEvent, now time.Time) *model.UploadTaskDBMod
 		"user_agent":  ev.HTTPRequest.Header.Get("User-Agent"),
 		"remote_addr": ev.HTTPRequest.RemoteAddr,
 	})
-	return &model.UploadTaskDBModel{
+	return &commonUpload.UploadTask{
 		ID:           ev.Upload.ID,
 		OwnerUserID:  ev.HTTPRequest.Header.Get("user_id"),
 		Filename:     meta["filename"],
@@ -32,7 +32,7 @@ func NewTaskFromHook(ev handler.HookEvent, now time.Time) *model.UploadTaskDBMod
 		BatchID:      meta["batch_id"],
 		ClientID:     meta["client_id"],
 		ClientMeta:   string(cm),
-		Status:       model.UploadStatusUploading,
+		Status:       commonUpload.UploadStatusUploading,
 		ExpiresAt:    now.Unix() + common.UploadIdleTimeoutSeconds,
 	}
 }

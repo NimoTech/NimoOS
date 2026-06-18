@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/NimoTech/NimoOS/service/model"
+	upload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
@@ -15,7 +15,7 @@ func newTestStore(t *testing.T) *TaskStore {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := db.AutoMigrate(&model.UploadTaskDBModel{}); err != nil {
+	if err := db.AutoMigrate(&upload.UploadTask{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return NewTaskStore(db)
@@ -24,21 +24,21 @@ func newTestStore(t *testing.T) *TaskStore {
 func TestCreateGetAndListActive(t *testing.T) {
 	s := newTestStore(t)
 	mustCreate := func(id, owner, status string) {
-		if err := s.Create(&model.UploadTaskDBModel{ID: id, OwnerUserID: owner, Status: status}); err != nil {
+		if err := s.Create(&upload.UploadTask{ID: id, OwnerUserID: owner, Status: status}); err != nil {
 			t.Fatalf("create %s: %v", id, err)
 		}
 	}
-	mustCreate("a", "1", model.UploadStatusUploading)
-	mustCreate("b", "1", model.UploadStatusPaused)
-	mustCreate("c", "1", model.UploadStatusCompleted) // 不算 active
-	mustCreate("d", "2", model.UploadStatusFailed)    // 别的 owner
+	mustCreate("a", "1", upload.UploadStatusUploading)
+	mustCreate("b", "1", upload.UploadStatusPaused)
+	mustCreate("c", "1", upload.UploadStatusCompleted) // 不算 active
+	mustCreate("d", "2", upload.UploadStatusFailed)    // 别的 owner
 
 	got, err := s.Get("a")
 	if err != nil || got.OwnerUserID != "1" {
 		t.Fatalf("get a: %+v err=%v", got, err)
 	}
-	if _, err := s.Get("zzz"); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("expected not found, got %v", err)
+	if _, err := s.Get("zzz"); !errors.Is(err, upload.ErrNotFound) {
+		t.Fatalf("expected upload.ErrNotFound, got %v", err)
 	}
 
 	active, err := s.ListActiveByOwner("1")
@@ -52,34 +52,57 @@ func TestCreateGetAndListActive(t *testing.T) {
 
 func TestCancelIdempotent(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.Create(&model.UploadTaskDBModel{ID: "u", OwnerUserID: "1", Status: model.UploadStatusUploading})
-	_ = s.Create(&model.UploadTaskDBModel{ID: "done", OwnerUserID: "1", Status: model.UploadStatusCompleted})
+	_ = s.Create(&upload.UploadTask{ID: "u", OwnerUserID: "1", Status: upload.UploadStatusUploading})
+	_ = s.Create(&upload.UploadTask{ID: "done", OwnerUserID: "1", Status: upload.UploadStatusCompleted})
 
-	ok, err := s.Cancel("u", 100)
+	ok, err := upload.Cancel(s, "u", 100)
 	if err != nil || !ok {
 		t.Fatalf("first cancel: ok=%v err=%v", ok, err)
 	}
 	got, _ := s.Get("u")
-	if got.Status != model.UploadStatusCanceled || got.ExpiresAt != 100 {
+	if got.Status != upload.UploadStatusCanceled || got.ExpiresAt != 100 {
 		t.Fatalf("after cancel: %+v", got)
 	}
 	// 再次取消同一个:幂等,返回 false,nil
-	ok, err = s.Cancel("u", 200)
+	ok, err = upload.Cancel(s, "u", 200)
 	if err != nil || ok {
 		t.Fatalf("second cancel should be no-op: ok=%v err=%v", ok, err)
 	}
 	// 取消不存在的:幂等
-	ok, err = s.Cancel("nope", 0)
+	ok, err = upload.Cancel(s, "nope", 0)
 	if err != nil || ok {
 		t.Fatalf("cancel missing should be no-op: ok=%v err=%v", ok, err)
 	}
 	// 取消已完成的:不动它
-	ok, err = s.Cancel("done", 0)
+	ok, err = upload.Cancel(s, "done", 0)
 	if err != nil || ok {
 		t.Fatalf("cancel completed should be no-op: ok=%v err=%v", ok, err)
 	}
 	d, _ := s.Get("done")
-	if d.Status != model.UploadStatusCompleted {
+	if d.Status != upload.UploadStatusCompleted {
 		t.Fatalf("completed must stay completed, got %s", d.Status)
+	}
+}
+
+func TestListDueForGC(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.Create(&upload.UploadTask{ID: "due1", Status: upload.UploadStatusUploading, ExpiresAt: 100})
+	_ = s.Create(&upload.UploadTask{ID: "due2", Status: upload.UploadStatusPaused, ExpiresAt: 50})
+	_ = s.Create(&upload.UploadTask{ID: "notdue", Status: upload.UploadStatusUploading, ExpiresAt: 9999})
+	_ = s.Create(&upload.UploadTask{ID: "noexpiry", Status: upload.UploadStatusUploading, ExpiresAt: 0})
+
+	due, err := s.ListDueForGC(200)
+	if err != nil {
+		t.Fatalf("ListDueForGC: %v", err)
+	}
+	if len(due) != 2 {
+		t.Fatalf("want 2 due tasks, got %d", len(due))
+	}
+	ids := map[string]bool{}
+	for _, d := range due {
+		ids[d.ID] = true
+	}
+	if !ids["due1"] || !ids["due2"] {
+		t.Fatalf("unexpected due tasks: %v", ids)
 	}
 }
