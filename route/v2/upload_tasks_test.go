@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/NimoTech/NimoOS/service/model"
+	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/glebarez/sqlite"
 	"github.com/labstack/echo/v4"
@@ -21,7 +21,7 @@ func setupTaskStore(t *testing.T) *upload.TaskStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.UploadTaskDBModel{}); err != nil {
+	if err := db.AutoMigrate(&commonUpload.UploadTask{}); err != nil {
 		t.Fatal(err)
 	}
 	return upload.NewTaskStore(db)
@@ -36,8 +36,8 @@ func stagingDirForTest() string {
 func TestListUploadsFiltersByOwner(t *testing.T) {
 	s := setupTaskStore(t)
 	SetTaskStore(s)
-	_ = s.Create(&model.UploadTaskDBModel{ID: "a", OwnerUserID: "1", Status: model.UploadStatusUploading})
-	_ = s.Create(&model.UploadTaskDBModel{ID: "b", OwnerUserID: "2", Status: model.UploadStatusUploading})
+	_ = s.Create(&commonUpload.UploadTask{ID: "a", OwnerUserID: "1", Status: commonUpload.UploadStatusUploading})
+	_ = s.Create(&commonUpload.UploadTask{ID: "b", OwnerUserID: "2", Status: commonUpload.UploadStatusUploading})
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/v2/nimoos/file/uploads?status=active", nil)
@@ -51,7 +51,7 @@ func TestListUploadsFiltersByOwner(t *testing.T) {
 		t.Fatalf("code=%d", rec.Code)
 	}
 	var body struct {
-		Tasks []model.UploadTaskDBModel `json:"tasks"`
+		Tasks []commonUpload.UploadTask `json:"tasks"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if len(body.Tasks) != 1 || body.Tasks[0].ID != "a" {
@@ -62,7 +62,7 @@ func TestListUploadsFiltersByOwner(t *testing.T) {
 func TestCancelUploadIdempotentAndCleansStaging(t *testing.T) {
 	s := setupTaskStore(t)
 	SetTaskStore(s)
-	_ = s.Create(&model.UploadTaskDBModel{ID: "x", OwnerUserID: "1", Status: model.UploadStatusUploading})
+	_ = s.Create(&commonUpload.UploadTask{ID: "x", OwnerUserID: "1", Status: commonUpload.UploadStatusUploading})
 	// 造 staging 文件
 	dir := stagingDirForTest() // helper 见下
 	_ = os.MkdirAll(dir, 0700)
@@ -84,7 +84,7 @@ func TestCancelUploadIdempotentAndCleansStaging(t *testing.T) {
 		t.Fatalf("first cancel code=%d", code)
 	}
 	got, _ := s.Get("x")
-	if got.Status != model.UploadStatusCanceled {
+	if got.Status != commonUpload.UploadStatusCanceled {
 		t.Fatalf("status=%s", got.Status)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "x")); !os.IsNotExist(err) {
@@ -99,7 +99,7 @@ func TestCancelUploadIdempotentAndCleansStaging(t *testing.T) {
 func TestGetUploadIDOR(t *testing.T) {
 	s := setupTaskStore(t)
 	SetTaskStore(s)
-	_ = s.Create(&model.UploadTaskDBModel{ID: "z", OwnerUserID: "1", Status: model.UploadStatusUploading})
+	_ = s.Create(&commonUpload.UploadTask{ID: "z", OwnerUserID: "1", Status: commonUpload.UploadStatusUploading})
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/v2/nimoos/file/uploads/z", nil)
@@ -126,7 +126,7 @@ func TestGetUploadIDOR(t *testing.T) {
 	if getErr != nil {
 		t.Fatalf("Get task failed: %v", getErr)
 	}
-	if got.Status != model.UploadStatusUploading {
+	if got.Status != commonUpload.UploadStatusUploading {
 		t.Fatalf("task status should still be uploading, got %s", got.Status)
 	}
 }
@@ -135,7 +135,7 @@ func TestGetUploadIDOR(t *testing.T) {
 func TestCancelUploadIDOR(t *testing.T) {
 	s := setupTaskStore(t)
 	SetTaskStore(s)
-	_ = s.Create(&model.UploadTaskDBModel{ID: "y", OwnerUserID: "1", Status: model.UploadStatusUploading})
+	_ = s.Create(&commonUpload.UploadTask{ID: "y", OwnerUserID: "1", Status: commonUpload.UploadStatusUploading})
 
 	// 造 staging 文件，用于断言文件未被删除
 	dir := stagingDirForTest()
@@ -170,7 +170,7 @@ func TestCancelUploadIDOR(t *testing.T) {
 	if getErr != nil {
 		t.Fatalf("Get task failed: %v", getErr)
 	}
-	if got.Status != model.UploadStatusUploading {
+	if got.Status != commonUpload.UploadStatusUploading {
 		t.Fatalf("task status should still be uploading, got %s", got.Status)
 	}
 

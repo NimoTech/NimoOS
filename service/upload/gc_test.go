@@ -23,7 +23,7 @@ func TestSweepTasksTieredCleanup(t *testing.T) {
 	s := newTestStore(t)
 	dir := t.TempDir()
 	now := time.Unix(10_000, 0)
-	cfg := GCConfig{StagingDir: dir, IdleTimeout: 600, PausedTTL: 1000, CanceledTTL: 60}
+	cfg := commonUpload.GCConfig{StagingDir: dir, IdleTimeout: 600, PausedTTL: 1000, CanceledTTL: 60}
 
 	// canceled 已过期 → 删 staging + 删行
 	_ = s.Create(&commonUpload.UploadTask{ID: "cancel1", Status: commonUpload.UploadStatusCanceled, ExpiresAt: 9_000})
@@ -37,7 +37,7 @@ func TestSweepTasksTieredCleanup(t *testing.T) {
 	// completed expires=0 → 永不入集合
 	_ = s.Create(&commonUpload.UploadTask{ID: "done1", Status: commonUpload.UploadStatusCompleted, ExpiresAt: 0})
 
-	transitioned, deleted, err := SweepTasks(s, cfg, now)
+	transitioned, deleted, err := commonUpload.SweepTasks(s, cfg, now)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}

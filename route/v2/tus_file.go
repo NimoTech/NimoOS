@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
-	"github.com/NimoTech/NimoOS/service/model"
 	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
@@ -275,7 +275,7 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 	// 终止(协议 DELETE):标记 canceled。
 	go func() {
 		for ev := range tusH.TerminatedUploads {
-			_ = store.SetStatus(ev.Upload.ID, model.UploadStatusCanceled,
+			_ = store.SetStatus(ev.Upload.ID, commonUpload.UploadStatusCanceled,
 				time.Now().Unix()+common.UploadCanceledTTLSeconds)
 		}
 	}()
@@ -301,12 +301,12 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 					time.Now().Unix(), time.Now().Unix()+common.UploadCanceledTTLSeconds)
 				continue
 			}
-			_ = store.SetStatus(event.Upload.ID, model.UploadStatusCompleted, 0)
+			_ = store.SetStatus(event.Upload.ID, commonUpload.UploadStatusCompleted, 0)
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
 		}
 	}()
 
-	upload.StartGC(store)
+	commonUpload.StartGC(store, upload.DefaultGCConfig())
 	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
 }
 

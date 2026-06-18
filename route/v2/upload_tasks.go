@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
+	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/labstack/echo/v4"
-	"gorm.io/gorm"
 )
 
 // taskStore 由 route/v2.go 在 InitV2Router 时注入。
@@ -35,7 +35,7 @@ func ListUploads(c echo.Context) error {
 func GetUpload(c echo.Context) error {
 	owner := c.Request().Header.Get("user_id")
 	t, err := taskStore.Get(c.Param("id"))
-	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && t.OwnerUserID != owner) {
+	if errors.Is(err, commonUpload.ErrNotFound) || (err == nil && t.OwnerUserID != owner) {
 		return echo.NewHTTPError(http.StatusNotFound, "not found")
 	}
 	if err != nil {
@@ -49,19 +49,19 @@ func CancelUpload(c echo.Context) error {
 	id := c.Param("id")
 	owner := c.Request().Header.Get("user_id")
 	t, err := taskStore.Get(id)
-	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && t.OwnerUserID != owner) {
+	if errors.Is(err, commonUpload.ErrNotFound) || (err == nil && t.OwnerUserID != owner) {
 		return echo.NewHTTPError(http.StatusNotFound, "not found")
 	}
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 	expires := time.Now().Unix() + common.UploadCanceledTTLSeconds
-	canceled, err := taskStore.Cancel(id, expires)
+	canceled, err := commonUpload.Cancel(taskStore, id, expires)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 	if canceled {
-		os.Remove(filepath.Join(cancelStagingDir, id))          //nolint:errcheck
+		os.Remove(filepath.Join(cancelStagingDir, id))         //nolint:errcheck
 		os.Remove(filepath.Join(cancelStagingDir, id+".info")) //nolint:errcheck
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"canceled": canceled})
