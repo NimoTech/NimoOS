@@ -7,6 +7,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// 编译期接口断言:确保 TaskStore 始终满足 upload.Store 契约。
+var _ upload.Store = (*TaskStore)(nil)
+
 // TaskStore 封装 o_upload_tasks 的读写与状态迁移,实现 upload.Store 接口。
 type TaskStore struct{ db *gorm.DB }
 

@@ -23,7 +23,7 @@ func TestSweepTasksTieredCleanup(t *testing.T) {
 	s := newTestStore(t)
 	dir := t.TempDir()
 	now := time.Unix(10_000, 0)
-	cfg := commonUpload.GCConfig{StagingDir: dir, IdleTimeout: 600, PausedTTL: 1000, CanceledTTL: 60}
+	cfg := commonUpload.GCConfig{StagingDir: dir, PausedTTL: 1000}
 
 	// canceled 已过期 → 删 staging + 删行
 	_ = s.Create(&commonUpload.UploadTask{ID: "cancel1", Status: commonUpload.UploadStatusCanceled, ExpiresAt: 9_000})

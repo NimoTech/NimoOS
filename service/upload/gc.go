@@ -10,9 +10,7 @@ import (
 func DefaultGCConfig() commonUpload.GCConfig {
 	return commonUpload.GCConfig{
 		StagingDir:     common.FileUploadStagingDir,
-		IdleTimeout:    common.UploadIdleTimeoutSeconds,
 		PausedTTL:      common.UploadPausedTTLSeconds,
-		CanceledTTL:    common.UploadCanceledTTLSeconds,
 		GCIntervalSecs: common.UploadGCIntervalSeconds,
 	}
 }
