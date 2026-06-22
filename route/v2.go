@@ -12,7 +12,9 @@ import (
 
 	"github.com/NimoTech/NimoOS/codegen"
 	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/sqlite"
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
+	"github.com/NimoTech/NimoOS/service/upload"
 
 	"github.com/NimoTech/NimoOS-Common/external"
 	"github.com/NimoTech/NimoOS-Common/utils/jwt"
@@ -139,6 +141,13 @@ func InitV2Router() http.Handler {
 			if strings.Contains(c.Request().URL.Path, "/file/upload-precheck") {
 				return true
 			}
+			// uploads 任务管理端点不在 OpenAPI 规格里，跳过校验。
+			{
+				p := c.Request().URL.Path
+				if p == V2APIPath+"/file/uploads" || strings.HasPrefix(p, V2APIPath+"/file/uploads/") {
+					return true
+				}
+			}
 			return false
 		},
 		Options: openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
@@ -155,7 +164,11 @@ func InitV2Router() http.Handler {
 		e.PUT(V2APIPath+"/local_storage/display_name", si.UpdateLocalStorageDisplayName)
 	}
 
-	if tusH, terr := v2Route.NewFileTUSHandler(); terr != nil {
+	// 构造上传任务 store(复用全局 gorm 句柄)并注入路由层。
+	uploadStore := upload.NewTaskStore(sqlite.GetDb(config.AppInfo.DBPath + "/db"))
+	v2Route.SetTaskStore(uploadStore)
+
+	if tusH, terr := v2Route.NewFileTUSHandler(uploadStore); terr != nil {
 		logger.Error("Files tus handler init failed", zap.Error(terr))
 	} else {
 		e.Any(V2APIPath+"/file/upload-tus", echo.WrapHandler(tusH))
@@ -163,6 +176,11 @@ func InitV2Router() http.Handler {
 	}
 
 	e.POST(V2APIPath+"/file/upload-precheck", v2Route.FileUploadPrecheck)
+
+	// 上传任务:列出 / 详情 / 取消。
+	e.GET(V2APIPath+"/file/uploads", v2Route.ListUploads)
+	e.GET(V2APIPath+"/file/uploads/:id", v2Route.GetUpload)
+	e.POST(V2APIPath+"/file/uploads/:id/cancel", v2Route.CancelUpload)
 
 	e.Any("/v2/nimoos/testecho", func(c echo.Context) error {
 		return c.String(200, "echo works at "+c.Request().URL.Path)

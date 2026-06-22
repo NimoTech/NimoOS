@@ -43,3 +43,6 @@ nimoos
 # System Files
 .DS_Store
 node_modules
+
+# Claude Code local guidance — not for upload
+CLAUDE.md

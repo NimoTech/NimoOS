@@ -76,9 +76,9 @@ func FileUploadPrecheck(c echo.Context) error {
 	if req.TargetPath == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "targetPath is required")
 	}
-	if protected, name := containsProtectedName(req.TargetPath); protected {
-		return echo.NewHTTPError(http.StatusBadRequest, "targetPath contains protected folder: "+name)
-	}
+	// 不再检查 targetPath 是否为受保护文件夹:上传文件进入 Documents/Downloads/
+	// Gallery/Media 等用户数据文件夹是正常用途。受保护语义只用于防止删/改/重建这些
+	// 文件夹本身(见 file.go 的 rename/mkdir/create),不适用于「上传进入」。
 
 	results := make([]precheckResultItem, 0, len(req.Files))
 	for _, f := range req.Files {

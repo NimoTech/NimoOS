@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/tus/tusd/v2/pkg/handler"
 )
@@ -29,14 +28,17 @@ func TestValidateFileUploadMetadata(t *testing.T) {
 		wantSC  int
 	}{
 		{"ok", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents-x"}, 10, big, false, 0},
-		{"empty filename", map[string]string{"filename": "", "targetPath": "/DATA/x"}, 10, big, true, 0},
-		{"illegal filename slash", map[string]string{"filename": "a/b.txt", "targetPath": "/DATA/x"}, 10, big, true, 0},
-		{"illegal filename dotdot", map[string]string{"filename": "..", "targetPath": "/DATA/x"}, 10, big, true, 0},
-		{"protected folder", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents"}, 10, big, true, 0},
-		{"protected in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "Media/a.txt"}, 10, big, true, 0},
-		{"traversal in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "../../etc/a.txt"}, 10, big, true, 0},
-		{"empty file", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 0, big, true, 0},
-		{"too big", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, FileUploadMaxSizeForTest() + 1, big, true, 0},
+		// 上传「进入」受保护名的用户数据文件夹现在是允许的(targetPath 不再被拦)。
+		{"upload into Documents allowed", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents"}, 10, big, false, 0},
+		{"upload into Downloads allowed", map[string]string{"filename": "a.txt", "targetPath": "/DATA/admin/Downloads"}, 10, big, false, 0},
+		{"empty filename", map[string]string{"filename": "", "targetPath": "/DATA/x"}, 10, big, true, 400},
+		{"illegal filename slash", map[string]string{"filename": "a/b.txt", "targetPath": "/DATA/x"}, 10, big, true, 400},
+		{"illegal filename dotdot", map[string]string{"filename": "..", "targetPath": "/DATA/x"}, 10, big, true, 400},
+		// relativePath 仍拦受保护名:防止「文件夹上传」在根部重建系统特殊文件夹。返回 403。
+		{"protected in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "Media/a.txt"}, 10, big, true, 403},
+		{"traversal in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "../../etc/a.txt"}, 10, big, true, 400},
+		{"empty file", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 0, big, true, 400},
+		{"too big", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, FileUploadMaxSizeForTest() + 1, big, true, 413},
 		{"insufficient space", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 1000, 100, true, 413},
 	}
 
@@ -145,30 +147,64 @@ func TestIngestToTargetResumedOverwrites(t *testing.T) {
 	}
 }
 
-func TestSweepStaging(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
+func TestIngestToTargetWithPolicy(t *testing.T) {
+	mk := func(t *testing.T, dir, name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
 
-	oldF := filepath.Join(dir, "old")
-	os.WriteFile(oldF, []byte("x"), 0644)
-	os.WriteFile(oldF+".info", []byte("{}"), 0644)
-	old := now.Add(-8 * 24 * time.Hour)
-	os.Chtimes(oldF, old, old)
+	t.Run("skip 已存在则不覆盖", func(t *testing.T) {
+		stg := t.TempDir()
+		tgt := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
+		staged := mk(t, stg, "up1", "NEW")
+		_ = os.WriteFile(staged+".info", []byte("{}"), 0644)
 
-	newF := filepath.Join(dir, "new")
-	os.WriteFile(newF, []byte("x"), 0644)
+		dest, skipped, err := ingestToTargetWithPolicy(staged, tgt, "a.txt", "skip")
+		if err != nil || !skipped {
+			t.Fatalf("want skipped, got dest=%s skipped=%v err=%v", dest, skipped, err)
+		}
+		b, _ := os.ReadFile(filepath.Join(tgt, "a.txt"))
+		if string(b) != "OLD" {
+			t.Fatalf("skip must keep old content, got %s", b)
+		}
+		if _, err := os.Stat(staged); !os.IsNotExist(err) {
+			t.Fatal("skip must remove staging file")
+		}
+	})
 
-	removed := sweepStaging(dir, 7*24*60*60, now)
-	if removed != 1 {
-		t.Fatalf("removed = %d want 1", removed)
-	}
-	if _, err := os.Stat(oldF); !os.IsNotExist(err) {
-		t.Fatalf("old file should be gone")
-	}
-	if _, err := os.Stat(oldF + ".info"); !os.IsNotExist(err) {
-		t.Fatalf("old .info should be gone")
-	}
-	if _, err := os.Stat(newF); err != nil {
-		t.Fatalf("new file should remain")
-	}
+	t.Run("overwrite 覆盖同名", func(t *testing.T) {
+		stg := t.TempDir()
+		tgt := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
+		staged := mk(t, stg, "up2", "NEW")
+
+		dest, skipped, err := ingestToTargetWithPolicy(staged, tgt, "a.txt", "overwrite")
+		if err != nil || skipped {
+			t.Fatalf("overwrite err=%v skipped=%v", err, skipped)
+		}
+		b, _ := os.ReadFile(dest)
+		if string(b) != "NEW" {
+			t.Fatalf("overwrite must replace, got %s", b)
+		}
+	})
+
+	t.Run("rename 加序号", func(t *testing.T) {
+		stg := t.TempDir()
+		tgt := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
+		staged := mk(t, stg, "up3", "NEW")
+
+		dest, _, err := ingestToTargetWithPolicy(staged, tgt, "a.txt", "rename")
+		if err != nil {
+			t.Fatalf("rename err=%v", err)
+		}
+		if filepath.Base(dest) != "a(1).txt" {
+			t.Fatalf("rename expected a(1).txt, got %s", filepath.Base(dest))
+		}
+	})
 }
+
