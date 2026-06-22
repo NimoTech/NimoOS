@@ -56,40 +56,47 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 	targetPath := meta["targetPath"]
 	relativePath := meta["relativePath"]
 
+	// 客户端/校验类错误必须返回 4xx。关键:要用 tusd 的 handler.Error(携带 StatusCode),
+	// 否则 tusd 对普通 error 一律按 500 处理,前端 tus-js-client 会把 5xx 当可重试错误
+	// 无限重试,导致上传卡在 0%。HTTPResponse 里也带上 StatusCode 供单测直接读取。
+	reject := func(sc int, code, msg string) (handler.HTTPResponse, handler.FileInfoChanges, error) {
+		return handler.HTTPResponse{StatusCode: sc}, handler.FileInfoChanges{}, handler.NewError(code, msg, sc)
+	}
 	if name == "" {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("filename metadata required")
+		return reject(400, "ERR_FILENAME_REQUIRED", "filename metadata required")
 	}
 	if strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("filename contains illegal characters")
+		return reject(400, "ERR_FILENAME_ILLEGAL", "filename contains illegal characters")
 	}
 	if targetPath == "" {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("targetPath metadata required")
+		return reject(400, "ERR_TARGETPATH_REQUIRED", "targetPath metadata required")
 	}
-	// Protected folders: check targetPath and relativePath.
-	if protected, n := containsProtectedName(targetPath); protected {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("protected folder: %s", n)
-	}
+	// 受保护文件夹检查只针对 relativePath:防止「文件夹上传」在用户根部重建出同名的
+	// 系统特殊文件夹(Documents/Downloads/Gallery/Media/AppData)。
+	// 注意:不检查 targetPath——上传文件「进入」这些用户数据文件夹本就是正常用途
+	//（Gallery 还会被 Photos 索引)。c6eaced 误加的 targetPath 检查会把正常上传判为
+	// 受保护并返回 500,导致前端卡死,已移除。
 	if protected, n := containsProtectedName(relativePath); protected {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("protected folder: %s", n)
+		return reject(403, "ERR_PROTECTED_FOLDER", "protected folder: "+n)
 	}
 	// Path traversal: relativePath must not contain ".." or be absolute.
 	if strings.Contains(relativePath, "..") || strings.HasPrefix(relativePath, "/") {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("relativePath traversal rejected")
+		return reject(400, "ERR_PATH_TRAVERSAL", "relativePath traversal rejected")
 	}
 	// Resolved path must stay within targetPath.
 	final := filepath.Clean(filepath.Join(targetPath, relativePath))
 	cleanTarget := filepath.Clean(targetPath)
 	if !strings.HasPrefix(final, cleanTarget+string(filepath.Separator)) && final != cleanTarget {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("resolved path escapes target")
+		return reject(400, "ERR_PATH_ESCAPE", "resolved path escapes target")
 	}
 	if hook.Upload.Size <= 0 {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("empty file rejected")
+		return reject(400, "ERR_EMPTY_FILE", "empty file rejected")
 	}
 	if hook.Upload.Size > common.FileUploadMaxSize {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("file exceeds %d byte limit", common.FileUploadMaxSize)
+		return reject(413, "ERR_FILE_TOO_LARGE", fmt.Sprintf("file exceeds %d byte limit", common.FileUploadMaxSize))
 	}
 	if err := checkFileUploadQuota(hook.Upload.Size, available); err != nil {
-		return handler.HTTPResponse{StatusCode: 413}, handler.FileInfoChanges{}, err
+		return reject(413, "ERR_INSUFFICIENT_STORAGE", err.Error())
 	}
 	return handler.HTTPResponse{}, handler.FileInfoChanges{}, nil
 }
