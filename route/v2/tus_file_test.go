@@ -28,14 +28,17 @@ func TestValidateFileUploadMetadata(t *testing.T) {
 		wantSC  int
 	}{
 		{"ok", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents-x"}, 10, big, false, 0},
-		{"empty filename", map[string]string{"filename": "", "targetPath": "/DATA/x"}, 10, big, true, 0},
-		{"illegal filename slash", map[string]string{"filename": "a/b.txt", "targetPath": "/DATA/x"}, 10, big, true, 0},
-		{"illegal filename dotdot", map[string]string{"filename": "..", "targetPath": "/DATA/x"}, 10, big, true, 0},
-		{"protected folder", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents"}, 10, big, true, 0},
-		{"protected in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "Media/a.txt"}, 10, big, true, 0},
-		{"traversal in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "../../etc/a.txt"}, 10, big, true, 0},
-		{"empty file", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 0, big, true, 0},
-		{"too big", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, FileUploadMaxSizeForTest() + 1, big, true, 0},
+		// 上传「进入」受保护名的用户数据文件夹现在是允许的(targetPath 不再被拦)。
+		{"upload into Documents allowed", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents"}, 10, big, false, 0},
+		{"upload into Downloads allowed", map[string]string{"filename": "a.txt", "targetPath": "/DATA/admin/Downloads"}, 10, big, false, 0},
+		{"empty filename", map[string]string{"filename": "", "targetPath": "/DATA/x"}, 10, big, true, 400},
+		{"illegal filename slash", map[string]string{"filename": "a/b.txt", "targetPath": "/DATA/x"}, 10, big, true, 400},
+		{"illegal filename dotdot", map[string]string{"filename": "..", "targetPath": "/DATA/x"}, 10, big, true, 400},
+		// relativePath 仍拦受保护名:防止「文件夹上传」在根部重建系统特殊文件夹。返回 403。
+		{"protected in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "Media/a.txt"}, 10, big, true, 403},
+		{"traversal in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "../../etc/a.txt"}, 10, big, true, 400},
+		{"empty file", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 0, big, true, 400},
+		{"too big", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, FileUploadMaxSizeForTest() + 1, big, true, 413},
 		{"insufficient space", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 1000, 100, true, 413},
 	}
 

@@ -189,7 +189,9 @@ func TestFileUploadPrecheck_EmptyTargetPath(t *testing.T) {
 	}
 }
 
-func TestFileUploadPrecheck_ProtectedTargetPath(t *testing.T) {
+// precheck 不再因 targetPath 落在受保护名文件夹(如 AppData/Documents/Downloads)而拒绝:
+// 上传「进入」这些用户数据文件夹是正常用途。应返回 200 并给出每个文件的存在性结果。
+func TestFileUploadPrecheck_ProtectedTargetPathAllowed(t *testing.T) {
 	reqBody := precheckRequest{
 		TargetPath: "/DATA/AppData/SomeApp",
 		Files:      []precheckFileItem{{RelativePath: "a.jpg", Size: 100}},
@@ -202,13 +204,17 @@ func TestFileUploadPrecheck_ProtectedTargetPath(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	err := FileUploadPrecheck(c)
-	if err != nil {
-		he, ok := err.(*echo.HTTPError)
-		if !ok || he.Code != http.StatusBadRequest {
-			t.Errorf("expected 400 HTTPError, got %v", err)
-		}
-	} else if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 status, got %d", rec.Code)
+	if err := FileUploadPrecheck(c); err != nil {
+		t.Fatalf("expected no error (targetPath 不再受保护拦截), got %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var resp precheckResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].Exists {
+		t.Fatalf("expected 1 result, not-exists; got %+v", resp.Results)
 	}
 }
