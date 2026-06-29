@@ -35,6 +35,10 @@ func InitV1Router() http.Handler {
 	e.GET("/v1/sys/version/current", func(ctx echo.Context) error {
 		return ctx.String(200, service.MyService.System().GetVersion())
 	})
+	e.GET("/v1/sys/os_version/check", v1.GetFirmwareCheckVersion)
+	e.GET("/v1/sys/os_version/current", func(ctx echo.Context) error {
+		return ctx.String(200, service.MyService.System().GetOSVersion())
+	})
 	e.GET("/ping", func(ctx echo.Context) error {
 		return ctx.String(200, "pong")
 	})
@@ -85,8 +89,9 @@ func InitV1Router() http.Handler {
 		v1SysGroup := v1Group.Group("/sys")
 		v1SysGroup.Use()
 		{
-			v1SysGroup.GET("/version", v1.GetSystemCheckVersion) // version/check
-
+			v1SysGroup.GET("/os_version", v1.GetFirmwareCheckVersion) // version/check
+			v1SysGroup.POST("/os_update", v1.FirmwareUpdate)
+			v1SysGroup.GET("/version", v1.GetSystemCheckVersion)
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 			v1SysGroup.POST("/download/cancel", v1.CancelDownload)
 

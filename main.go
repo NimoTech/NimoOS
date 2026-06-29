@@ -95,6 +95,9 @@ func init() {
 
 	route.InitFunction()
 
+	// Sync pending upgrade status (like failed app upgrade status and logs upload) asynchronously on startup.
+	go service.MyService.System().SyncStartupUpgradeStatus()
+
 	//service.MyService.System().GenreateSystemEntry()
 	///
 	//service.MountLists = make(map[string]*mountlib.MountPoint)

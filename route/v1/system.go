@@ -35,18 +35,22 @@ import (
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
 // @Router /sys/version/check [get]
-func GetSystemCheckVersion(ctx echo.Context) error {
+func GetFirmwareCheckVersion(ctx echo.Context) error {
 	checkResult := service.MyService.System().CheckUpdate()
 
 	if checkResult.HasUpdate {
-		installLog := model2.AppNotify{}
-		installLog.State = 0
-		installLog.Message = "New version " + checkResult.LatestVersion + " is ready, ready to upgrade"
-		installLog.Type = types.NOTIFY_TYPE_NEED_CONFIRM
-		installLog.CreatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.UpdatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.Name = "NimoOS System"
-		service.MyService.Notify().AddLog(installLog)
+		customId := "sys_upgrade_" + checkResult.LatestVersion
+		if service.MyService.Notify().GetLog(customId).CustomId == "" {
+			installLog := model2.AppNotify{}
+			installLog.State = 0
+			installLog.Message = "New version " + checkResult.LatestVersion + " is ready, ready to upgrade"
+			installLog.Type = types.NOTIFY_TYPE_NEED_CONFIRM
+			installLog.CreatedAt = strconv.FormatInt(time.Now().Unix(), 10)
+			installLog.UpdatedAt = strconv.FormatInt(time.Now().Unix(), 10)
+			installLog.Name = "NimoOS System"
+			installLog.CustomId = customId
+			service.MyService.Notify().AddLog(installLog)
+		}
 	}
 
 	if !checkResult.HasUpdate {
@@ -86,8 +90,64 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
 // @Router /sys/update [post]
-func SystemUpdate(ctx echo.Context) error {
+func FirmwareUpdate(ctx echo.Context) error {
 	err := service.MyService.System().UpdateSystemVersion("")
+	if err != nil {
+		return ctx.JSON(common_err.SUCCESS, model.Result{
+			Success: common_err.SERVICE_ERROR,
+			Message: err.Error(),
+		})
+	}
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
+}
+
+// @Summary check app version
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {string} string "ok"
+// @Router /sys/app_version/check [get]
+func GetSystemCheckVersion(ctx echo.Context) error {
+	checkResult := service.MyService.System().CheckAppUpdate()
+
+	if !checkResult.HasUpdate {
+		data := make(map[string]interface{}, 2)
+		data["need_update"] = false
+		data["current_version"] = checkResult.CurrentVersion
+		return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
+	}
+
+	ver := model.Version{
+		Version:   checkResult.LatestVersion,
+		ChangeLog: checkResult.Changelog,
+	}
+
+	data := make(map[string]interface{}, 8)
+	data["need_update"] = true
+	data["version"] = ver
+	data["current_version"] = checkResult.CurrentVersion
+	data["latest_version"] = checkResult.LatestVersion
+	data["is_downloaded"] = checkResult.IsDownloaded
+	data["is_downloading"] = checkResult.IsDownloading
+	data["download_progress"] = checkResult.DownloadProgress
+
+	if !checkResult.IsDownloaded && !checkResult.IsDownloading && utils.DefaultQuery(ctx, "trigger_download", "0") == "1" {
+		service.MyService.System().DownloadAppUpdate()
+	}
+
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
+}
+
+// @Summary 应用更新
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {string} string "ok"
+// @Router /sys/app_update [post]
+func SystemUpdate(ctx echo.Context) error {
+	err := service.MyService.System().UpdateAppVersion("")
 	if err != nil {
 		return ctx.JSON(common_err.SUCCESS, model.Result{
 			Success: common_err.SERVICE_ERROR,
@@ -106,6 +166,7 @@ func SystemUpdate(ctx echo.Context) error {
 // @Router /sys/download/cancel [post]
 func CancelDownload(ctx echo.Context) error {
 	service.MyService.System().CancelDownload()
+	service.MyService.System().CancelAppDownload()
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
 
