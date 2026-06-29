@@ -77,8 +77,6 @@ func SendAllHardwareStatusBySocket() {
 
 	body["sys_cpu"] = cpuData
 
-	body["sys_gpu"] = service.MyService.System().GetGpuUtilization()
-
 	body["sys_net"] = newNet
 
 	body["sys_gpu"] = service.MyService.System().GetGpuStatus()

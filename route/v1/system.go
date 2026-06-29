@@ -290,7 +290,6 @@ func GetSystemUtilization(ctx echo.Context) error {
 
 	data["cpu"] = cpuData
 	data["mem"] = service.MyService.System().GetMemInfo()
-	data["gpu"] = service.MyService.System().GetGpuUtilization()
 
 	// 拼装网络信息
 	netList := service.MyService.System().GetNetInfo()

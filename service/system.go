@@ -17,9 +17,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/NimoTech/NimoOS-Common/external"
 	"github.com/NimoTech/NimoOS-Common/utils/command"
 	exec2 "github.com/NimoTech/NimoOS-Common/utils/exec"
 
@@ -77,7 +77,6 @@ type SystemService interface {
 	GetSystemEntry() string
 	GenreateSystemEntry()
 	GetGpuInfo() []string
-	GetGpuUtilization() []GpuUtilization
 	GetGpuStatus() []GpuStatus
 	GetRamDetail() map[string]string
 	SetDiskStandby(minutes int) error
@@ -1078,37 +1077,9 @@ func (c *systemService) GetGpuInfo() []string {
 	return gpuList
 }
 
-// GpuUtilization is the per-device live snapshot consumed by the frontend
-// widget (see NimoOS-UI/src/widgets/Gpu.vue). Field names match the keys the
-// widget expects on `hardwareInfo.gpu[*]` / `sys_gpu[*]`.
-type GpuUtilization struct {
-	Name              string  `json:"name"`
-	UtilizationGpu    float64 `json:"utilization_gpu"`
-	UtilizationMemory float64 `json:"utilization_memory"`
-	MemoryTotal       int64   `json:"memory_total"`
-	Temperature       float64 `json:"temperature"`
-	PowerW            float64 `json:"power_w,omitempty"`
-	FreqMHz           float64 `json:"freq_mhz,omitempty"`
-}
-
-func (c *systemService) GetGpuUtilization() []GpuUtilization {
-	stats := []GpuUtilization{}
-	if s, ok := external.GetIntelGpuStat(); ok {
-		name := "GPU"
-		if names := c.GetGpuInfo(); len(names) > 0 {
-			name = names[0]
-		}
-		stats = append(stats, GpuUtilization{
-			Name:           name,
-			UtilizationGpu: s.UtilizationGpu,
-			PowerW:         s.PowerW,
-			FreqMHz:        s.FreqMHz,
-		})
-	}
-	return stats
-}
-
-// GpuStatus is one GPU's runtime metrics.
+// GpuStatus is one GPU's runtime metrics, consumed by the frontend widget
+// (see NimoOS-UI/src/widgets/Gpu.vue, which reads utilization_gpu /
+// utilization_memory / memory_total / temperature on each entry).
 type GpuStatus struct {
 	Index             int     `json:"index"`
 	Name              string  `json:"name"`
@@ -1118,11 +1089,16 @@ type GpuStatus struct {
 	MemoryTotal       uint64  `json:"memory_total"`
 	MemoryUsed        uint64  `json:"memory_used"`
 	Temperature       float64 `json:"temperature"`
+	FreqMHz           float64 `json:"freq_mhz,omitempty"`
 }
 
+// GetGpuStatus enumerates all GPUs: NVIDIA via nvidia-smi, then Intel via sysfs
+// (/sys/class/drm). Without this, Intel-only hosts (no NVIDIA, nvidia-smi fails)
+// reported an empty list and the UI showed "No GPU detected".
 func (c *systemService) GetGpuStatus() []GpuStatus {
 	gpus := []GpuStatus{}
 	gpus = append(gpus, queryNvidiaGpuStatus()...)
+	gpus = append(gpus, scanIntelGpus("/sys/class/drm")...)
 	return gpus
 }
 
@@ -1166,6 +1142,257 @@ func queryNvidiaGpuStatus() []GpuStatus {
 		gpus = append(gpus, g)
 	}
 	return gpus
+}
+
+// scanIntelGpus enumerates Intel GPUs under drmDir (/sys/class/drm) and reads
+// name (lspci), temperature (hwmon) and frequency (xe/i915 sysfs). Utilization
+// and VRAM are not exposed by the driver sysfs; live utilization is filled from
+// intel_gpu_top when that tool is installed (a single aggregate, attached to the
+// first Intel GPU). drmDir is a parameter so the logic is unit-testable.
+func scanIntelGpus(drmDir string) []GpuStatus {
+	entries, err := os.ReadDir(drmDir)
+	if err != nil {
+		return nil
+	}
+	gpus := []GpuStatus{}
+	for _, e := range entries {
+		if !isDrmCard(e.Name()) {
+			continue
+		}
+		dev := filepath.Join(drmDir, e.Name(), "device")
+		if strings.TrimSpace(string(file.ReadFullFile(filepath.Join(dev, "vendor")))) != "0x8086" {
+			continue // Intel only
+		}
+		g := GpuStatus{
+			Index:          len(gpus),
+			Vendor:         "intel",
+			Name:           intelGpuName(dev),
+			Temperature:    gpuHwmonTempC(dev),
+			FreqMHz:        intelGpuFreqMHz(dev),
+			UtilizationGpu: intelGpuBusyPct(e.Name(), dev),
+		}
+		if total, used := intelGpuVramBytes(dev); total > 0 {
+			g.MemoryTotal = total
+			g.MemoryUsed = used
+			g.UtilizationMemory = float64(used) / float64(total) * 100
+		}
+		gpus = append(gpus, g)
+	}
+	// Put GPUs that report a temperature first (stable), so the widget's primary
+	// ring (gpu[0]) shows a live reading from e.g. a discrete card rather than an
+	// integrated GPU's blank 0. Reindex to match the new order.
+	withTemp, without := make([]GpuStatus, 0, len(gpus)), make([]GpuStatus, 0, len(gpus))
+	for _, g := range gpus {
+		if g.Temperature > 0 {
+			withTemp = append(withTemp, g)
+		} else {
+			without = append(without, g)
+		}
+	}
+	gpus = append(withTemp, without...)
+	for i := range gpus {
+		gpus[i].Index = i
+	}
+	return gpus
+}
+
+// gpuIdleSample remembers the previous per-GT idle-residency readings for a card
+// so the next call can derive utilization from the delta.
+type gpuIdleSample struct {
+	idleMs []int64 // one entry per GT (gt0-rc render/compute, gt1-mc media, ...)
+	at     time.Time
+	busy   float64
+}
+
+var (
+	gpuIdleMu   sync.Mutex
+	gpuIdlePrev = map[string]gpuIdleSample{}
+)
+
+// intelGpuBusyPct estimates GPU utilization for an Intel card from the GT
+// idle-residency counters (time each GT spent in deep idle / RC6). It samples
+// every GT and returns the busiest, because compute/render load lands on gt0-rc
+// while media (transcode) load lands on gt1-mc — reading only one would miss the
+// other. It is stateful: each call diffs against the previous reading for that
+// card, so the 5s periodical broadcast yields a 5s-averaged figure. intel_gpu_top
+// is not used because it only supports the i915 driver, not xe. Readings closer
+// than 500ms reuse the last value to avoid noise from rapid back-to-back calls.
+func intelGpuBusyPct(card, dev string) float64 {
+	idles := readGpuIdleResidenciesMs(dev)
+	if len(idles) == 0 {
+		return 0 // counters unavailable
+	}
+	now := time.Now()
+	gpuIdleMu.Lock()
+	defer gpuIdleMu.Unlock()
+	prev, ok := gpuIdlePrev[card]
+	if ok && len(prev.idleMs) == len(idles) {
+		elapsed := now.Sub(prev.at).Milliseconds()
+		if elapsed < 500 {
+			return prev.busy // too soon to resample; keep prev anchor
+		}
+		busy := 0.0
+		for i := range idles {
+			if b := computeBusyPct(idles[i]-prev.idleMs[i], elapsed); b > busy {
+				busy = b
+			}
+		}
+		gpuIdlePrev[card] = gpuIdleSample{idleMs: idles, at: now, busy: busy}
+		return busy
+	}
+	gpuIdlePrev[card] = gpuIdleSample{idleMs: idles, at: now}
+	return 0 // first sample establishes the baseline
+}
+
+// computeBusyPct converts an idle-time delta over an interval into a busy
+// percentage, clamped to [0,100].
+func computeBusyPct(idleDeltaMs, elapsedMs int64) float64 {
+	if elapsedMs <= 0 {
+		return 0
+	}
+	busy := 100 * (1 - float64(idleDeltaMs)/float64(elapsedMs))
+	if busy < 0 {
+		return 0
+	}
+	if busy > 100 {
+		return 100
+	}
+	return busy
+}
+
+// readGpuIdleResidenciesMs returns GT deep-idle residency (ms) for each GT of the
+// device: the xe driver exposes one per tile*/gt* (gt0-rc render/compute, gt1-mc
+// media, ...), the older i915 a single power/rc6_residency_ms. Empty when none
+// are present. Glob order is stable (sorted), so per-GT deltas line up call over
+// call.
+func readGpuIdleResidenciesMs(dev string) []int64 {
+	var out []int64
+	for _, p := range globUnder(dev, "tile*/gt*/gtidle/idle_residency_ms") {
+		if v, err := strconv.ParseInt(strings.TrimSpace(string(file.ReadFullFile(p))), 10, 64); err == nil {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		if v, err := strconv.ParseInt(strings.TrimSpace(string(file.ReadFullFile(filepath.Join(dev, "power", "rc6_residency_ms")))), 10, 64); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// isDrmCard reports whether name is a primary DRM card node (cardN), not a
+// render node (renderD*) or other entry.
+func isDrmCard(name string) bool {
+	if !strings.HasPrefix(name, "card") {
+		return false
+	}
+	digits := name[len("card"):]
+	if digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// intelGpuName resolves a human-readable name via lspci on the device's PCI
+// slot, falling back to a generic label when lspci is unavailable.
+func intelGpuName(dev string) string {
+	if real, err := filepath.EvalSymlinks(dev); err == nil {
+		slot := filepath.Base(real) // e.g. 0000:04:00.0
+		if out, err := command.OnlyExec("lspci -s " + slot); err == nil {
+			if parts := strings.SplitN(strings.TrimSpace(out), ": ", 2); len(parts) > 1 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	return "Intel GPU"
+}
+
+// gpuHwmonTempC returns the GPU temperature in Celsius from the device's hwmon,
+// preferring the "pkg" (package) sensor, else the hottest available reading.
+func gpuHwmonTempC(dev string) float64 {
+	inputs, _ := filepath.Glob(filepath.Join(dev, "hwmon", "hwmon*", "temp*_input"))
+	pkg, best := -1.0, 0.0
+	for _, in := range inputs {
+		v, err := strconv.Atoi(strings.TrimSpace(string(file.ReadFullFile(in))))
+		if err != nil || v <= 0 {
+			continue
+		}
+		c := float64(v) / 1000
+		if strings.TrimSpace(string(file.ReadFullFile(strings.TrimSuffix(in, "_input")+"_label"))) == "pkg" {
+			pkg = c
+		}
+		if c > best {
+			best = c
+		}
+	}
+	if pkg >= 0 {
+		return pkg
+	}
+	return best
+}
+
+// intelGpuFreqMHz reads the current GPU frequency, handling both the xe driver
+// (tile*/gt*/freq0/{act,cur}_freq) and the older i915 (gt_{act,cur}_freq_mhz).
+func intelGpuFreqMHz(dev string) float64 {
+	for _, pat := range []string{"tile*/gt*/freq0/act_freq", "tile*/gt*/freq0/cur_freq"} {
+		for _, m := range globUnder(dev, pat) {
+			if v, err := strconv.Atoi(strings.TrimSpace(string(file.ReadFullFile(m)))); err == nil && v > 0 {
+				return float64(v)
+			}
+		}
+	}
+	for _, f := range []string{"gt_act_freq_mhz", "gt_cur_freq_mhz"} {
+		if v, err := strconv.Atoi(strings.TrimSpace(string(file.ReadFullFile(filepath.Join(dev, f))))); err == nil && v > 0 {
+			return float64(v)
+		}
+	}
+	return 0
+}
+
+func globUnder(dev, pattern string) []string {
+	m, _ := filepath.Glob(filepath.Join(dev, pattern))
+	return m
+}
+
+// intelGpuVramBytes returns total and used dedicated VRAM for a discrete Intel
+// GPU. The xe driver exposes this only in debugfs (not sysfs), so it reads
+// /sys/kernel/debug/dri/<pci-slot>/vram0_mm — which requires root; the service
+// runs as root. Integrated GPUs have no VRAM region and yield 0, 0.
+func intelGpuVramBytes(dev string) (total, used uint64) {
+	real, err := filepath.EvalSymlinks(dev)
+	if err != nil {
+		return 0, 0
+	}
+	slot := filepath.Base(real) // e.g. 0000:04:00.0
+	return parseVramMM(string(file.ReadFullFile(filepath.Join("/sys/kernel/debug/dri", slot, "vram0_mm"))))
+}
+
+// parseVramMM extracts total ("size:") and used ("usage:") bytes from the body
+// of an xe vram0_mm debugfs file, ignoring the later free-list and the *MiB
+// summary lines (visible_size etc.).
+func parseVramMM(content string) (total, used uint64) {
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch strings.TrimSuffix(fields[0], ":") {
+		case "size":
+			if total == 0 {
+				total, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		case "usage":
+			if used == 0 {
+				used, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+	}
+	return
 }
 
 func (c *systemService) GetRamDetail() map[string]string {
