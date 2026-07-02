@@ -171,15 +171,36 @@ func PostSambaConnectionsCreate(ctx echo.Context) error {
 	connectionDBModel.MountPoint = baseHostPath
 	connection.MountPoint = baseHostPath
 	file.IsNotExistMkDir(baseHostPath)
+	mountedDirs := make([]string, 0, len(directories))
+	var lastMountErr error
 	for _, v := range directories {
 		mountPoint := baseHostPath + "/" + v
 		file.IsNotExistMkDir(mountPoint)
-		service.MyService.Connections().MountSmaba(connectionDBModel.Username, connectionDBModel.Host, v, connectionDBModel.Port, mountPoint, connectionDBModel.Password)
+		if err := service.MyService.Connections().MountSmaba(connectionDBModel.Username, connectionDBModel.Host, v, connectionDBModel.Port, mountPoint, connectionDBModel.Password); err != nil {
+			// 挂载失败(如 IPC$/print$ 等特殊共享或权限不足):清理空目录,不计入已挂载列表
+			logger.Error("mount samba share failed", zap.String("host", connectionDBModel.Host), zap.String("directory", v), zap.Error(err))
+			os.RemoveAll(mountPoint)
+			lastMountErr = err
+			continue
+		}
+		mountedDirs = append(mountedDirs, v)
 	}
+	// 一个共享都没挂上:清理并返回真实错误,不再假成功返回 200
+	if len(mountedDirs) == 0 {
+		os.RemoveAll(baseHostPath)
+		errData := common_err.GetMsg(common_err.SERVICE_ERROR)
+		if lastMountErr != nil {
+			errData = lastMountErr.Error()
+		}
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: errData})
+	}
+	// 只持久化真正挂载成功的共享,避免残留假挂载点
+	connectionDBModel.Directories = strings.Join(mountedDirs, ",")
 
 	service.MyService.Connections().CreateConnection(&connectionDBModel)
 
 	connection.ID = connectionDBModel.ID
+	connection.Password = "" // 不把明文密码回显给前端
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: connection})
 }
 
