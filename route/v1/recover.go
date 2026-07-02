@@ -24,6 +24,16 @@ func GetRecoverStorage(ctx echo.Context) error {
 	event := "nimoos:file:recover"
 	if t == "GoogleDrive" {
 		google_drive := google_drive.GetConfig()
+		// BYO:若 state 携带 sid,从缓存取回用户自建的 client_id/client_secret 覆盖默认(编译期)值。
+		if sid := ctx.QueryParam("sid"); sid != "" {
+			if v, ok := service.Cache.Get(sid); ok {
+				if cred, ok := v.(googleByoCred); ok {
+					google_drive.ClientID = cred.ClientID
+					google_drive.ClientSecret = cred.ClientSecret
+				}
+				service.Cache.Delete(sid)
+			}
+		}
 		google_drive.Code = ctx.QueryParam("code")
 		if len(google_drive.Code) == 0 {
 			notify["status"] = "fail"
