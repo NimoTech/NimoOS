@@ -519,7 +519,7 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 	targetVersion := strings.TrimPrefix(filepath.Base(bundleDir), "v")
 
 	local, _ := readLocalVersionInfo()
-	currentVersion := s.GetVersion()
+	currentVersion := s.GetOSVersion()
 
 	go func() {
 		logger.Info("starting system upgrade", zap.String("bundle", latestBundle),
@@ -530,7 +530,8 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 			reportUpgradeResult(local.UpdateServer, local.DeviceID, "os", currentVersion, targetVersion, "installing", "", "")
 		}
 
-		cmd := exec.Command("/usr/libexec/nimo_upgrade.sh", latestBundle)
+		cmd := exec.Command("systemd-run", "--scope", "--unit=nimoos-upgrade", "--quiet",
+			"/usr/libexec/nimo_upgrade.sh", latestBundle)
 		output, err := cmd.CombinedOutput()
 
 		if err != nil || !strings.Contains(string(output), "NimoOS upgrade successfully") {
@@ -565,10 +566,19 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 		}
 		Cache.Delete("check_update_result")
 
-		logger.Info("system upgrade successful, rebooting")
-		if local != nil {
-			reportUpgradeResult(local.UpdateServer, local.DeviceID, "os", currentVersion, targetVersion, "completed", "", "")
+		// 记录系统升级状态文件，供重启后同步
+		systemStatusFilePath := "/var/lib/nimoos_data/upgrade/system_status.json"
+		statusData := map[string]string{
+			"update_type":  "os",
+			"from_version": currentVersion,
+			"to_version":   targetVersion,
+			"status":       "installing",
 		}
+		if statusBytes, serr := json.Marshal(statusData); serr == nil {
+			_ = os.WriteFile(systemStatusFilePath, statusBytes, 0644)
+		}
+
+		logger.Info("system upgrade successful, rebooting")
 		time.Sleep(3 * time.Second)
 		command.OnlyExec("systemctl reboot")
 	}()
@@ -919,11 +929,12 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 	const cacheKey = "check_update_result"
 	if cached, ok := Cache.Get(cacheKey); ok {
 		if r, ok := cached.(*UpgradeCheckResult); ok {
-			// 下载中：缓存不含实时进度，不要用缓存
+			// 下载中/已完成：缓存不含实时进度和磁盘状态，需重新检查
 			s.downloader.mu.RLock()
-			isRunning := s.downloader.status == "running"
+			status := s.downloader.status
+			isRunning := status == "running"
 			s.downloader.mu.RUnlock()
-			if isRunning {
+			if isRunning || status == "completed" {
 				Cache.Delete(cacheKey)
 			} else if r.IsDownloaded {
 				downloadDir := "/var/lib/nimoos_data/upgrade/v" + r.LatestVersion
@@ -1301,9 +1312,10 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 		return
 	}
 	hasher := sha256.New()
-	content, err := os.ReadFile(tmpFile)
+	f, err := os.Open(tmpFile)
 	if err == nil {
-		hasher.Write(content)
+		io.Copy(hasher, f)
+		f.Close()
 		actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(actualSHA256, bestVersion.SHA256) {
 			s.reportFailed(local.UpdateServer, local.DeviceID, "app", currentAppVersion, bestVersion.Version, "sha256_mismatch")
@@ -1339,7 +1351,7 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 	}
 
 	properties := map[string]string{"version": bestVersion.Version}
-	MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:upgrade:downloaded", properties)
+	MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:app:downloaded", properties)
 	s.setAppDownloaderStatus("completed")
 }
 
@@ -1496,6 +1508,9 @@ func (s *systemService) runDownload(ctx context.Context) {
 	logger.Info("runDownload: size from cloud", zap.Int64("cloud_size", int64(bestVersion.Size)), zap.Int64("content_length", dlResp.ContentLength))
 	if totalSize == 0 {
 		totalSize = dlResp.ContentLength
+		if totalSize > 0 && dlResp.StatusCode == http.StatusPartialContent {
+			totalSize += resumeOffset
+		}
 		if totalSize < 0 {
 			logger.Info("runDownload: cannot determine total size, progress disabled")
 			totalSize = 0
@@ -1569,14 +1584,15 @@ func (s *systemService) runDownload(ctx context.Context) {
 
 	// SHA256 校验
 	hasher := sha256.New()
-	content, err := os.ReadFile(tmpFile)
+	f, err := os.Open(tmpFile)
 	if err != nil {
 		os.Remove(tmpFile)
 		logger.Error("runDownload: cannot read temp file for checksum", zap.Error(err))
 		s.setDownloaderStatus("failed")
 		return
 	}
-	hasher.Write(content)
+	io.Copy(hasher, f)
+	f.Close()
 	actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
 
 	if !strings.EqualFold(actualSHA256, bestVersion.SHA256) {
@@ -1647,18 +1663,33 @@ func (s *systemService) StartDailyDownloadChecker() {
 			delay := time.Duration(rand.Intn(10800)) * time.Second
 			next = next.Add(delay)
 
+			logger.Info("DailyDownloadChecker: next check scheduled",
+				zap.Time("next_run", next),
+				zap.Duration("delay", delay))
 			time.Sleep(time.Until(next))
 
-			// OS 固件
+			logger.Info("DailyDownloadChecker: checking OS firmware update")
 			check := s.CheckUpdate()
 			if check.HasUpdate && !check.IsDownloaded && !check.IsDownloading {
+				logger.Info("DailyDownloadChecker: starting OS firmware download")
 				s.DownloadUpdate()
+			} else {
+				logger.Info("DailyDownloadChecker: OS firmware skip",
+					zap.Bool("has_update", check.HasUpdate),
+					zap.Bool("downloaded", check.IsDownloaded),
+					zap.Bool("downloading", check.IsDownloading))
 			}
 
-			// APP 更新
+			logger.Info("DailyDownloadChecker: checking APP update")
 			appCheck := s.CheckAppUpdate()
 			if appCheck.HasUpdate && !appCheck.IsDownloaded && !appCheck.IsDownloading {
+				logger.Info("DailyDownloadChecker: starting APP download")
 				s.DownloadAppUpdate()
+			} else {
+				logger.Info("DailyDownloadChecker: APP skip",
+					zap.Bool("has_update", appCheck.HasUpdate),
+					zap.Bool("downloaded", appCheck.IsDownloaded),
+					zap.Bool("downloading", appCheck.IsDownloading))
 			}
 		}
 	}()
@@ -2358,7 +2389,9 @@ func (c *systemService) GetMigrateStatus(jobID string) (MigrateStatus, bool) {
 }
 
 func NewSystemService() SystemService {
-	return &systemService{}
+	s := &systemService{}
+	s.StartDailyDownloadChecker()
+	return s
 }
 
 // uploadUpgradeLog 从设备端获取 S3 上传预签名 URL 并上传日志文件，返回公开下载链接
@@ -2519,11 +2552,12 @@ func (s *systemService) CheckAppUpdate() *UpgradeCheckResult {
 	const cacheKey = "check_app_update_result"
 	if cached, ok := Cache.Get(cacheKey); ok {
 		if r, ok := cached.(*UpgradeCheckResult); ok {
-			// 下载中：缓存不含实时进度，不要用缓存，需实时读取
+			// 下载中/已完成：缓存不含实时进度和磁盘状态，需重新检查
 			s.appDownloader.mu.RLock()
-			isRunning := s.appDownloader.status == "running"
+			status := s.appDownloader.status
+			isRunning := status == "running"
 			s.appDownloader.mu.RUnlock()
-			if isRunning {
+			if isRunning || status == "completed" {
 				Cache.Delete(cacheKey)
 			} else if r.IsDownloaded {
 				// 如果缓存说已下载，校验磁盘文件是否还在
@@ -2720,49 +2754,72 @@ func (s *systemService) UpdateAppVersion(version string) error {
 }
 
 func (s *systemService) SyncStartupUpgradeStatus() {
-	statusFilePath := "/var/lib/nimoos_data/upgrade/status.json"
-	if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
-		return
-	}
-
-	statusBytes, err := os.ReadFile(statusFilePath)
-	if err != nil {
-		return
-	}
-
-	var status struct {
-		UpdateType   string `json:"update_type"`
-		FromVersion  string `json:"from_version"`
-		ToVersion    string `json:"to_version"`
-		Status       string `json:"status"`
-		ErrorMessage string `json:"error_message"`
-	}
-	if err := json.Unmarshal(statusBytes, &status); err != nil {
-		logger.Error("SyncStartupUpgradeStatus: failed to parse status file", zap.Error(err))
-		return
-	}
-
-	local, _ := readLocalVersionInfo()
-	if local == nil {
-		return
-	}
-
-	logger.Info("SyncStartupUpgradeStatus: found pending app upgrade status",
-		zap.String("status", status.Status), zap.String("to", status.ToVersion))
-
-	if status.Status == "completed" {
-		reportUpgradeResult(local.UpdateServer, local.DeviceID, "app", status.FromVersion, status.ToVersion, "completed", "", "")
-	} else if status.Status == "failed" {
-		logPath := "/var/log/nimoos_app_upgrade.log"
-		logURL, uploadErr := uploadUpgradeLog(local.UpdateServer, local.DeviceID, logPath)
-		if uploadErr != nil {
-			logger.Error("SyncStartupUpgradeStatus: failed to upload logs", zap.Error(uploadErr))
+	// 1. 同步应用升级状态
+	appStatusFilePath := "/var/lib/nimoos_data/upgrade/status.json"
+	if _, err := os.Stat(appStatusFilePath); err == nil {
+		if statusBytes, err := os.ReadFile(appStatusFilePath); err == nil {
+			var status struct {
+				UpdateType   string `json:"update_type"`
+				FromVersion  string `json:"from_version"`
+				ToVersion    string `json:"to_version"`
+				Status       string `json:"status"`
+				ErrorMessage string `json:"error_message"`
+			}
+			if err := json.Unmarshal(statusBytes, &status); err == nil {
+				local, _ := readLocalVersionInfo()
+				if local != nil {
+					logger.Info("SyncStartupUpgradeStatus: found pending app upgrade status",
+						zap.String("status", status.Status), zap.String("to", status.ToVersion))
+					if status.Status == "completed" {
+						reportUpgradeResult(local.UpdateServer, local.DeviceID, "app", status.FromVersion, status.ToVersion, "completed", "", "")
+					} else if status.Status == "failed" {
+						logPath := "/var/log/nimoos_app_upgrade.log"
+						logURL, uploadErr := uploadUpgradeLog(local.UpdateServer, local.DeviceID, logPath)
+						if uploadErr != nil {
+							logger.Error("SyncStartupUpgradeStatus: failed to upload logs", zap.Error(uploadErr))
+						}
+						reportUpgradeResult(local.UpdateServer, local.DeviceID, "app", status.FromVersion, status.ToVersion, "failed", status.ErrorMessage, logURL)
+					}
+				}
+			}
 		}
-		reportUpgradeResult(local.UpdateServer, local.DeviceID, "app", status.FromVersion, status.ToVersion, "failed", status.ErrorMessage, logURL)
+		_ = os.Remove(appStatusFilePath)
 	}
 
-	// 无论成功失败，处理后都清理掉 status.json 避免重复上报
-	_ = os.Remove(statusFilePath)
+	// 2. 同步系统 (OS) 升级状态
+	systemStatusFilePath := "/var/lib/nimoos_data/upgrade/system_status.json"
+	if _, err := os.Stat(systemStatusFilePath); err == nil {
+		if statusBytes, err := os.ReadFile(systemStatusFilePath); err == nil {
+			var status struct {
+				UpdateType   string `json:"update_type"`
+				FromVersion  string `json:"from_version"`
+				ToVersion    string `json:"to_version"`
+				Status       string `json:"status"`
+				ErrorMessage string `json:"error_message"`
+			}
+			if err := json.Unmarshal(statusBytes, &status); err == nil {
+				local, _ := readLocalVersionInfo()
+				if local != nil {
+					currentOSVersion := s.GetOSVersion()
+					logger.Info("SyncStartupUpgradeStatus: found pending OS upgrade status",
+						zap.String("current", currentOSVersion), zap.String("from", status.FromVersion), zap.String("to", status.ToVersion))
+					if currentOSVersion == status.ToVersion {
+						reportUpgradeResult(local.UpdateServer, local.DeviceID, "os", status.FromVersion, status.ToVersion, "completed", "", "")
+						logger.Info("SyncStartupUpgradeStatus: OS upgrade completed successfully")
+					} else {
+						logPath := "/var/log/nimoos/upgrade.log"
+						logURL, uploadErr := uploadUpgradeLog(local.UpdateServer, local.DeviceID, logPath)
+						if uploadErr != nil {
+							logger.Error("SyncStartupUpgradeStatus: failed to upload OS logs", zap.Error(uploadErr))
+						}
+						reportUpgradeResult(local.UpdateServer, local.DeviceID, "os", status.FromVersion, status.ToVersion, "failed", "boot_fallback", logURL)
+						logger.Error("SyncStartupUpgradeStatus: OS upgrade failed, rolled back to original version")
+					}
+				}
+			}
+		}
+		_ = os.Remove(systemStatusFilePath)
+	}
 }
 
 // isFileLocked 检查文件是否被 flock 锁定
