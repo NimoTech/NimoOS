@@ -160,6 +160,7 @@ func InitV1Router() http.Handler {
 		v1DriverGroup.Use()
 		{
 			v1DriverGroup.GET("", v1.ListDriverInfo)
+			v1DriverGroup.POST("/google_drive/auth", v1.PostGoogleDriveAuth)
 		}
 
 		v1FolderGroup := v1Group.Group("/folder")
