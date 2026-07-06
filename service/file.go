@@ -189,12 +189,16 @@ func FileOperate(k string) {
 			createdPaths = append(createdPaths, dst)
 
 		} else if temp.Type == "copy" {
-			err := file.CopyDir(v.From, temp.To, temp.Style)
-			if err != nil {
+			lastPath := v.From[strings.LastIndex(v.From, "/")+1:]
+			dst := temp.To + "/" + lastPath
+			if temp.Style == "skip" && !file.CheckNotExist(dst) {
+				// 目的地已存在且策略为 skip:CopyDir 为空操作,没有真正落盘,不发 media:created
 				continue
 			}
-			lastPath := v.From[strings.LastIndex(v.From, "/")+1:]
-			createdPaths = append(createdPaths, temp.To+"/"+lastPath)
+			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
+				continue
+			}
+			createdPaths = append(createdPaths, dst)
 		} else {
 			continue
 		}
