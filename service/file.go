@@ -151,6 +151,8 @@ func FileOperate(k string) {
 		}
 	}()
 
+	createdPaths := make([]string, 0, len(temp.Item))
+
 	for i := 0; i < len(temp.Item); i++ {
 		v := temp.Item[i]
 		if temp.Type == "move" {
@@ -184,12 +186,15 @@ func FileOperate(k string) {
 				logger.Error("move: remove source failed", zap.String("from", v.From), zap.Error(err))
 				// Source still intact; dst is a valid copy — leave both, log only.
 			}
+			createdPaths = append(createdPaths, dst)
 
 		} else if temp.Type == "copy" {
 			err := file.CopyDir(v.From, temp.To, temp.Style)
 			if err != nil {
 				continue
 			}
+			lastPath := v.From[strings.LastIndex(v.From, "/")+1:]
+			createdPaths = append(createdPaths, temp.To+"/"+lastPath)
 		} else {
 			continue
 		}
@@ -197,6 +202,10 @@ func FileOperate(k string) {
 	}
 	temp.Finished = true
 	FileQueue.Store(k, temp)
+
+	if len(createdPaths) > 0 {
+		go PublishMediaCreated(createdPaths)
+	}
 }
 
 func ExecOpFile() {
