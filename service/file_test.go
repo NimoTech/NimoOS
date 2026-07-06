@@ -8,6 +8,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -81,4 +83,10 @@ func TestNewInteruptReader(t *testing.T) {
 
 func ddd() {
 	cancel()
+}
+
+func TestOpDestPath(t *testing.T) {
+	require.Equal(t, "/dst/pics", opDestPath("/src/pics", "/dst"))
+	require.Equal(t, "/dst/pics", opDestPath("/src/pics/", "/dst")) // 尾斜杠不再退化
+	require.Equal(t, "/dst/a.jpg", opDestPath("/src/a.jpg", "/dst/"))
 }
