@@ -687,6 +687,8 @@ func PostFileUpload(ctx echo.Context) error {
 			if err := file.RMDir(tempDir); err != nil {
 				logger.Error("error when trying to remove `"+tempDir+"`", zap.Error(err))
 			}
+			// Final merged file has landed at `path` — notify Photos.
+			go service.PublishMediaCreated([]string{path})
 		}
 	} else {
 		unlock := pathlock.LockWrite(path)
@@ -703,6 +705,8 @@ func PostFileUpload(ctx echo.Context) error {
 			logger.Error("error when trying to write to `"+path+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 		}
+		// Single-shot direct write landed at `path` — notify Photos.
+		go service.PublishMediaCreated([]string{path})
 	}
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
