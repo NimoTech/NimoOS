@@ -108,19 +108,36 @@ func InitNetworkMount() {
 			logger.Error("get mount point err", zap.Any("err", err))
 			continue
 		}
+		unmountFailed := false
 		for _, v := range mountPointList {
-			service.MyService.Connections().UnmountSmaba(v.Path)
+			if err := service.MyService.Connections().UnmountSmaba(v.Path); err != nil {
+				// 卸不掉就绝不能递归删除:os.RemoveAll 会穿进仍然活跃的
+				// CIFS 挂载点,把远端共享里的文件删掉
+				logger.Error("unmount stale samba mount failed", zap.String("path", v.Path), zap.Error(err))
+				unmountFailed = true
+			}
+		}
+		if !unmountFailed {
+			os.RemoveAll(baseHostPath)
 		}
 
-		os.RemoveAll(baseHostPath)
-
 		file.IsNotExistMkDir(baseHostPath)
+		// 与创建路径(route/v1/samba.go PostSambaConnectionsCreate)同款处理:
+		// 逐共享判断挂载结果,失败的清理空目录并跳过,只把挂载成功的写回 DB,
+		// 否则这里的全量覆盖会把创建时过滤出的干净列表冲掉、开机复现空目录残留。
+		mountedDirs := make([]string, 0, len(directories))
 		for _, v := range directories {
 			mountPoint := baseHostPath + "/" + v
 			file.IsNotExistMkDir(mountPoint)
-			service.MyService.Connections().MountSmaba(connection.Username, connection.Host, v, connection.Port, mountPoint, connection.Password)
+			if err := service.MyService.Connections().MountSmaba(connection.Username, connection.Host, v, connection.Port, mountPoint, connection.Password); err != nil {
+				logger.Error("mount samba share failed", zap.String("host", connection.Host), zap.String("directory", v), zap.Error(err))
+				// 非递归 Remove:目录非空/仍被挂载时失败无害,绝不误删远端文件
+				_ = os.Remove(mountPoint)
+				continue
+			}
+			mountedDirs = append(mountedDirs, v)
 		}
-		connection.Directories = strings.Join(directories, ",")
+		connection.Directories = strings.Join(mountedDirs, ",")
 		service.MyService.Connections().UpdateConnection(&connection)
 	}
 	err := service.MyService.Storage().CheckAndMountAll()
