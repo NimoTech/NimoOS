@@ -125,6 +125,14 @@ func (w *writer) Write(p []byte) (n int, err error) {
 	}
 }
 
+// opDestPath returns the destination CopyDir/move will actually create.
+// filepath.Base 会剥离尾部斜杠;此前手写的 strings.LastIndex 切分在 from 以
+// "/" 结尾时得到空文件名,dst 退化为 to 本身(必然存在),skip 判断永真,
+// 整个复制会被静默跳过(CopyDir 都不会被调用)。
+func opDestPath(from, to string) string {
+	return filepath.Join(to, filepath.Base(from))
+}
+
 func FileOperate(k string) {
 	list, ok := FileQueue.Load(k)
 	if !ok {
@@ -151,11 +159,12 @@ func FileOperate(k string) {
 		}
 	}()
 
+	createdPaths := make([]string, 0, len(temp.Item))
+
 	for i := 0; i < len(temp.Item); i++ {
 		v := temp.Item[i]
 		if temp.Type == "move" {
-			lastPath := v.From[strings.LastIndex(v.From, "/")+1:]
-			dst := temp.To + "/" + lastPath
+			dst := opDestPath(v.From, temp.To)
 			if !file.CheckNotExist(dst) {
 				if temp.Style == "skip" {
 					temp.Item[i].Finished = true
@@ -184,12 +193,18 @@ func FileOperate(k string) {
 				logger.Error("move: remove source failed", zap.String("from", v.From), zap.Error(err))
 				// Source still intact; dst is a valid copy — leave both, log only.
 			}
+			createdPaths = append(createdPaths, dst)
 
 		} else if temp.Type == "copy" {
-			err := file.CopyDir(v.From, temp.To, temp.Style)
-			if err != nil {
+			dst := opDestPath(v.From, temp.To)
+			if temp.Style == "skip" && !file.CheckNotExist(dst) {
+				// 目的地已存在且策略为 skip:CopyDir 为空操作,没有真正落盘,不发 media:created
 				continue
 			}
+			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
+				continue
+			}
+			createdPaths = append(createdPaths, dst)
 		} else {
 			continue
 		}
@@ -197,6 +212,10 @@ func FileOperate(k string) {
 	}
 	temp.Finished = true
 	FileQueue.Store(k, temp)
+
+	if len(createdPaths) > 0 {
+		go PublishMediaCreated(createdPaths)
+	}
 }
 
 func ExecOpFile() {
