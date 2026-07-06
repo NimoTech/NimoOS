@@ -14,6 +14,7 @@ import (
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
@@ -300,7 +301,7 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 			if policy == "" && event.Upload.MetaData["resumed"] == "1" {
 				policy = "overwrite"
 			}
-			dest, _, ierr := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
+			dest, skipped, ierr := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
 			if ierr != nil {
 				logger.Error("Files tus ingest failed",
 					zap.String("id", event.Upload.ID), zap.Error(ierr))
@@ -310,6 +311,9 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 			}
 			_ = store.SetStatus(event.Upload.ID, commonUpload.UploadStatusCompleted, 0)
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
+			if !skipped {
+				go service.PublishMediaCreated([]string{dest})
+			}
 		}
 	}()
 
