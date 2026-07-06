@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
@@ -45,10 +46,10 @@ func filterMediaCreated(paths []string) []string {
 	return out
 }
 
-// PublishMediaCreated fires nimoos:media:created for the given landed paths.
-// Fire-and-forget: MessageBus 是软依赖,失败只记日志,绝不影响文件操作本身。
-func PublishMediaCreated(paths []string) {
-	media := filterMediaCreated(paths)
+// PublishMediaPathsEvent publishes a paths-carrying media event with the
+// caller's pre-filtered list. 10s 超时:MessageBus 半死(端口通但不应答)时
+// 不让发布 goroutine 无限期挂起堆积;失败只记日志(软依赖)。
+func PublishMediaPathsEvent(eventName string, media []string) {
 	if len(media) == 0 {
 		return
 	}
@@ -56,15 +57,23 @@ func PublishMediaCreated(paths []string) {
 	if err != nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	response, err := MyService.MessageBus().PublishEventWithResponse(
-		context.Background(), common.SERVICENAME, common.EventMediaCreated,
+		ctx, common.SERVICENAME, eventName,
 		map[string]string{"paths": string(b)},
 	)
 	if err != nil {
-		logger.Error("failed to publish nimoos:media:created", zap.Error(err))
+		logger.Error("failed to publish "+eventName, zap.Error(err))
 		return
 	}
 	if response.StatusCode() != http.StatusOK {
-		logger.Error("failed to publish nimoos:media:created", zap.String("status", response.Status()))
+		logger.Error("failed to publish "+eventName, zap.String("status", response.Status()))
 	}
+}
+
+// PublishMediaCreated fires nimoos:media:created for the given landed paths.
+// Fire-and-forget: MessageBus 是软依赖,失败只记日志,绝不影响文件操作本身。
+func PublishMediaCreated(paths []string) {
+	PublishMediaPathsEvent(common.EventMediaCreated, filterMediaCreated(paths))
 }
