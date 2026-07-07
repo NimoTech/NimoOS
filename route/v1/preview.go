@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	nexec "github.com/NimoTech/NimoOS-Common/utils/exec"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
@@ -60,8 +59,13 @@ func convertOfficeToPDF(src string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), sofficeTimeout)
 	defer cancel()
 
-	cmd := nexec.CommandContext(ctx, "soffice", sofficeArgs(profileDir, outdir, src)...)
-	if cmd.Err != nil { // safetext 拒绝了某个参数
+	// 用标准库 os/exec 而非 NimoOS-Common 的 safetext 包装:soffice 以「分开的参数」
+	// 直接经 execve 调用(无 shell),文件名里的空格/特殊字符是字面量、无注入风险;
+	// 而 safetext 的 shsprintf 会把带空格的路径(如「新建 DOC 文档.doc」)误判为
+	// "Shell Injection Detected" 而拒绝执行。路径已由 checkPathAccess 鉴权。
+	// (同 core migrate.go 对 rsync/docker 路径参数也用标准库 os/exec。)
+	cmd := osexec.CommandContext(ctx, "soffice", sofficeArgs(profileDir, outdir, src)...)
+	if cmd.Err != nil { // soffice 二进制未找到(LookPath 失败)
 		return nil, cmd.Err
 	}
 	out, err := cmd.CombinedOutput()

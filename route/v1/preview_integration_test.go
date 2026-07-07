@@ -15,7 +15,9 @@ func TestConvertOfficeToPDF_RealSoffice(t *testing.T) {
 		t.Skip("soffice not installed")
 	}
 	dir := t.TempDir()
-	txt := filepath.Join(dir, "src.txt")
+	// 文件名故意带空格(如「新建 DOC 文档.doc」)——回归守卫:safetext 包装会把带空格
+	// 的路径误判为 Shell Injection 而拒绝;必须用标准库 os/exec 才能通过。
+	txt := filepath.Join(dir, "my test.txt")
 	if err := os.WriteFile(txt, []byte("hello preview test"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +25,7 @@ func TestConvertOfficeToPDF_RealSoffice(t *testing.T) {
 	if err := exec.Command("soffice", "--headless", "--convert-to", "doc", "--outdir", dir, txt).Run(); err != nil {
 		t.Fatalf("build .doc: %v", err)
 	}
-	doc := filepath.Join(dir, "src.doc")
+	doc := filepath.Join(dir, "my test.doc")
 	data, err := convertOfficeToPDF(doc)
 	if err != nil {
 		t.Fatalf("convert: %v", err)
