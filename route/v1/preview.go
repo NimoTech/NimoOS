@@ -3,13 +3,20 @@ package v1
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	nexec "github.com/NimoTech/NimoOS-Common/utils/exec"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
+	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 )
 
 var convertibleExts = map[string]bool{
@@ -78,4 +85,40 @@ func convertOfficeToPDF(src string) ([]byte, error) {
 		return nil, fmt.Errorf("soffice produced no pdf output")
 	}
 	return data, nil
+}
+
+// GetFilePreview 把旧版 Office(doc/wps/xls/ppt/pptx)转成 PDF 返回。
+// 响应体是原始 PDF 字节(application/pdf),非 Result 信封;错误时返回 Result JSON + 非 2xx。
+func GetFilePreview(ctx echo.Context) error {
+	filePath := ctx.QueryParam("path")
+	if len(filePath) == 0 {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{
+			Success: common_err.INVALID_PARAMS,
+			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
+		})
+	}
+	if err := checkPathAccess(ctx, filePath); err != nil {
+		return err
+	}
+	if !isConvertibleOffice(filepath.Ext(filePath)) {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{
+			Success: common_err.INVALID_PARAMS,
+			Message: "unsupported preview format",
+		})
+	}
+	if _, err := osexec.LookPath("soffice"); err != nil {
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
+			Success: common_err.SERVICE_ERROR,
+			Message: "文档转换组件(LibreOffice)未安装",
+		})
+	}
+	data, err := convertOfficeToPDF(filePath)
+	if err != nil {
+		logger.Error("file preview convert failed", zap.String("path", filePath), zap.Error(err))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
+			Success: common_err.SERVICE_ERROR,
+			Message: "文档转换失败",
+		})
+	}
+	return ctx.Blob(http.StatusOK, "application/pdf", data)
 }

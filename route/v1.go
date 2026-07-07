@@ -144,6 +144,7 @@ func InitV1Router() http.Handler {
 			v1FileGroup.PUT("/name", v1.RenamePath)
 			// file/rename
 			v1FileGroup.GET("/content", v1.GetFilerContent) // file/read
+			v1FileGroup.GET("/preview", v1.GetFilePreview)  // 旧版 Office → PDF 预览
 
 			// File uploads need to be handled separately, and will not be modified here
 			// v1FileGroup.POST("/upload", v1.PostFileUpload)
