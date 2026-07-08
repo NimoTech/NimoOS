@@ -37,7 +37,7 @@ func InitV1Router() http.Handler {
 	e.GET("/v1/sys/version/current", func(ctx echo.Context) error {
 		return ctx.String(200, service.MyService.System().GetVersion())
 	})
-	middleware.RegisterVersionRoute(e, "/v1/sys/version", "NimoOS Core", common.VERSION)
+	middleware.RegisterVersionRoute(e, "/v1/sys/component/version", "NimoOS Core", common.VERSION)
 	e.GET("/v1/sys/os_version/check", v1.GetFirmwareCheckVersion)
 	e.GET("/v1/sys/os_version/current", func(ctx echo.Context) error {
 		return ctx.String(200, service.MyService.System().GetOSVersion())
