@@ -6,7 +6,9 @@ import (
 	"strconv"
 
 	"github.com/NimoTech/NimoOS-Common/external"
+	middleware "github.com/NimoTech/NimoOS-Common/middleware"
 	"github.com/NimoTech/NimoOS-Common/utils/jwt"
+	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/pkg/config"
 	v1 "github.com/NimoTech/NimoOS/route/v1"
 	"github.com/NimoTech/NimoOS/service"
@@ -35,6 +37,7 @@ func InitV1Router() http.Handler {
 	e.GET("/v1/sys/version/current", func(ctx echo.Context) error {
 		return ctx.String(200, service.MyService.System().GetVersion())
 	})
+	middleware.RegisterVersionRoute(e, "/v1/sys/component/version", "NimoOS Core", common.VERSION)
 	e.GET("/v1/sys/os_version/check", v1.GetFirmwareCheckVersion)
 	e.GET("/v1/sys/os_version/current", func(ctx echo.Context) error {
 		return ctx.String(200, service.MyService.System().GetOSVersion())
