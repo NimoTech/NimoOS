@@ -2294,6 +2294,10 @@ func (c *systemService) GetNetAddr(name string) string {
 func (c *systemService) GetNetSpeed(name string) int {
 	speedPath := filepath.Join("/sys/class/net", name, "speed")
 	if !file.Exists(speedPath) {
+		// For WiFi interfaces, try to get the link rate from iw
+		if strings.HasPrefix(name, "wl") || strings.HasPrefix(name, "wlan") {
+			return c.GetWifiSpeed(name)
+		}
 		return 0
 	}
 	content := string(file.ReadFullFile(speedPath))
@@ -2306,6 +2310,31 @@ func (c *systemService) GetNetSpeed(name string) int {
 		return 0
 	}
 	return speed
+}
+
+// GetWifiSpeed parses iw dev <name> link output for tx bitrate (in Mbps).
+func (c *systemService) GetWifiSpeed(name string) int {
+	out, err := exec.Command("iw", "dev", name, "link").Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "tx bitrate:") {
+			// Format: "tx bitrate: 1200.9 MBit/s 80MHz EHT-MCS 11 ..."
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				// parts[0]="tx" parts[1]="bitrate:" parts[2]="1200.9"
+				rateStr := strings.TrimSuffix(parts[2], ".")
+				rate, err := strconv.ParseFloat(parts[2], 64)
+				if err == nil {
+					return int(rate + 0.5) // round to nearest integer
+				}
+				_ = rateStr
+			}
+		}
+	}
+	return 0
 }
 
 func (c *systemService) GetNetMaxSpeed(name string) int {

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NimoTech/NimoOS-Common/pkg/network"
 	file1 "github.com/NimoTech/NimoOS-Common/utils/file"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
@@ -38,7 +39,15 @@ func InitFunction() {
 	go InitInfo()
 	go InitDiskStandby()
 	go InitPathConfig()
+	go InitGatewayConfig()
 	//go InitZerotier()
+}
+
+func InitGatewayConfig() {
+	time.Sleep(15 * time.Second)
+	if err := network.ApplyGatewayConfig(); err != nil {
+		logger.Error("failed to apply gateway config on boot", zap.Error(err))
+	}
 }
 
 func readLocalVersionInfo() string {
@@ -143,7 +152,7 @@ func InitDiskStandby() {
 	}
 
 	url := fmt.Sprintf("http://127.0.0.1:%s/v1/users/custom/system", port)
-	
+
 	// Internal request to fetch system settings
 	res := httper.Get(url, nil)
 	if res == "" {
