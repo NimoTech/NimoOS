@@ -6,10 +6,6 @@ const (
 	// FileUploadStagingDir 是 tusd 落临时分片的目录。上传中的所有半成品都在
 	// 这里，绝不在用户目录留 .part/.tmp。
 	FileUploadStagingDir = "/DATA/.system_data/file-tus-staging"
-
-	// FileUploadMaxSize 单文件上限 20 GB（与 Photos 对齐）。
-	FileUploadMaxSize = int64(20 * 1024 * 1024 * 1024)
-
 )
 
 // 分级缓存清理 TTL(秒)。可后续提升为配置项;当前以常量提供默认值。

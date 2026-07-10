@@ -21,9 +21,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// FileUploadMaxSizeForTest exposes the upload size limit for tests.
-func FileUploadMaxSizeForTest() int64 { return common.FileUploadMaxSize }
-
 // freeBytesFn returns available bytes for a storage path; injectable for tests.
 type freeBytesFn func() (uint64, error)
 
@@ -93,9 +90,7 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 	if hook.Upload.Size <= 0 {
 		return reject(400, "ERR_EMPTY_FILE", "empty file rejected")
 	}
-	if hook.Upload.Size > common.FileUploadMaxSize {
-		return reject(413, "ERR_FILE_TOO_LARGE", fmt.Sprintf("file exceeds %d byte limit", common.FileUploadMaxSize))
-	}
+	// 单文件不设人为大小上限:只要 staging 盘空间足够(×1.05 余量)就放行。
 	if err := checkFileUploadQuota(hook.Upload.Size, available); err != nil {
 		return reject(413, "ERR_INSUFFICIENT_STORAGE", err.Error())
 	}
@@ -255,7 +250,6 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 		NotifyCreatedUploads:     true,
 		NotifyUploadProgress:     true,
 		NotifyTerminatedUploads:  true,
-		MaxSize:                  common.FileUploadMaxSize,
 		PreUploadCreateCallback:  validateFileUploadMetadata,
 	})
 	if err != nil {

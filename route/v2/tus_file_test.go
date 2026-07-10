@@ -38,8 +38,10 @@ func TestValidateFileUploadMetadata(t *testing.T) {
 		{"protected in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "Media/a.txt"}, 10, big, true, 403},
 		{"traversal in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "../../etc/a.txt"}, 10, big, true, 400},
 		{"empty file", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 0, big, true, 400},
-		{"too big", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, FileUploadMaxSizeForTest() + 1, big, true, 413},
+		// 无人为单文件上限:约 98 GiB 的文件只要磁盘空间足够(×1.05 余量)就放行。
+		{"huge file with space allowed", map[string]string{"filename": "a.mov", "targetPath": "/DATA/x"}, 104960272307, uint64(200 * 1024 * 1024 * 1024), false, 0},
 		{"insufficient space", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 1000, 100, true, 413},
+		{"huge file insufficient space", map[string]string{"filename": "a.mov", "targetPath": "/DATA/x"}, 104960272307, big, true, 413},
 	}
 
 	for _, c := range cases {
