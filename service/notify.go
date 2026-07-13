@@ -86,6 +86,21 @@ func buildFileNotifyTask(id string, temp model2.FileOperate) (task notify.File, 
 		task.Status = "PROCESSING"
 	}
 
+	// ParkedPath is scanned unconditionally, before the finished early-return.
+	// In production, FileItem.ParkedPath is only ever set inside FileOperate's
+	// per-item loop (service/file.go), together with temp.Finished=true stored
+	// right after that same loop — so every real queue entry carrying a
+	// ParkedPath also has Finished==true. The finished branch below is the
+	// only notification actually sent for that task id before FileQueue
+	// deletes the entry, so it must carry ParkedPath too, or it is
+	// unreachable in practice.
+	for _, v := range temp.Item {
+		if v.ParkedPath != "" {
+			task.ParkedPath = v.ParkedPath
+			break
+		}
+	}
+
 	if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
 		task.Finished = true
 		task.Status = "FINISHED"
@@ -95,12 +110,6 @@ func buildFileNotifyTask(id string, temp model2.FileOperate) (task notify.File, 
 	for _, v := range temp.Item {
 		if v.Size != v.ProcessedSize {
 			task.ProcessingPath = v.From
-			break
-		}
-	}
-	for _, v := range temp.Item {
-		if v.ParkedPath != "" {
-			task.ParkedPath = v.ParkedPath
 			break
 		}
 	}
