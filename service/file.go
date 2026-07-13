@@ -47,6 +47,16 @@ var renameFn = os.Rename
 // inspecting them from inside the stub itself.
 var terminalNotifyFn = pushSingleFileNotify
 
+// beginRunHook, if non-nil, is called by FileOperate immediately before it
+// calls beginRun(k) — i.e. at the exact TOCTOU window between a task being
+// admitted/dispatched and its beginRun call actually claiming `running`
+// and reading its context. Tests use this to deterministically land a
+// CancelOp call inside that window (see
+// TestCancelOp_CancelDuringDispatchRace_StillHonored) instead of racing
+// goroutine scheduling with a sleep. nil (its default) in production —
+// zero overhead, zero behavior change.
+var beginRunHook func(id string)
+
 // opQueue replaces the former bare []string OpStrArr.
 // All access goes through EnqueueOp / DequeueOp / PeekOps / ClearOps so
 // concurrent handler goroutines can never race on the slice.
@@ -59,11 +69,16 @@ var terminalNotifyFn = pushSingleFileNotify
 // task goes through EnqueueOp.
 //
 // ctxOf/cancelOf implement A3 (real cancellation): every task admitted via
-// EnqueueOp gets its own cancelable context, released (like the fingerprint)
-// through DequeueOp/ClearOps. running names the id FileOperate is currently
-// executing (the single-worker model: ExecOpFile only ever starts
-// PeekOps()[0]) so CancelOp can tell "queued, never started" (just remove
-// it, current pre-A3 behavior) apart from "executing right now" (cancel its
+// EnqueueOp gets its own cancelable context. Unlike ids/fingerprintOf,
+// ctxOf/cancelOf are released ONLY by DequeueOp — never by
+// releaseQueueSlotLocked or ClearOps, which touch ids/fingerprintOf but
+// leave ctxOf/cancelOf alone on purpose (see releaseQueueSlotLocked's doc
+// comment for why: a FileOperate goroutine racing toward its own beginRun
+// call for a just-cancelled id must still find its context there). running
+// names the id FileOperate is currently executing (the single-worker
+// model: ExecOpFile only ever starts PeekOps()[0]) so CancelOp can tell
+// "queued, never started" (remove it from ids/fingerprintOf right away,
+// current pre-A3 behavior) apart from "executing right now" (cancel its
 // context and let FileOperate's own goroutine perform the cleanup ->
 // terminal-notify -> retire sequence; CancelOp must not race it by touching
 // FileQueue/opQueue itself in that case).
@@ -144,12 +159,54 @@ func EnqueueOp(id string, t model.FileOperate) (isFirst bool, duplicate bool) {
 	return len(opQueue.ids) == 1, false
 }
 
+// releaseQueueSlotLocked removes id from the queue slice and releases the
+// fingerprint it was admitted under. The caller must hold opQueue's lock.
+//
+// It deliberately leaves ctxOf/cancelOf untouched — this is the fix for a
+// TOCTOU CancelOp used to have: a task's context/cancel func is created at
+// EnqueueOp time, but the corresponding "go FileOperate(id)" dispatch and
+// that goroutine's own beginRun call happen later, asynchronously. If
+// CancelOp observed "not currently running" (opQueue.running != id) and
+// responded by deleting ctxOf[id]/cancelOf[id] right then, a FileOperate
+// goroutine already racing toward beginRun for that exact id would find
+// nothing there and silently fall back to a fresh, never-cancelled
+// context.Background() — running the task to completion, uncancellable,
+// the exact production bug A3 exists to fix, reintroduced through this
+// race window. Leaving ctxOf/cancelOf in place means that racing beginRun
+// call still finds the (by then already cancelled, via the cancel() call
+// in CancelOp) context — so the task aborts via FileOperate's itemsLoop
+// ctx.Err() check instead of running unchecked.
+//
+// ctxOf/cancelOf for this id are released later by DequeueOp: either when
+// that racing beginRun call happens and FileOperate runs its own
+// cancelled-terminal sequence (which calls DequeueOp), or — the ordinary
+// case of a task that really was still queued behind others and is never
+// dispatched again once removed from opQueue.ids — never, which is a
+// small bounded leak (one context+cancelFunc per task cancelled while
+// queued) traded deliberately for correctness, not a growing-per-request
+// leak: the executing-cancel and natural-completion paths still release
+// ctxOf/cancelOf via DequeueOp exactly as before.
+func releaseQueueSlotLocked(id string) {
+	out := opQueue.ids[:0]
+	for _, v := range opQueue.ids {
+		if v != id {
+			out = append(out, v)
+		}
+	}
+	opQueue.ids = out
+	if fp, ok := opQueue.fingerprintOf[id]; ok {
+		delete(opQueue.fingerprintOf, id)
+		delete(opQueue.activeFingerprints, fp)
+	}
+}
+
 // DequeueOp removes id from the queue and releases the fingerprint it was
 // admitted under (if any), so a subsequent identical submission is no
 // longer rejected. Called from both task-completion cleanup
-// (service/notify.go's SendFileOperateNotify) and the
-// DELETE /file/operate/:id cleanup route (route/v1/file.go) — the two
-// paths, per R3, that retire a single task.
+// (service/notify.go's SendFileOperateNotify) and FileOperate's own
+// cancelled-terminal sequence (service/file.go) — the two paths that
+// retire a single task once its outcome (natural completion or
+// cancellation) is fully settled.
 func DequeueOp(id string) {
 	opQueue.Lock()
 	defer opQueue.Unlock()
@@ -182,16 +239,23 @@ func PeekOps() []string {
 	return cp
 }
 
-// ClearOps empties the queue and releases every fingerprint. Used by the
-// DELETE /file/operate/0 "clear all" route.
+// ClearOps empties the queue and releases every fingerprint. Used by
+// CancelAllOps (DELETE /file/operate/0) and directly by tests that need to
+// reset queue/fingerprint state between cases.
+//
+// Deliberately does NOT touch ctxOf/cancelOf, for the same TOCTOU reason
+// documented on releaseQueueSlotLocked: CancelAllOps cancels every
+// registered context before calling this, but a task whose FileOperate
+// goroutine is concurrently racing toward its own beginRun call must still
+// be able to find its (by then already cancelled) context afterward,
+// rather than being handed a fresh context.Background() because this
+// wiped the map out from under it.
 func ClearOps() {
 	opQueue.Lock()
 	defer opQueue.Unlock()
 	opQueue.ids = nil
 	opQueue.fingerprintOf = nil
 	opQueue.activeFingerprints = nil
-	opQueue.ctxOf = nil
-	opQueue.cancelOf = nil
 	opQueue.running = ""
 }
 
@@ -240,7 +304,13 @@ func endRun(id string) {
 //   - Queued (admitted but FileOperate has not started it yet): behavior is
 //     unchanged from before A3 — remove it outright. Nothing is executing,
 //     so there is no cp subprocess to interrupt and no half-written
-//     destination to clean up.
+//     destination to clean up. This branch is decided by the SAME lock
+//     acquisition that reads opQueue.running (see below) — closing the
+//     TOCTOU window between EnqueueOp/dispatch and that task's own
+//     beginRun call: even if a FileOperate goroutine for this exact id is
+//     concurrently racing toward beginRun right now, releaseQueueSlotLocked
+//     leaves ctxOf/cancelOf in place, so that racing call still finds this
+//     (by then already cancelled) context instead of minting a fresh one.
 //   - Executing right now: cancel its context and return. CancelOp does not
 //     touch FileQueue/opQueue itself in this case — FileOperate's own
 //     goroutine owns that task's in-memory item state (which item is
@@ -259,6 +329,15 @@ func CancelOp(id string) {
 	opQueue.Lock()
 	cancel, known := opQueue.cancelOf[id]
 	running := opQueue.running == id
+	if known && !running {
+		// Decided under the same lock acquisition that read `running`, so
+		// there is no window in which a concurrent beginRun call could
+		// have claimed `running` right after this check without either
+		// (a) having already run — in which case `running` above would
+		// have been true — or (b) running later and finding ctxOf/cancelOf
+		// still intact, per releaseQueueSlotLocked's contract.
+		releaseQueueSlotLocked(id)
+	}
 	opQueue.Unlock()
 	if !known {
 		return
@@ -270,7 +349,6 @@ func CancelOp(id string) {
 	}
 
 	FileQueue.Delete(id)
-	DequeueOp(id)
 }
 
 // CancelAllOps cancels every in-flight task's context — including the one
@@ -278,6 +356,17 @@ func CancelOp(id string) {
 // and run its own terminal-notify + retire sequence — and then clears the
 // queue, matching the pre-A3 "clear all" semantics (DELETE
 // /file/operate/0) for every task that has not started yet.
+//
+// Uses FileQueue.Clear() rather than reassigning the FileQueue package
+// variable (FileQueue = sync.Map{}): reassignment is a plain, unsynchronized
+// write to a package-level variable that every FileOperate goroutine reads
+// and calls methods on concurrently (FileQueue.Store at the end of
+// FileOperate, FileQueue.Load/Delete elsewhere) — racing a goroutine's read
+// of the FileQueue variable itself against this write is a genuine data
+// race (flagged by `go test -race`), independent of sync.Map's own internal
+// synchronization of its methods. Clear() (Go 1.23+) mutates the existing
+// map in place, so every concurrent Store/Load/Delete/Range on it remains
+// safe.
 func CancelAllOps() {
 	opQueue.Lock()
 	for _, cancel := range opQueue.cancelOf {
@@ -285,7 +374,7 @@ func CancelAllOps() {
 	}
 	opQueue.Unlock()
 
-	FileQueue = sync.Map{}
+	FileQueue.Clear()
 	ClearOps()
 }
 
@@ -449,6 +538,10 @@ func FileOperate(k string) {
 		return
 	}
 
+	if beginRunHook != nil {
+		beginRunHook(k)
+	}
+
 	ctx, alreadyRunning := beginRun(k)
 	if alreadyRunning {
 		return
@@ -472,11 +565,23 @@ func FileOperate(k string) {
 
 	createdPaths := make([]string, 0, len(temp.Item))
 
+	// cancelled records whether cancellation actually prevented or
+	// interrupted work — set only at the specific break sites below, all
+	// of which are themselves gated on ctx.Err() != nil. It is
+	// deliberately NOT derived from a single ctx.Err() sample taken after
+	// the loop: if every item finishes successfully and the loop simply
+	// runs out of items (no break was ever needed), a cancel() that lands
+	// after the last item's work but before this function gets around to
+	// checking must not retroactively relabel a fully-successful task as
+	// Cancelled — the data landed regardless of that late signal.
+	var cancelled bool
+
 itemsLoop:
 	for i := 0; i < len(temp.Item); i++ {
 		// Checked before starting each item: a task cancelled while item i-1
 		// was in flight must never begin item i (or any item after it).
 		if ctx.Err() != nil {
+			cancelled = true
 			break itemsLoop
 		}
 
@@ -515,6 +620,7 @@ itemsLoop:
 						// cancellation included. Nothing further to clean up
 						// here; just stop admitting new items.
 						if ctx.Err() != nil {
+							cancelled = true
 							break itemsLoop
 						}
 						continue
@@ -541,6 +647,7 @@ itemsLoop:
 				// moveItem already removed any half-written dst if this
 				// failure was caused by cancellation (see moveItem).
 				if ctx.Err() != nil {
+					cancelled = true
 					break itemsLoop
 				}
 				continue
@@ -573,6 +680,7 @@ itemsLoop:
 						logger.Error("copy: replace failed, rolled back to original destination",
 							zap.String("from", v.From), zap.String("dst", dst), zap.Error(replaceErr))
 						if ctx.Err() != nil {
+							cancelled = true
 							break itemsLoop
 						}
 						continue
@@ -592,6 +700,7 @@ itemsLoop:
 					// found above), so it's wholly this attempt's own
 					// half-written fragment — safe to remove outright.
 					os.RemoveAll(dst)
+					cancelled = true
 					break itemsLoop
 				}
 				continue
@@ -602,7 +711,6 @@ itemsLoop:
 		}
 	}
 
-	cancelled := ctx.Err() != nil
 	temp.Finished = true
 	if cancelled {
 		temp.Cancelled = true
