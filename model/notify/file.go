@@ -19,4 +19,9 @@ type File struct {
 	Id             string `json:"id"`
 	To             string `json:"to"`
 	Type           string `json:"type"`
+	// ParkedPath mirrors model.FileItem.ParkedPath: set only when a
+	// conflict-replace rollback-restore itself failed, pointing at the
+	// ".nimoos-replacing-<uuid>" staging dir still holding the user's
+	// original data. Empty (omitted) for every normal task.
+	ParkedPath string `json:"parked_path,omitempty"`
 }

@@ -69,6 +69,45 @@ func (i *notifyServer) SendNotify(name string, message map[string]interface{}) {
 	// SocketServer.BroadcastToRoom("/", "public", path, message)
 }
 
+// buildFileNotifyTask maps a single queued model2.FileOperate (keyed by id)
+// onto the notify.File DTO that gets published over MessageBus/WS. It is a
+// pure mapping with no side effects, kept separate from SendFileOperateNotify
+// so the mapping (including ParkedPath surfacing) can be unit tested without
+// touching the message bus or FileQueue.
+func buildFileNotifyTask(id string, temp model2.FileOperate) (task notify.File, finished bool) {
+	task.Id = id
+	task.ProcessedSize = temp.ProcessedSize
+	task.TotalSize = temp.TotalSize
+	task.To = temp.To
+	task.Type = temp.Type
+	if task.ProcessedSize == 0 {
+		task.Status = "STARTING"
+	} else {
+		task.Status = "PROCESSING"
+	}
+
+	if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
+		task.Finished = true
+		task.Status = "FINISHED"
+		return task, true
+	}
+
+	for _, v := range temp.Item {
+		if v.Size != v.ProcessedSize {
+			task.ProcessingPath = v.From
+			break
+		}
+	}
+	for _, v := range temp.Item {
+		if v.ParkedPath != "" {
+			task.ParkedPath = v.ParkedPath
+			break
+		}
+	}
+
+	return task, false
+}
+
 // Send periodic broadcast messages
 func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 	if nowSend {
@@ -108,33 +147,13 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 			if !ok {
 				continue
 			}
-			task := notify.File{}
-			task.Id = v
-			task.ProcessedSize = temp.ProcessedSize
-			task.TotalSize = temp.TotalSize
-			task.To = temp.To
-			task.Type = temp.Type
-			if task.ProcessedSize == 0 {
-				task.Status = "STARTING"
-			} else {
-				task.Status = "PROCESSING"
-			}
-
-			if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
-
-				task.Finished = true
-				task.Status = "FINISHED"
+			task, finished := buildFileNotifyTask(v, temp)
+			if finished {
 				FileQueue.Delete(v)
 				DequeueOp(v)
 				go ExecOpFile()
 				list = append(list, task)
 				continue
-			}
-			for _, v := range temp.Item {
-				if v.Size != v.ProcessedSize {
-					task.ProcessingPath = v.From
-					break
-				}
 			}
 
 			list = append(list, task)
@@ -178,32 +197,13 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 				if !ok {
 					continue
 				}
-				task := notify.File{}
-				task.Id = v
-				task.ProcessedSize = temp.ProcessedSize
-				task.TotalSize = temp.TotalSize
-				task.To = temp.To
-				task.Type = temp.Type
-				if task.ProcessedSize == 0 {
-					task.Status = "STARTING"
-				} else {
-					task.Status = "PROCESSING"
-				}
-				if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
-
-					task.Finished = true
-					task.Status = "FINISHED"
+				task, finished := buildFileNotifyTask(v, temp)
+				if finished {
 					FileQueue.Delete(v)
 					DequeueOp(v)
 					go ExecOpFile()
 					list = append(list, task)
 					continue
-				}
-				for _, v := range temp.Item {
-					if v.Size != v.ProcessedSize {
-						task.ProcessingPath = v.From
-						break
-					}
 				}
 
 				list = append(list, task)
