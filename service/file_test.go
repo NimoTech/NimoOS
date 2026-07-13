@@ -24,6 +24,18 @@ var (
 	cancel context.CancelFunc
 )
 
+// skipIfRoot guards chmod-based fault-injection tests: root (or any process
+// with CAP_DAC_OVERRIDE) bypasses the permission bits these tests strip, so
+// the induced filesystem failure never actually occurs. Left unguarded, such
+// a test wouldn't just stop testing the failure path — it would silently
+// report green while asserting nothing.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based fault injection requires non-root")
+	}
+}
+
 func TestNewInteruptReader(t *testing.T) {
 	t.Skip("This test is always failing. Skipped to unblock releasing - MUST FIX!")
 
@@ -293,6 +305,7 @@ func TestFileOperateMove_ConflictReplace_Success(t *testing.T) {
 // zero data loss. The failure is a genuine filesystem fault (read-only
 // source parent directory), not a mock.
 func TestFileOperateMove_ConflictReplace_RollbackOnFailure(t *testing.T) {
+	skipIfRoot(t)
 	logger.LogInitConsoleOnly()
 	root := t.TempDir()
 	srcParent := filepath.Join(root, "src")
@@ -396,6 +409,7 @@ func TestFileOperateCopy_ConflictReplace_Success(t *testing.T) {
 // source directory, so `cp -a` and the manual ReadDir fallback both fail),
 // not a mock.
 func TestFileOperateCopy_ConflictReplace_RollbackOnFailure(t *testing.T) {
+	skipIfRoot(t)
 	logger.LogInitConsoleOnly()
 	root := t.TempDir()
 	srcParent := filepath.Join(root, "src")
@@ -466,6 +480,7 @@ func TestFileOperateCopy_ConflictReplace_RollbackOnFailure(t *testing.T) {
 //     for real, because dstDir is read-only — this is the exact scenario
 //     under test.
 func TestFileOperateMove_ConflictReplace_RollbackFailure_ParksAndRecordsPath(t *testing.T) {
+	skipIfRoot(t)
 	logger.LogInitConsoleOnly()
 	root := t.TempDir()
 	srcParent := filepath.Join(root, "src")

@@ -215,12 +215,14 @@ func CopyFile(src, dst, style string) error {
 	var srcinfo os.FileInfo
 	var err error
 
-	if Exists(dst) {
-		if style == "skip" {
-			return nil
-		}
-		os.Remove(dst)
+	if Exists(dst) && style == "skip" {
+		return nil
 	}
+	// NOTE: dst is intentionally never deleted here (even when it already
+	// exists and style != "skip"). Conflict resolution is the caller's
+	// responsibility (see service.FileOperate's Style handling); cp below
+	// overwrites dst in place (preserving its inode/hardlinks) rather than
+	// wiping it first.
 
 	// Use cp --sparse=always to handle sparse files correctly.
 	// Fall back to pure-Go copy only if cp is unavailable.
