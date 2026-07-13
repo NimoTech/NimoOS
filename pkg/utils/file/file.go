@@ -326,13 +326,15 @@ func CopyDirContents(src string, dst string, style string) error {
 		return CopyFile(src, dst, style)
 	}
 
-	if Exists(dst) {
-		if style == "skip" {
-			return nil
-		} else {
-			os.RemoveAll(dst)
-		}
+	if Exists(dst) && style == "skip" {
+		return nil
 	}
+	// NOTE: dst is intentionally never deleted here (even when it already
+	// exists and style != "skip"). Conflict resolution is the caller's
+	// responsibility (see service.FileOperate's Style handling); this
+	// helper only merges into an existing dst — cp -a -T below, and the
+	// manual fallback loop further down, both overwrite/merge in place
+	// rather than wiping dst first.
 
 	// NEW: Use native cp -a -T to handle symlinks, sparse files, and hardlinks (critical for docker overlay) efficiently.
 	// Fall back to manual loop if cp fails.

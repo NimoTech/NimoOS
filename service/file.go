@@ -12,22 +12,30 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/NimoTech/NimoOS/service/pathlock"
+	"github.com/google/uuid"
 	"github.com/moby/sys/mountinfo"
 	"go.uber.org/zap"
 )
 
 var FileQueue sync.Map
+
+// renameFn is os.Rename, indirected so tests can inject an EXDEV failure
+// without needing a real cross-device filesystem boundary.
+var renameFn = os.Rename
 
 // opQueue replaces the former bare []string OpStrArr.
 // All access goes through EnqueueOp / DequeueOp / PeekOps / ClearOps so
@@ -133,6 +141,80 @@ func opDestPath(from, to string) string {
 	return filepath.Join(to, filepath.Base(from))
 }
 
+// isCrossDevice reports whether err is a rename failure caused by src and
+// dst living on different filesystems (EXDEV). That is the ONLY rename
+// failure that should fall back to a copy; any other error (permission,
+// ENOENT, dst conflict, ...) must be surfaced as-is.
+func isCrossDevice(err error) bool {
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return linkErr.Err == syscall.EXDEV
+	}
+	return false
+}
+
+// moveItem moves from into dst (dst is the full destination path, i.e.
+// opDestPath(from, to)). It tries an atomic os.Rename first — the fast,
+// same-filesystem path, instantaneous even for huge directories. Only when
+// that fails with EXDEV does it fall back to the pre-existing
+// copy -> verify size -> delete source path, which is the correct shape for
+// a genuine cross-device move. Any other rename failure is returned
+// untouched: callers must not delete dst and retry.
+func moveItem(from, to, dst, style string) (usedRename bool, err error) {
+	if rErr := renameFn(from, dst); rErr == nil {
+		return true, nil
+	} else if !isCrossDevice(rErr) {
+		return false, rErr
+	}
+
+	// Cross-device: fall back to copy -> verify -> delete source.
+	if err := file.CopyDir(from, to, style); err != nil {
+		return false, fmt.Errorf("copy phase failed: %w", err)
+	}
+	srcSize, err := file.GetFileOrDirSize(from)
+	if err != nil {
+		os.RemoveAll(dst)
+		return false, fmt.Errorf("stat source failed: %w", err)
+	}
+	dstSize, err := file.GetFileOrDirSize(dst)
+	if err != nil || dstSize != srcSize {
+		os.RemoveAll(dst)
+		return false, fmt.Errorf("destination size mismatch (src=%d dst=%d, err=%v)", srcSize, dstSize, err)
+	}
+	if err := os.RemoveAll(from); err != nil {
+		logger.Error("move: remove source failed", zap.String("from", from), zap.Error(err))
+		// Destination is a verified, complete copy; source removal failing
+		// is a cleanup nuisance, not data loss — log only.
+	}
+	return false, nil
+}
+
+// replaceConflict implements R2's "replace" style without ever deleting
+// existing data up front: the current dst is staged aside under a sibling
+// temp name first, then doOp runs (expected to (re)create dst from
+// scratch). The staged-aside copy is only removed once doOp has succeeded;
+// on failure it is renamed straight back over dst, so a failed replace
+// never loses data — the caller sees an error but both the original
+// destination and (if untouched) the source remain intact.
+func replaceConflict(dst string, doOp func() error) error {
+	tmp := dst + ".nimoos-replacing-" + uuid.NewString()[:8]
+	if err := os.Rename(dst, tmp); err != nil {
+		return fmt.Errorf("could not stage existing destination aside: %w", err)
+	}
+	if err := doOp(); err != nil {
+		// Roll back: clear whatever doOp may have partially written at dst,
+		// then restore the original data.
+		os.RemoveAll(dst)
+		if rerr := os.Rename(tmp, dst); rerr != nil {
+			logger.Error("replace: rollback failed, original data stuck at temp path",
+				zap.String("temp", tmp), zap.String("dst", dst), zap.Error(rerr))
+		}
+		return err
+	}
+	os.RemoveAll(tmp)
+	return nil
+}
+
 func FileOperate(k string) {
 	list, ok := FileQueue.Load(k)
 	if !ok {
@@ -165,42 +247,87 @@ func FileOperate(k string) {
 		v := temp.Item[i]
 		if temp.Type == "move" {
 			dst := opDestPath(v.From, temp.To)
+
 			if !file.CheckNotExist(dst) {
-				if temp.Style == "skip" {
+				// Destination conflict: resolve per Style. Never delete dst
+				// up front (D1) — os.Rename onto a non-empty existing
+				// directory already fails with ENOTEMPTY/EEXIST on Linux,
+				// which is exactly the signal that routes us here.
+				switch temp.Style {
+				case "skip":
+					temp.Item[i].Finished = true
+					continue
+				case "replace", "overwrite":
+					// "overwrite" is what the current NimoOS-UI actually sends
+					// (FilePanel.vue's paste() defaults to style="overwrite");
+					// "replace" is treated identically as the forward-looking name.
+					var usedRename bool
+					replaceErr := replaceConflict(dst, func() error {
+						var opErr error
+						usedRename, opErr = moveItem(v.From, temp.To, dst, temp.Style)
+						return opErr
+					})
+					if replaceErr != nil {
+						logger.Error("move: replace failed, rolled back to original destination",
+							zap.String("from", v.From), zap.String("dst", dst), zap.Error(replaceErr))
+						continue
+					}
+					if usedRename {
+						temp.Item[i].Finished = true
+						temp.Item[i].ProcessedSize = v.Size
+					}
+					createdPaths = append(createdPaths, dst)
+					continue
+				default:
+					// Conservative default: an unknown/empty Style must never
+					// re-introduce a deleting behavior. Treat exactly like skip.
+					logger.Info("move: unrecognized conflict style, treating as skip",
+						zap.String("style", temp.Style), zap.String("dst", dst))
 					temp.Item[i].Finished = true
 					continue
 				}
-				os.RemoveAll(dst)
 			}
-			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
-				logger.Error("move: copy phase failed", zap.String("from", v.From), zap.Error(err))
-				continue
-			}
-			// Verify destination size matches source before removing source.
-			srcSize, err := file.GetFileOrDirSize(v.From)
+
+			usedRename, err := moveItem(v.From, temp.To, dst, temp.Style)
 			if err != nil {
-				logger.Error("move: stat source failed", zap.String("from", v.From), zap.Error(err))
-				os.RemoveAll(dst)
+				logger.Error("move: failed", zap.String("from", v.From), zap.String("dst", dst), zap.Error(err))
 				continue
 			}
-			dstSize, err := file.GetFileOrDirSize(dst)
-			if err != nil || dstSize != srcSize {
-				logger.Error("move: destination size mismatch, aborting remove", zap.String("dst", dst))
-				os.RemoveAll(dst)
-				continue
-			}
-			if err := os.RemoveAll(v.From); err != nil {
-				logger.Error("move: remove source failed", zap.String("from", v.From), zap.Error(err))
-				// Source still intact; dst is a valid copy — leave both, log only.
+			if usedRename {
+				// Rename is instantaneous — mark done now, otherwise the 3s
+				// size-polling progress loop (CheckFileStatus) never sees
+				// this item transition and it looks stuck.
+				temp.Item[i].Finished = true
+				temp.Item[i].ProcessedSize = v.Size
 			}
 			createdPaths = append(createdPaths, dst)
 
 		} else if temp.Type == "copy" {
 			dst := opDestPath(v.From, temp.To)
-			if temp.Style == "skip" && !file.CheckNotExist(dst) {
-				// 目的地已存在且策略为 skip:CopyDir 为空操作,没有真正落盘,不发 media:created
-				continue
+
+			if !file.CheckNotExist(dst) {
+				switch temp.Style {
+				case "skip":
+					// 目的地已存在且策略为 skip:没有真正落盘,不发 media:created
+					continue
+				case "replace", "overwrite":
+					replaceErr := replaceConflict(dst, func() error {
+						return file.CopyDir(v.From, temp.To, temp.Style)
+					})
+					if replaceErr != nil {
+						logger.Error("copy: replace failed, rolled back to original destination",
+							zap.String("from", v.From), zap.String("dst", dst), zap.Error(replaceErr))
+						continue
+					}
+					createdPaths = append(createdPaths, dst)
+					continue
+				default:
+					logger.Info("copy: unrecognized conflict style, treating as skip",
+						zap.String("style", temp.Style), zap.String("dst", dst))
+					continue
+				}
 			}
+
 			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
 				continue
 			}
