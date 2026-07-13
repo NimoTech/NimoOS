@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,21 +41,81 @@ var renameFn = os.Rename
 // opQueue replaces the former bare []string OpStrArr.
 // All access goes through EnqueueOp / DequeueOp / PeekOps / ClearOps so
 // concurrent handler goroutines can never race on the slice.
+//
+// fingerprintOf/activeFingerprints implement R3 (task dedup): they are
+// updated in the same critical section as ids, so add/remove of a
+// fingerprint can never be forgotten by a caller — every path that retires a
+// task (service/notify.go's completion loop, route/v1/file.go's DELETE
+// cleanup) goes through DequeueOp or ClearOps, and every path that admits a
+// task goes through EnqueueOp.
 var opQueue struct {
 	sync.Mutex
 	ids []string
+	// fingerprintOf maps an in-flight task id to the fingerprint string it
+	// was admitted under.
+	fingerprintOf map[string]string
+	// activeFingerprints is the set of fingerprints currently occupied by an
+	// unfinished (queued or executing) task.
+	activeFingerprints map[string]bool
 }
 
-// EnqueueOp adds id to the queue and reports whether this is the first entry
-// (i.e. the caller should kick off ExecOpFile + CheckFileStatus).
-func EnqueueOp(id string) (isFirst bool) {
+// fileOperateFingerprint identifies a file-operation request by its
+// semantic content — type, destination, and source set — independent of
+// item order, per R3's spec: type + "\x00" + to + "\x00" + sorted froms
+// joined by "\x00". Two requests submitted for the exact same batch (the
+// production incident's trigger: the same move resubmitted after the UI
+// gave no progress feedback) fingerprint identically regardless of any
+// reordering of Item.
+func fileOperateFingerprint(t model.FileOperate) string {
+	froms := make([]string, len(t.Item))
+	for i, item := range t.Item {
+		froms[i] = item.From
+	}
+	sort.Strings(froms)
+	return t.Type + "\x00" + t.To + "\x00" + strings.Join(froms, "\x00")
+}
+
+// EnqueueOp admits a new file-operation task: it computes t's fingerprint
+// and, if no other in-flight task shares it, stores t in FileQueue and
+// appends id to the queue as a single atomic step (check-and-insert under
+// one lock, so two concurrent identical submissions cannot both pass the
+// check). If an identical fingerprint is already active, nothing is stored
+// or enqueued and duplicate=true is returned — there is nothing left for the
+// caller to clean up in FileQueue on rejection.
+//
+// isFirst reports whether the caller should kick off
+// ExecOpFile/CheckFileStatus (i.e. this is the only entry in the queue); it
+// is meaningless when duplicate is true.
+func EnqueueOp(id string, t model.FileOperate) (isFirst bool, duplicate bool) {
+	fp := fileOperateFingerprint(t)
+
 	opQueue.Lock()
 	defer opQueue.Unlock()
+
+	if opQueue.activeFingerprints[fp] {
+		return false, true
+	}
+
+	FileQueue.Store(id, t)
 	opQueue.ids = append(opQueue.ids, id)
-	return len(opQueue.ids) == 1
+	if opQueue.fingerprintOf == nil {
+		opQueue.fingerprintOf = make(map[string]string)
+	}
+	if opQueue.activeFingerprints == nil {
+		opQueue.activeFingerprints = make(map[string]bool)
+	}
+	opQueue.fingerprintOf[id] = fp
+	opQueue.activeFingerprints[fp] = true
+
+	return len(opQueue.ids) == 1, false
 }
 
-// DequeueOp removes id from the queue.
+// DequeueOp removes id from the queue and releases the fingerprint it was
+// admitted under (if any), so a subsequent identical submission is no
+// longer rejected. Called from both task-completion cleanup
+// (service/notify.go's SendFileOperateNotify) and the
+// DELETE /file/operate/:id cleanup route (route/v1/file.go) — the two
+// paths, per R3, that retire a single task.
 func DequeueOp(id string) {
 	opQueue.Lock()
 	defer opQueue.Unlock()
@@ -65,6 +126,11 @@ func DequeueOp(id string) {
 		}
 	}
 	opQueue.ids = out
+
+	if fp, ok := opQueue.fingerprintOf[id]; ok {
+		delete(opQueue.fingerprintOf, id)
+		delete(opQueue.activeFingerprints, fp)
+	}
 }
 
 // PeekOps returns a snapshot copy of the current queue.
@@ -76,11 +142,14 @@ func PeekOps() []string {
 	return cp
 }
 
-// ClearOps empties the queue.
+// ClearOps empties the queue and releases every fingerprint. Used by the
+// DELETE /file/operate/0 "clear all" route.
 func ClearOps() {
 	opQueue.Lock()
 	defer opQueue.Unlock()
 	opQueue.ids = nil
+	opQueue.fingerprintOf = nil
+	opQueue.activeFingerprints = nil
 }
 
 type reader struct {

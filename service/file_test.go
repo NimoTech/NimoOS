@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -553,4 +554,138 @@ func TestFileOperateMove_CrossDeviceFallback(t *testing.T) {
 	require.NoError(t, err, "fallback copy must have populated dst despite the injected EXDEV")
 	require.Equal(t, content, got)
 	require.True(t, file.CheckNotExist(itemDir), "source must be removed after fallback copy+verify")
+}
+
+// --- R3: task dedup (test case 6) ---
+//
+// These tests exercise EnqueueOp/DequeueOp/ClearOps directly rather than
+// through the HTTP route, mirroring the rest of this file's approach of
+// testing the real queue/state layer with real concurrency, not a mock.
+// ClearOps() is called before/after each test to reset the package-level
+// opQueue (and its fingerprint tables) so tests don't leak state into each
+// other; FileQueue is reset with a fresh sync.Map for the same reason.
+
+func dedupOp(to string, froms ...string) model.FileOperate {
+	items := make([]model.FileItem, len(froms))
+	for i, f := range froms {
+		items[i] = model.FileItem{From: f}
+	}
+	return model.FileOperate{Type: "move", To: to, Item: items}
+}
+
+// TestEnqueueOp_DuplicateFingerprint_Rejected is the core of use case 6: a
+// second submission of the exact same (type, to, from-set) batch — the
+// production incident's trigger — must be rejected with duplicate=true, and
+// must not leave anything behind in FileQueue for the caller to clean up.
+// Item order is deliberately reversed on the second submission to prove the
+// fingerprint is order-independent (sort(froms), per the spec), matching
+// how the UI might resubmit the same batch with items enumerated in a
+// different order.
+func TestEnqueueOp_DuplicateFingerprint_Rejected(t *testing.T) {
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	op1 := dedupOp("/dst", "/src/a", "/src/b")
+	isFirst, dup := EnqueueOp("id1", op1)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	op2 := dedupOp("/dst", "/src/b", "/src/a") // same set, reversed order
+	isFirst2, dup2 := EnqueueOp("id2", op2)
+	require.True(t, dup2, "identical in-flight fingerprint must be rejected")
+	require.False(t, isFirst2)
+
+	_, stored := FileQueue.Load("id2")
+	require.False(t, stored, "a rejected submission must not be stored in FileQueue")
+
+	require.Equal(t, []string{"id1"}, PeekOps(), "queue must still contain only the original task")
+}
+
+// TestEnqueueOp_ReleasedAfterDequeueOp covers the first of the two required
+// release paths: task completion, where service/notify.go's
+// SendFileOperateNotify calls FileQueue.Delete(id) + DequeueOp(id) once a
+// task's Finished flag is observed. After that, the identical fingerprint
+// must be admittable again.
+func TestEnqueueOp_ReleasedAfterDequeueOp(t *testing.T) {
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	op := dedupOp("/dst", "/src/a")
+	_, dup := EnqueueOp("id1", op)
+	require.False(t, dup)
+
+	_, dup2 := EnqueueOp("id2", op)
+	require.True(t, dup2, "must still be rejected while id1 is in flight")
+
+	// Mimic service/notify.go's completion cleanup for a finished task.
+	FileQueue.Delete("id1")
+	DequeueOp("id1")
+
+	isFirst3, dup3 := EnqueueOp("id3", op)
+	require.False(t, dup3, "fingerprint must be free again after DequeueOp released it")
+	require.True(t, isFirst3)
+}
+
+// TestEnqueueOp_ReleasedAfterClearOps covers the second required release
+// path: route/v1/file.go's DeleteOperateFileOrDir "clear all" branch
+// (id == "0"), which resets FileQueue to a fresh sync.Map and calls
+// ClearOps(). After that, the identical fingerprint must be admittable
+// again too.
+func TestEnqueueOp_ReleasedAfterClearOps(t *testing.T) {
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	op := dedupOp("/dst", "/src/a")
+	_, dup := EnqueueOp("id1", op)
+	require.False(t, dup)
+
+	_, dup2 := EnqueueOp("id2", op)
+	require.True(t, dup2)
+
+	// Mimic route/v1/file.go's DeleteOperateFileOrDir(id="0") branch.
+	FileQueue = sync.Map{}
+	ClearOps()
+
+	isFirst3, dup3 := EnqueueOp("id3", op)
+	require.False(t, dup3, "fingerprint must be free again after ClearOps released it")
+	require.True(t, isFirst3)
+}
+
+// TestEnqueueOp_ConcurrentDuplicates_OnlyOneAdmitted guards against a
+// check-then-insert race: many goroutines racing to submit the identical
+// batch must result in exactly one admitted task, never more. Run with
+// -race to also confirm there's no data race on the shared queue/fingerprint
+// state.
+func TestEnqueueOp_ConcurrentDuplicates_OnlyOneAdmitted(t *testing.T) {
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	op := dedupOp("/dst", "/src/a", "/src/b", "/src/c")
+	const n = 20
+
+	var wg sync.WaitGroup
+	admitted := make([]bool, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("concurrent-%d", i)
+			_, dup := EnqueueOp(id, op)
+			admitted[i] = !dup
+		}(i)
+	}
+	wg.Wait()
+
+	count := 0
+	for _, a := range admitted {
+		if a {
+			count++
+		}
+	}
+	require.Equal(t, 1, count, "exactly one concurrent duplicate submission must be admitted")
+	require.Len(t, PeekOps(), 1, "queue must contain exactly one entry")
 }

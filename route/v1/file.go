@@ -775,6 +775,7 @@ func PostFileOctet(ctx echo.Context) error {
 // @Security ApiKeyAuth
 // @Param body body model.FileOperate true "type:move,copy"
 // @Success 200 {string} string "ok"
+// @Failure 409 {object} model.Result "identical file operation already in progress"
 // @Router /file/operate [post]
 func PostOperateFileOrDir(ctx echo.Context) error {
 	list := model.FileOperate{}
@@ -822,8 +823,11 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	list.ProcessedSize = 0
 
 	uid := uuid.NewString()
-	service.FileQueue.Store(uid, list)
-	if isFirst := service.EnqueueOp(uid); isFirst {
+	isFirst, duplicate := service.EnqueueOp(uid, list)
+	if duplicate {
+		return ctx.JSON(common_err.CONFLICT, model.Result{Success: common_err.DUPLICATE_FILE_OPERATION, Message: common_err.GetMsg(common_err.DUPLICATE_FILE_OPERATION)})
+	}
+	if isFirst {
 		go service.ExecOpFile()
 		go service.CheckFileStatus()
 		go service.MyService.Notify().SendFileOperateNotify(false)
