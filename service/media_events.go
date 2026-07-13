@@ -53,6 +53,15 @@ func PublishMediaPathsEvent(eventName string, media []string) {
 	if len(media) == 0 {
 		return
 	}
+	// This is fired from background goroutines (see callers); an unrecovered
+	// panic in any goroutine takes down the whole process, which would
+	// violate the "soft dependency, never affects the file operation itself"
+	// contract documented above and on PublishMediaCreated.
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("panic publishing "+eventName, zap.Any("recover", r))
+		}
+	}()
 	b, err := json.Marshal(media)
 	if err != nil {
 		return
