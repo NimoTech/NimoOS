@@ -3,6 +3,7 @@ package file
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,18 @@ import (
 
 	"github.com/mholt/archiver/v3"
 )
+
+// RunCopyCommand executes cmd, which CopyFile/CopyDirContents always build
+// via exec.CommandContext so that cancelling the context kills the
+// underlying cp subprocess. It is indirected (rather than called as
+// cmd.Run() inline) purely so tests can substitute a stand-in that blocks
+// until told to proceed — deterministically landing a cancellation while a
+// copy is genuinely in flight, without depending on real file-size/disk
+// timing, which would make such a test flaky. The default is a plain
+// passthrough with no behavior change from before A3.
+var RunCopyCommand = func(cmd *exec.Cmd) error {
+	return cmd.Run()
+}
 
 // GetSize get the file size
 func GetSize(f multipart.File) (int, error) {
@@ -211,21 +224,35 @@ func ReadFullFile(path string) []byte {
 // Sparse files (e.g. Docker's volumes/backingFsBlockDev) are preserved using
 // "cp --sparse=always" so that unallocated regions are not expanded into real
 // disk blocks, which would cause the copy to appear far larger than the source.
-func CopyFile(src, dst, style string) error {
+func CopyFile(ctx context.Context, src, dst, style string) error {
 	var srcinfo os.FileInfo
 	var err error
 
-	if Exists(dst) {
-		if style == "skip" {
-			return nil
-		}
-		os.Remove(dst)
+	if Exists(dst) && style == "skip" {
+		return nil
+	}
+	// NOTE: dst is intentionally never deleted here (even when it already
+	// exists and style != "skip"). Conflict resolution is the caller's
+	// responsibility (see service.FileOperate's Style handling); cp below
+	// overwrites dst in place (preserving its inode/hardlinks) rather than
+	// wiping it first.
+
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	// Use cp --sparse=always to handle sparse files correctly.
-	// Fall back to pure-Go copy only if cp is unavailable.
-	if cpErr := exec.Command("cp", "--sparse=always", "--preserve=mode", src, dst).Run(); cpErr == nil {
+	// Fall back to pure-Go copy only if cp is unavailable. exec.CommandContext
+	// means a cancelled ctx kills the cp subprocess instead of letting it run
+	// to completion.
+	cmd := exec.CommandContext(ctx, "cp", "--sparse=always", "--preserve=mode", src, dst)
+	if cpErr := RunCopyCommand(cmd); cpErr == nil {
 		return nil
+	} else if ctx.Err() != nil {
+		// The cp subprocess was killed by cancellation, not a genuine copy
+		// failure — do not fall through to the manual copy below, which
+		// would silently ignore the cancellation and finish the copy anyway.
+		return ctx.Err()
 	}
 
 	// Fallback: pure-Go copy (dense, no sparse support).
@@ -305,15 +332,21 @@ func GetNoDuplicateFileName(fullPath string) string {
 
 // CopyDir copies a whole directory recursively.
 // It will create a new directory inside dst with the same name as src.
-func CopyDir(src string, dst string, style string) error {
+func CopyDir(ctx context.Context, src string, dst string, style string) error {
 	lastPath := filepath.Base(src)
 	targetDir := filepath.Join(dst, lastPath)
-	return CopyDirContents(src, targetDir, style)
+	return CopyDirContents(ctx, src, targetDir, style)
 }
 
 // CopyDirContents copies the contents of src directory into dst directory.
 // It does NOT append the basename of src to dst.
-func CopyDirContents(src string, dst string, style string) error {
+//
+// ctx is checked before the interruptible cp subprocess (which is killed on
+// cancellation via exec.CommandContext) and, in the manual recursive
+// fallback, before every individual file/subdirectory entry — so a
+// cancellation lands within one file's copy, not partway through an
+// unbounded number of them.
+func CopyDirContents(ctx context.Context, src string, dst string, style string) error {
 	var err error
 	var fds []os.FileInfo
 	var srcinfo os.FileInfo
@@ -323,21 +356,34 @@ func CopyDirContents(src string, dst string, style string) error {
 	}
 
 	if !srcinfo.IsDir() {
-		return CopyFile(src, dst, style)
+		return CopyFile(ctx, src, dst, style)
 	}
 
-	if Exists(dst) {
-		if style == "skip" {
-			return nil
-		} else {
-			os.RemoveAll(dst)
-		}
+	if Exists(dst) && style == "skip" {
+		return nil
+	}
+	// NOTE: dst is intentionally never deleted here (even when it already
+	// exists and style != "skip"). Conflict resolution is the caller's
+	// responsibility (see service.FileOperate's Style handling); this
+	// helper only merges into an existing dst — cp -a -T below, and the
+	// manual fallback loop further down, both overwrite/merge in place
+	// rather than wiping dst first.
+
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	// NEW: Use native cp -a -T to handle symlinks, sparse files, and hardlinks (critical for docker overlay) efficiently.
-	// Fall back to manual loop if cp fails.
-	if cpErr := exec.Command("cp", "-a", "--sparse=always", "-T", src, dst).Run(); cpErr == nil {
+	// Fall back to manual loop if cp fails. exec.CommandContext means a
+	// cancelled ctx kills the cp subprocess instead of letting it run to
+	// completion.
+	cmd := exec.CommandContext(ctx, "cp", "-a", "--sparse=always", "-T", src, dst)
+	if cpErr := RunCopyCommand(cmd); cpErr == nil {
 		return nil
+	} else if ctx.Err() != nil {
+		// Killed by cancellation, not a genuine cp failure — propagate it
+		// instead of silently finishing the copy via the manual fallback.
+		return ctx.Err()
 	}
 
 	// Fallback to manual recursive directory copy
@@ -350,15 +396,19 @@ func CopyDirContents(src string, dst string, style string) error {
 	}
 
 	for _, fd := range fds {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		srcfp := filepath.Join(src, fd.Name())
 		dstfp := filepath.Join(dst, fd.Name())
 
 		if fd.IsDir() {
-			if err = CopyDirContents(srcfp, dstfp, style); err != nil {
+			if err = CopyDirContents(ctx, srcfp, dstfp, style); err != nil {
 				return err
 			}
 		} else {
-			if err = CopyFile(srcfp, dstfp, style); err != nil {
+			if err = CopyFile(ctx, srcfp, dstfp, style); err != nil {
 				return err
 			}
 		}
