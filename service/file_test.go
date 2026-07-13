@@ -6,14 +6,17 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/model"
+	"github.com/NimoTech/NimoOS/model/notify"
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -703,4 +706,618 @@ func TestEnqueueOp_ConcurrentDuplicates_OnlyOneAdmitted(t *testing.T) {
 	}
 	require.Equal(t, 1, count, "exactly one concurrent duplicate submission must be admitted")
 	require.Len(t, PeekOps(), 1, "queue must contain exactly one entry")
+}
+
+// --- A3: real cancellation of in-flight move/copy tasks ---
+//
+// These tests use file.RunCopyCommand (an injectable hook wrapping the
+// interruptible cp subprocess) to deterministically land a cancellation
+// while a copy is genuinely in flight, rather than racing against real
+// disk-I/O timing — which would make a "cancel mid-copy" test flaky. They
+// also override terminalNotifyFn (which normally calls into MyService's
+// MessageBus, nil in this test binary — see the comment on terminalNotifyFn)
+// with a capturing stub, the same dependency-injection pattern renameFn (R1)
+// already established.
+
+// blockingCopyHook returns a file.RunCopyCommand replacement that signals
+// startedCh once entered and then blocks until releaseCh is closed, letting
+// a test synchronize "the copy is now genuinely in flight" with a concurrent
+// CancelOp call before letting the (by-then-cancelled) cp subprocess run.
+func blockingCopyHook(startedCh, releaseCh chan struct{}) func(cmd *exec.Cmd) error {
+	var once sync.Once
+	return func(cmd *exec.Cmd) error {
+		once.Do(func() { close(startedCh) })
+		<-releaseCh
+		return cmd.Run()
+	}
+}
+
+// forceCrossDevice returns a renameFn replacement that reports EXDEV for
+// every path except those in passthrough (which fall through to the real
+// os.Rename) — used to force specific items down moveItem's copy fallback
+// while letting others (e.g. an already-completed prior item) rename
+// normally.
+func forceCrossDevice(passthrough ...string) func(oldpath, newpath string) error {
+	allow := make(map[string]bool, len(passthrough))
+	for _, p := range passthrough {
+		allow[p] = true
+	}
+	return func(oldpath, newpath string) error {
+		if allow[oldpath] {
+			return os.Rename(oldpath, newpath)
+		}
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EXDEV}
+	}
+}
+
+// TestFileOperateMove_CancelMidCopy_CleansHalfWrittenDestSourceIntact is TDD
+// scenario 1: a cross-device move cancelled mid-copy must kill the cp
+// subprocess, remove whatever half-written fragment it left at the
+// destination, leave the source completely untouched, and push exactly one
+// terminal notification — carrying Cancelled — BEFORE the task is dequeued/
+// deleted/its fingerprint released (the ordering is asserted from inside the
+// notify stub itself, at the moment it fires).
+//
+// On pre-A3 code this fails outright: moveItem/CopyDir had no ctx at all,
+// so nothing could interrupt the cp subprocess — the file would land at the
+// destination regardless of any "cancel" request (see the brief's
+// user-observed failure). TestFileOperate_QueueRemovalAloneDoesNotStopInFlightCopy
+// below demonstrates that exact old behavior directly on the current copy
+// engine, by exercising only the pre-A3 half of the fix (queue removal
+// without also cancelling the context).
+func TestFileOperateMove_CancelMidCopy_CleansHalfWrittenDestSourceIntact(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "big")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	content := []byte("cross-device payload")
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "f.txt"), content, 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	origRename := renameFn
+	renameFn = forceCrossDevice()
+	defer func() { renameFn = origRename }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	origRun := file.RunCopyCommand
+	file.RunCopyCommand = blockingCopyHook(started, release)
+	defer func() { file.RunCopyCommand = origRun }()
+
+	k := "cancel-midcopy"
+	var pushed []notify.File
+	origNotify := terminalNotifyFn
+	terminalNotifyFn = func(task notify.File) {
+		// Ordering assertion (design requirement 4): the push must happen
+		// BEFORE the task is removed from FileQueue/opQueue.
+		_, stillQueued := FileQueue.Load(k)
+		require.True(t, stillQueued, "terminal notify must fire before FileQueue.Delete")
+		require.Contains(t, PeekOps(), k, "terminal notify must fire before DequeueOp")
+		pushed = append(pushed, task)
+	}
+	defer func() { terminalNotifyFn = origNotify }()
+
+	op := model.FileOperate{
+		Type: "move",
+		To:   dstDir,
+		Item: []model.FileItem{{From: itemDir, Size: size}},
+	}
+	isFirst, dup := EnqueueOp(k, op)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	done := make(chan struct{})
+	go func() {
+		FileOperate(k)
+		close(done)
+	}()
+
+	<-started
+	CancelOp(k)
+	close(release)
+	<-done
+
+	dstItem := filepath.Join(dstDir, "big")
+	require.True(t, file.CheckNotExist(dstItem), "cancelled mid-copy must leave no half-written destination")
+
+	srcContent, err := os.ReadFile(filepath.Join(itemDir, "f.txt"))
+	require.NoError(t, err, "source must be completely untouched by a cancelled cross-device move")
+	require.Equal(t, content, srcContent)
+
+	require.Len(t, pushed, 1, "exactly one terminal notification must be pushed")
+	require.True(t, pushed[0].Finished)
+	require.True(t, pushed[0].Cancelled)
+	require.Equal(t, "CANCELLED", pushed[0].Status)
+
+	_, stillInQueue := FileQueue.Load(k)
+	require.False(t, stillInQueue, "task must be retired from FileQueue once cancellation is observed")
+	require.NotContains(t, PeekOps(), k)
+
+	// Fingerprint released exactly once: resubmitting the identical batch
+	// must be admitted, not rejected as a duplicate.
+	isFirst2, dup2 := EnqueueOp("resubmit-after-cancel-1", op)
+	require.True(t, isFirst2)
+	require.False(t, dup2, "fingerprint must be released after cancellation")
+}
+
+// TestFileOperate_QueueRemovalAloneDoesNotStopInFlightCopy is the runtime RED
+// evidence for scenario 1: it reproduces the pre-A3 bug directly on the
+// current copy engine by performing only what the OLD DeleteOperateFileOrDir
+// handler actually did — FileQueue.Delete + DequeueOp, with no context
+// cancellation at all (CancelOp is deliberately not called). Since nothing
+// tells the in-flight FileOperate goroutine to stop, the cp subprocess runs
+// to completion and the file lands at the destination regardless of the
+// "cancel" — the exact user-observed failure ("传输停止、目的地不留东西"
+// did not happen; the file landed anyway) — proving DequeueOp alone was
+// never enough and CancelOp's ctx cancellation is the operative fix.
+func TestFileOperate_QueueRemovalAloneDoesNotStopInFlightCopy(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "big")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	content := []byte("cross-device payload")
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "f.txt"), content, 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	origRename := renameFn
+	renameFn = forceCrossDevice()
+	defer func() { renameFn = origRename }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	origRun := file.RunCopyCommand
+	file.RunCopyCommand = blockingCopyHook(started, release)
+	defer func() { file.RunCopyCommand = origRun }()
+
+	k := "old-style-delete-no-cancel"
+	op := model.FileOperate{
+		Type: "move",
+		To:   dstDir,
+		Item: []model.FileItem{{From: itemDir, Size: size}},
+	}
+	isFirst, dup := EnqueueOp(k, op)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	done := make(chan struct{})
+	go func() {
+		FileOperate(k)
+		close(done)
+	}()
+
+	<-started
+	// The pre-A3 DELETE handler, verbatim: remove from the queue, but never
+	// cancel anything.
+	FileQueue.Delete(k)
+	DequeueOp(k)
+	close(release)
+	<-done
+
+	dstItem := filepath.Join(dstDir, "big")
+	got, err := os.ReadFile(filepath.Join(dstItem, "f.txt"))
+	require.NoError(t, err, "with no cancellation signal, the copy runs to completion despite the queue removal")
+	require.Equal(t, content, got, "the data lands at the destination even though the task was \"cancelled\" (dequeued)")
+
+	// And the orphaned completion is invisible: FileOperate's tail resurrects
+	// a FileQueue entry the poller will never look at again (PeekOps() no
+	// longer contains k), so the terminal notification for it is lost.
+	_, resurrected := FileQueue.Load(k)
+	require.True(t, resurrected, "FileOperate still stores its result under k even though it was removed mid-flight")
+	require.NotContains(t, PeekOps(), k, "k is no longer visible to the notify poller, which walks PeekOps()")
+}
+
+// TestFileOperateMove_CancelMidBatch_PriorItemKept_NextItemNotStarted is TDD
+// scenario 2: a 3-item batch cancelled while item 2 is mid-copy must leave
+// item 1 (already fully moved) alone, clean up item 2's half-written dst
+// while leaving its source intact, and never start item 3 at all.
+func TestFileOperateMove_CancelMidBatch_PriorItemKept_NextItemNotStarted(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	item1 := filepath.Join(srcParent, "folder1")
+	item2 := filepath.Join(srcParent, "folder2")
+	item3 := filepath.Join(srcParent, "folder3")
+	for _, d := range []string{item1, item2, item3} {
+		require.NoError(t, os.MkdirAll(d, 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(item1, "f.txt"), []byte("item1-data"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(item2, "f.txt"), []byte("item2-data"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(item3, "f.txt"), []byte("item3-data"), 0o644))
+
+	size1, err := file.GetFileOrDirSize(item1)
+	require.NoError(t, err)
+	size2, err := file.GetFileOrDirSize(item2)
+	require.NoError(t, err)
+	size3, err := file.GetFileOrDirSize(item3)
+	require.NoError(t, err)
+
+	// item1 renames normally (completes instantly, before cancellation);
+	// item2 is forced cross-device so its copy can be blocked and cancelled
+	// mid-flight; item3 must never be reached at all.
+	origRename := renameFn
+	renameFn = forceCrossDevice(item1)
+	defer func() { renameFn = origRename }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	origRun := file.RunCopyCommand
+	file.RunCopyCommand = blockingCopyHook(started, release)
+	defer func() { file.RunCopyCommand = origRun }()
+
+	origNotify := terminalNotifyFn
+	terminalNotifyFn = func(notify.File) {}
+	defer func() { terminalNotifyFn = origNotify }()
+
+	k := "cancel-midbatch"
+	op := model.FileOperate{
+		Type: "move",
+		To:   dstDir,
+		Item: []model.FileItem{
+			{From: item1, Size: size1},
+			{From: item2, Size: size2},
+			{From: item3, Size: size3},
+		},
+	}
+	isFirst, dup := EnqueueOp(k, op)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	done := make(chan struct{})
+	go func() {
+		FileOperate(k)
+		close(done)
+	}()
+
+	<-started
+	CancelOp(k)
+	close(release)
+	<-done
+
+	// Item 1: fully moved.
+	got1, err := os.ReadFile(filepath.Join(dstDir, "folder1", "f.txt"))
+	require.NoError(t, err, "item 1 must remain fully moved")
+	require.Equal(t, []byte("item1-data"), got1)
+	require.True(t, file.CheckNotExist(item1), "item 1's source must have been removed by its completed rename")
+
+	// Item 2: half-written dst cleaned up, source intact.
+	require.True(t, file.CheckNotExist(filepath.Join(dstDir, "folder2")), "item 2's half-written destination must be cleaned up")
+	got2, err := os.ReadFile(filepath.Join(item2, "f.txt"))
+	require.NoError(t, err, "item 2's source must be untouched")
+	require.Equal(t, []byte("item2-data"), got2)
+
+	// Item 3: never started.
+	require.True(t, file.CheckNotExist(filepath.Join(dstDir, "folder3")), "item 3 must never have been started")
+	got3, err := os.ReadFile(filepath.Join(item3, "f.txt"))
+	require.NoError(t, err, "item 3's source must be untouched")
+	require.Equal(t, []byte("item3-data"), got3)
+}
+
+// TestFileOperateCopy_CancelAfterReplaceConflictStaged_RollsBack is TDD
+// scenario 3: cancelling mid-copy after replaceConflict has already staged
+// the pre-existing conflicting destination aside must roll it back via
+// replaceConflict's existing rollback path (reused, not reimplemented) —
+// the original destination content is restored, no nimoos-replacing temp
+// dir is left behind, and the source (copy, never touched either way) is
+// unaffected.
+func TestFileOperateCopy_CancelAfterReplaceConflictStaged_RollsBack(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "folderX")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "new.txt"), []byte("new-data"), 0o644))
+
+	conflictDir := filepath.Join(dstDir, "folderX")
+	require.NoError(t, os.MkdirAll(conflictDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(conflictDir, "old.txt"), []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	origRun := file.RunCopyCommand
+	file.RunCopyCommand = blockingCopyHook(started, release)
+	defer func() { file.RunCopyCommand = origRun }()
+
+	origNotify := terminalNotifyFn
+	terminalNotifyFn = func(notify.File) {}
+	defer func() { terminalNotifyFn = origNotify }()
+
+	k := "cancel-after-staged"
+	op := model.FileOperate{
+		Type:  "copy",
+		To:    dstDir,
+		Style: "overwrite",
+		Item:  []model.FileItem{{From: itemDir, Size: size}},
+	}
+	isFirst, dup := EnqueueOp(k, op)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	done := make(chan struct{})
+	go func() {
+		FileOperate(k)
+		close(done)
+	}()
+
+	<-started
+	CancelOp(k)
+	close(release)
+	<-done
+
+	oldContent, err := os.ReadFile(filepath.Join(conflictDir, "old.txt"))
+	require.NoError(t, err, "the staged-aside original destination must be rolled back after cancellation")
+	require.Equal(t, []byte("old-data"), oldContent)
+	require.True(t, file.CheckNotExist(filepath.Join(conflictDir, "new.txt")), "new data must not appear when the copy was cancelled")
+
+	entries, err := os.ReadDir(dstDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NotContains(t, e.Name(), "nimoos-replacing", "rollback must not leave a temp staging dir behind")
+	}
+
+	srcContent, err := os.ReadFile(filepath.Join(itemDir, "new.txt"))
+	require.NoError(t, err, "copy's source must never be touched")
+	require.Equal(t, []byte("new-data"), srcContent)
+}
+
+// TestCancelOp_AlreadyCompletedTask_NoOp is TDD scenario 4: cancelling a
+// task that already ran to completion (Finished==true) — even if it is
+// still sitting in FileQueue awaiting the periodic notify poller's next
+// sweep, not yet dequeued — must be a pure no-op: no panic, FileQueue/opQueue
+// state is left exactly as it was, and the fingerprint stays occupied (its
+// release remains owned exclusively by the normal completion path).
+func TestCancelOp_AlreadyCompletedTask_NoOp(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+	itemDir := filepath.Join(srcParent, "quick")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "f.txt"), []byte("hi"), 0o644))
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	k := "already-done"
+	op := model.FileOperate{Type: "move", To: dstDir, Item: []model.FileItem{{From: itemDir, Size: size}}}
+	isFirst, dup := EnqueueOp(k, op)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	FileOperate(k) // runs to completion synchronously (rename fast path, no cancellation)
+
+	before, ok := FileQueue.Load(k)
+	require.True(t, ok)
+	require.True(t, before.(model.FileOperate).Finished)
+	require.False(t, before.(model.FileOperate).Cancelled)
+	beforeIds := PeekOps()
+	require.Contains(t, beforeIds, k)
+
+	require.NotPanics(t, func() { CancelOp(k) })
+
+	after, ok := FileQueue.Load(k)
+	require.True(t, ok, "CancelOp on an already-completed task must not remove it from FileQueue")
+	require.True(t, after.(model.FileOperate).Finished)
+	require.False(t, after.(model.FileOperate).Cancelled, "an already-completed task must not be relabeled Cancelled")
+	require.Equal(t, beforeIds, PeekOps(), "CancelOp on an already-completed task must not touch the queue")
+
+	// The fingerprint is still occupied — release remains the completion
+	// path's job, not CancelOp's, for a task in this state.
+	_, dupResubmit := EnqueueOp("resubmit-should-be-rejected", op)
+	require.True(t, dupResubmit, "fingerprint must still be occupied; CancelOp must not have released it")
+}
+
+// TestCancelOp_UnknownId_NoOp covers the other no-op case: an id that was
+// never enqueued (or has already been fully retired earlier).
+func TestCancelOp_UnknownId_NoOp(t *testing.T) {
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	require.NotPanics(t, func() { CancelOp("no-such-task-id") })
+}
+
+// TestCancelOp_ConcurrentCancelsDuringInFlightCopy_SingleTerminalPush is TDD
+// scenario 5 (part 1): many concurrent CancelOp calls racing against a
+// single in-flight task must still result in exactly one terminal
+// notification, no panic, and the fingerprint released exactly once — run
+// with -race.
+func TestCancelOp_ConcurrentCancelsDuringInFlightCopy_SingleTerminalPush(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+	itemDir := filepath.Join(srcParent, "folder")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "f.txt"), []byte("payload"), 0o644))
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	origRename := renameFn
+	renameFn = forceCrossDevice()
+	defer func() { renameFn = origRename }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	origRun := file.RunCopyCommand
+	file.RunCopyCommand = blockingCopyHook(started, release)
+	defer func() { file.RunCopyCommand = origRun }()
+
+	var pushCount int32
+	origNotify := terminalNotifyFn
+	terminalNotifyFn = func(task notify.File) { atomic.AddInt32(&pushCount, 1) }
+	defer func() { terminalNotifyFn = origNotify }()
+
+	k := "race-cancel"
+	op := model.FileOperate{Type: "move", To: dstDir, Item: []model.FileItem{{From: itemDir, Size: size}}}
+	isFirst, dup := EnqueueOp(k, op)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	done := make(chan struct{})
+	go func() {
+		FileOperate(k)
+		close(done)
+	}()
+
+	<-started
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			CancelOp(k)
+		}()
+	}
+	wg.Wait()
+	close(release)
+	<-done
+
+	require.EqualValues(t, 1, atomic.LoadInt32(&pushCount), "exactly one terminal notification despite 20 concurrent CancelOp calls")
+	_, ok := FileQueue.Load(k)
+	require.False(t, ok)
+	require.NotContains(t, PeekOps(), k)
+
+	isFirst2, dup2 := EnqueueOp("resubmit-after-race-1", op)
+	require.True(t, isFirst2)
+	require.False(t, dup2, "fingerprint must be released exactly once")
+}
+
+// TestCancelOp_RaceWithNaturalCompletion is TDD scenario 5 (part 2): a task
+// left to run at full speed (no injected slowdown) racing against a
+// concurrent flood of CancelOp calls. Whichever side "wins" is not
+// prescribed — a rename fast path can complete before any cancellation
+// signal lands, or a CancelOp call can catch it queued before FileOperate
+// even starts — but the outcome must always be internally consistent: no
+// panic, no data race (-race), and at most one terminal notification.
+func TestCancelOp_RaceWithNaturalCompletion(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+	itemDir := filepath.Join(srcParent, "quick")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "f.txt"), []byte("hi"), 0o644))
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	k := "race-natural-completion"
+	op := model.FileOperate{Type: "move", To: dstDir, Item: []model.FileItem{{From: itemDir, Size: size}}}
+	isFirst, dup := EnqueueOp(k, op)
+	require.True(t, isFirst)
+	require.False(t, dup)
+
+	var pushCount int32
+	origNotify := terminalNotifyFn
+	terminalNotifyFn = func(task notify.File) { atomic.AddInt32(&pushCount, 1) }
+	defer func() { terminalNotifyFn = origNotify }()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); FileOperate(k) }()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			CancelOp(k)
+		}
+	}()
+	wg.Wait()
+
+	require.LessOrEqual(t, int(atomic.LoadInt32(&pushCount)), 1, "at most one terminal notification, however the race resolved")
+
+	if item, ok := FileQueue.Load(k); ok {
+		require.True(t, item.(model.FileOperate).Finished, "if still present, the task must be in a terminal state")
+	}
+
+	isFirst2, dup2 := EnqueueOp("resubmit-after-race-2", op)
+	require.True(t, isFirst2)
+	require.False(t, dup2, "fingerprint must be released exactly once, whichever path retired the task")
+}
+
+// TestCancelAllOps_CancelsQueuedAndClears verifies DELETE /file/operate/0's
+// new semantics: every not-yet-started queued task is removed (unchanged
+// behavior) and every admitted context is cancelled (defensive: even though
+// nothing is executing here, CancelAllOps must not panic and must leave the
+// queue empty so a fresh identical submission is admitted).
+func TestCancelAllOps_CancelsQueuedAndClears(t *testing.T) {
+	ClearOps()
+	FileQueue = sync.Map{}
+	defer func() { ClearOps(); FileQueue = sync.Map{} }()
+
+	op1 := dedupOp("/dst", "/src/a")
+	op2 := dedupOp("/dst2", "/src/b")
+	_, dup1 := EnqueueOp("queued-1", op1)
+	require.False(t, dup1)
+	_, dup2 := EnqueueOp("queued-2", op2)
+	require.False(t, dup2)
+
+	require.NotPanics(t, func() { CancelAllOps() })
+
+	require.Empty(t, PeekOps())
+	_, ok1 := FileQueue.Load("queued-1")
+	require.False(t, ok1)
+	_, ok2 := FileQueue.Load("queued-2")
+	require.False(t, ok2)
+
+	isFirst, dup := EnqueueOp("queued-1", op1)
+	require.True(t, isFirst)
+	require.False(t, dup)
 }

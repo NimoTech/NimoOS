@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func TestCopyDirContents_DoesNotDeleteExistingDestination(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(src, "new.txt"), []byte("new"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dst, "keep.txt"), []byte("keep-me"), 0o644))
 
-	err := CopyDirContents(src, dst, "replace")
+	err := CopyDirContents(context.Background(), src, dst, "replace")
 	require.NoError(t, err)
 
 	kept, err := os.ReadFile(filepath.Join(dst, "keep.txt"))
@@ -62,7 +63,7 @@ func TestCopyFile_DoesNotDeleteExistingDestination(t *testing.T) {
 	require.NoError(t, os.WriteFile(dst, []byte("old-content"), 0o644))
 	require.NoError(t, os.Link(dst, linked))
 
-	err := CopyFile(src, dst, "replace")
+	err := CopyFile(context.Background(), src, dst, "replace")
 	require.NoError(t, err)
 
 	dstContent, err := os.ReadFile(dst)

@@ -38,6 +38,15 @@ var FileQueue sync.Map
 // without needing a real cross-device filesystem boundary.
 var renameFn = os.Rename
 
+// terminalNotifyFn publishes a single task's terminal notification
+// immediately (see service/notify.go's pushSingleFileNotify). Indirected so
+// tests can substitute a capturing stub instead of requiring a live
+// MyService/MessageBus (nil in the test binary — the same reason renameFn
+// above is indirected rather than called directly), and so a test can
+// assert the push happens before FileQueue/opQueue are touched by
+// inspecting them from inside the stub itself.
+var terminalNotifyFn = pushSingleFileNotify
+
 // opQueue replaces the former bare []string OpStrArr.
 // All access goes through EnqueueOp / DequeueOp / PeekOps / ClearOps so
 // concurrent handler goroutines can never race on the slice.
@@ -48,6 +57,16 @@ var renameFn = os.Rename
 // task (service/notify.go's completion loop, route/v1/file.go's DELETE
 // cleanup) goes through DequeueOp or ClearOps, and every path that admits a
 // task goes through EnqueueOp.
+//
+// ctxOf/cancelOf implement A3 (real cancellation): every task admitted via
+// EnqueueOp gets its own cancelable context, released (like the fingerprint)
+// through DequeueOp/ClearOps. running names the id FileOperate is currently
+// executing (the single-worker model: ExecOpFile only ever starts
+// PeekOps()[0]) so CancelOp can tell "queued, never started" (just remove
+// it, current pre-A3 behavior) apart from "executing right now" (cancel its
+// context and let FileOperate's own goroutine perform the cleanup ->
+// terminal-notify -> retire sequence; CancelOp must not race it by touching
+// FileQueue/opQueue itself in that case).
 var opQueue struct {
 	sync.Mutex
 	ids []string
@@ -57,6 +76,11 @@ var opQueue struct {
 	// activeFingerprints is the set of fingerprints currently occupied by an
 	// unfinished (queued or executing) task.
 	activeFingerprints map[string]bool
+	// ctxOf/cancelOf map an in-flight task id to its cancelable context.
+	ctxOf    map[string]context.Context
+	cancelOf map[string]context.CancelFunc
+	// running is the id FileOperate is currently executing, or "" if none.
+	running string
 }
 
 // fileOperateFingerprint identifies a file-operation request by its
@@ -107,6 +131,16 @@ func EnqueueOp(id string, t model.FileOperate) (isFirst bool, duplicate bool) {
 	opQueue.fingerprintOf[id] = fp
 	opQueue.activeFingerprints[fp] = true
 
+	if opQueue.ctxOf == nil {
+		opQueue.ctxOf = make(map[string]context.Context)
+	}
+	if opQueue.cancelOf == nil {
+		opQueue.cancelOf = make(map[string]context.CancelFunc)
+	}
+	taskCtx, taskCancel := context.WithCancel(context.Background())
+	opQueue.ctxOf[id] = taskCtx
+	opQueue.cancelOf[id] = taskCancel
+
 	return len(opQueue.ids) == 1, false
 }
 
@@ -131,6 +165,12 @@ func DequeueOp(id string) {
 		delete(opQueue.fingerprintOf, id)
 		delete(opQueue.activeFingerprints, fp)
 	}
+
+	delete(opQueue.ctxOf, id)
+	delete(opQueue.cancelOf, id)
+	if opQueue.running == id {
+		opQueue.running = ""
+	}
 }
 
 // PeekOps returns a snapshot copy of the current queue.
@@ -150,6 +190,103 @@ func ClearOps() {
 	opQueue.ids = nil
 	opQueue.fingerprintOf = nil
 	opQueue.activeFingerprints = nil
+	opQueue.ctxOf = nil
+	opQueue.cancelOf = nil
+	opQueue.running = ""
+}
+
+// beginRun marks id as the task FileOperate is currently executing and
+// returns its cancelable context (or context.Background() if id was never
+// admitted via EnqueueOp — e.g. tests that seed FileQueue directly, or any
+// caller bypassing the normal enqueue path — so cancellation simply never
+// fires for it, matching pre-A3 behavior exactly).
+//
+// alreadyRunning guards against FileOperate somehow being invoked twice
+// concurrently for the same id; the current single-worker ExecOpFile model
+// shouldn't produce that, but it costs nothing to refuse it outright rather
+// than double-process a task.
+func beginRun(id string) (ctx context.Context, alreadyRunning bool) {
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	if opQueue.running == id {
+		return nil, true
+	}
+	opQueue.running = id
+	if c, ok := opQueue.ctxOf[id]; ok {
+		return c, false
+	}
+	return context.Background(), false
+}
+
+// endRun clears id's running marker (set by beginRun) once FileOperate
+// returns, whatever the outcome.
+func endRun(id string) {
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	if opQueue.running == id {
+		opQueue.running = ""
+	}
+}
+
+// CancelOp requests cancellation of the in-flight (queued or executing)
+// task id — the DELETE /file/operate/:id route.
+//
+//   - Unknown id, or a task whose Finished flag is already true: a no-op.
+//     "Already true" covers both a task that has fully retired (FileQueue no
+//     longer has it — DequeueOp already ran) and one that finished but is
+//     still awaiting the periodic notify poller's next sweep; either way its
+//     terminal notification is already sent or owned by that existing path,
+//     and CancelOp must not race it or send a second one.
+//   - Queued (admitted but FileOperate has not started it yet): behavior is
+//     unchanged from before A3 — remove it outright. Nothing is executing,
+//     so there is no cp subprocess to interrupt and no half-written
+//     destination to clean up.
+//   - Executing right now: cancel its context and return. CancelOp does not
+//     touch FileQueue/opQueue itself in this case — FileOperate's own
+//     goroutine owns that task's in-memory item state (which item is
+//     mid-copy, what still needs cleaning up) and performs the mark-terminal
+//     -> push-notify -> dequeue/delete/fingerprint-release sequence once it
+//     observes ctx.Err() (see FileOperate).
+func CancelOp(id string) {
+	item, ok := FileQueue.Load(id)
+	if !ok {
+		return
+	}
+	if op, ok2 := item.(model.FileOperate); ok2 && op.Finished {
+		return
+	}
+
+	opQueue.Lock()
+	cancel, known := opQueue.cancelOf[id]
+	running := opQueue.running == id
+	opQueue.Unlock()
+	if !known {
+		return
+	}
+
+	cancel()
+	if running {
+		return
+	}
+
+	FileQueue.Delete(id)
+	DequeueOp(id)
+}
+
+// CancelAllOps cancels every in-flight task's context — including the one
+// currently executing, whose FileOperate goroutine will notice via ctx.Err()
+// and run its own terminal-notify + retire sequence — and then clears the
+// queue, matching the pre-A3 "clear all" semantics (DELETE
+// /file/operate/0) for every task that has not started yet.
+func CancelAllOps() {
+	opQueue.Lock()
+	for _, cancel := range opQueue.cancelOf {
+		cancel()
+	}
+	opQueue.Unlock()
+
+	FileQueue = sync.Map{}
+	ClearOps()
 }
 
 type reader struct {
@@ -229,7 +366,7 @@ func isCrossDevice(err error) bool {
 // copy -> verify size -> delete source path, which is the correct shape for
 // a genuine cross-device move. Any other rename failure is returned
 // untouched: callers must not delete dst and retry.
-func moveItem(from, to, dst, style string) (usedRename bool, err error) {
+func moveItem(ctx context.Context, from, to, dst, style string) (usedRename bool, err error) {
 	if rErr := renameFn(from, dst); rErr == nil {
 		return true, nil
 	} else if !isCrossDevice(rErr) {
@@ -237,7 +374,17 @@ func moveItem(from, to, dst, style string) (usedRename bool, err error) {
 	}
 
 	// Cross-device: fall back to copy -> verify -> delete source.
-	if err := file.CopyDir(from, to, style); err != nil {
+	if err := file.CopyDir(ctx, from, to, style); err != nil {
+		if ctx.Err() != nil {
+			// Cancelled mid-copy. dst did not exist before this attempt (the
+			// caller only reaches this cross-device branch when there was no
+			// pre-existing conflict), so whatever cp/the manual fallback
+			// managed to write here is wholly this attempt's own half-written
+			// fragment — removing it destroys nothing the user had before.
+			// The source is untouched: it is only ever removed below, after a
+			// successful, size-verified copy, which did not happen.
+			os.RemoveAll(dst)
+		}
 		return false, fmt.Errorf("copy phase failed: %w", err)
 	}
 	srcSize, err := file.GetFileOrDirSize(from)
@@ -302,6 +449,12 @@ func FileOperate(k string) {
 		return
 	}
 
+	ctx, alreadyRunning := beginRun(k)
+	if alreadyRunning {
+		return
+	}
+	defer endRun(k)
+
 	// Hold write locks on every source path and the destination for the
 	// duration of this operation batch.
 	var unlocks []func()
@@ -319,7 +472,14 @@ func FileOperate(k string) {
 
 	createdPaths := make([]string, 0, len(temp.Item))
 
+itemsLoop:
 	for i := 0; i < len(temp.Item); i++ {
+		// Checked before starting each item: a task cancelled while item i-1
+		// was in flight must never begin item i (or any item after it).
+		if ctx.Err() != nil {
+			break itemsLoop
+		}
+
 		v := temp.Item[i]
 		if temp.Type == "move" {
 			dst := opDestPath(v.From, temp.To)
@@ -340,7 +500,7 @@ func FileOperate(k string) {
 					var usedRename bool
 					parkedPath, replaceErr := replaceConflict(dst, func() error {
 						var opErr error
-						usedRename, opErr = moveItem(v.From, temp.To, dst, temp.Style)
+						usedRename, opErr = moveItem(ctx, v.From, temp.To, dst, temp.Style)
 						return opErr
 					})
 					if replaceErr != nil {
@@ -349,6 +509,14 @@ func FileOperate(k string) {
 						}
 						logger.Error("move: replace failed, rolled back to original destination",
 							zap.String("from", v.From), zap.String("dst", dst), zap.Error(replaceErr))
+						// replaceConflict already rolled the staged-aside dst
+						// back (or, if that rollback itself failed, recorded
+						// ParkedPath above) regardless of why doOp failed —
+						// cancellation included. Nothing further to clean up
+						// here; just stop admitting new items.
+						if ctx.Err() != nil {
+							break itemsLoop
+						}
 						continue
 					}
 					if usedRename {
@@ -367,9 +535,14 @@ func FileOperate(k string) {
 				}
 			}
 
-			usedRename, err := moveItem(v.From, temp.To, dst, temp.Style)
+			usedRename, err := moveItem(ctx, v.From, temp.To, dst, temp.Style)
 			if err != nil {
 				logger.Error("move: failed", zap.String("from", v.From), zap.String("dst", dst), zap.Error(err))
+				// moveItem already removed any half-written dst if this
+				// failure was caused by cancellation (see moveItem).
+				if ctx.Err() != nil {
+					break itemsLoop
+				}
 				continue
 			}
 			if usedRename {
@@ -391,7 +564,7 @@ func FileOperate(k string) {
 					continue
 				case "replace", "overwrite":
 					parkedPath, replaceErr := replaceConflict(dst, func() error {
-						return file.CopyDir(v.From, temp.To, temp.Style)
+						return file.CopyDir(ctx, v.From, temp.To, temp.Style)
 					})
 					if replaceErr != nil {
 						if parkedPath != "" {
@@ -399,6 +572,9 @@ func FileOperate(k string) {
 						}
 						logger.Error("copy: replace failed, rolled back to original destination",
 							zap.String("from", v.From), zap.String("dst", dst), zap.Error(replaceErr))
+						if ctx.Err() != nil {
+							break itemsLoop
+						}
 						continue
 					}
 					createdPaths = append(createdPaths, dst)
@@ -410,17 +586,45 @@ func FileOperate(k string) {
 				}
 			}
 
-			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
+			if err := file.CopyDir(ctx, v.From, temp.To, temp.Style); err != nil {
+				if ctx.Err() != nil {
+					// dst did not exist before this attempt (no conflict was
+					// found above), so it's wholly this attempt's own
+					// half-written fragment — safe to remove outright.
+					os.RemoveAll(dst)
+					break itemsLoop
+				}
 				continue
 			}
 			createdPaths = append(createdPaths, dst)
 		} else {
 			continue
 		}
-
 	}
+
+	cancelled := ctx.Err() != nil
 	temp.Finished = true
+	if cancelled {
+		temp.Cancelled = true
+	}
 	FileQueue.Store(k, temp)
+
+	if cancelled {
+		// Cancellation's terminal sequence: mark terminal state (above) ->
+		// push the notification -> only then retire the task (dequeue /
+		// delete / release the fingerprint). This ordering is the fix for
+		// the pre-A3 bug where DELETE removed the task from the queue while
+		// FileOperate was still running, so the periodic notify poller
+		// (service/notify.go) — which only ever looks at PeekOps() — could
+		// never find it again and silently never sent a terminal
+		// notification. Natural (non-cancelled) completion is unchanged: it
+		// continues to rely on that same poller noticing temp.Finished.
+		task, _ := buildFileNotifyTask(k, temp)
+		terminalNotifyFn(task)
+		FileQueue.Delete(k)
+		DequeueOp(k)
+		go ExecOpFile()
+	}
 
 	if len(createdPaths) > 0 {
 		go PublishMediaCreated(createdPaths)

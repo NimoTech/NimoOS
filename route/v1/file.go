@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
@@ -985,14 +984,21 @@ func GetFileImage(ctx echo.Context) error {
 	return nil
 }
 
+// DeleteOperateFileOrDir cancels a file move/copy task. id == "0" cancels
+// every in-flight task (queued and currently executing) and clears the
+// queue; any other id cancels just that task. A queued task that has not
+// started yet is removed outright (unchanged from before); a task that is
+// currently executing has its context cancelled — the running FileOperate
+// goroutine observes that and performs its own cleanup, terminal
+// notification, and retirement (see service.CancelOp/CancelAllOps and
+// service.FileOperate). Cancelling an unknown id or an already-completed
+// task is a no-op; the response shape is unchanged either way.
 func DeleteOperateFileOrDir(ctx echo.Context) error {
 	id := ctx.Param("id")
 	if id == "0" {
-		service.FileQueue = sync.Map{}
-		service.ClearOps()
+		service.CancelAllOps()
 	} else {
-		service.FileQueue.Delete(id)
-		service.DequeueOp(id)
+		service.CancelOp(id)
 	}
 
 	go service.MyService.Notify().SendFileOperateNotify(true)

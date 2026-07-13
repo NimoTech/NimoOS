@@ -18,6 +18,12 @@ type FileOperate struct {
 	To            string     `json:"to" binding:"required"`
 	Style         string     `json:"style"`
 	Finished      bool       `json:"finished"`
+	// Cancelled is set when this task was stopped via
+	// DELETE /file/operate/:id (or /0) instead of running to natural
+	// completion. Terminal either way (Finished is also set), but callers
+	// that need to distinguish "done" from "stopped early" (the UI) can
+	// check this. Omitted from JSON for every normal, non-cancelled task.
+	Cancelled bool `json:"cancelled,omitempty"`
 }
 
 type FileItem struct {

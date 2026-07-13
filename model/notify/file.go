@@ -24,4 +24,9 @@ type File struct {
 	// ".nimoos-replacing-<uuid>" staging dir still holding the user's
 	// original data. Empty (omitted) for every normal task.
 	ParkedPath string `json:"parked_path,omitempty"`
+	// Cancelled mirrors model.FileOperate.Cancelled: set (alongside
+	// Finished and Status=="CANCELLED") when this task was stopped via
+	// DELETE /file/operate/:id or /0 instead of completing naturally. Absent
+	// (omitted) for every normal task.
+	Cancelled bool `json:"cancelled,omitempty"`
 }

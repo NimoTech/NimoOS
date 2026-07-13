@@ -103,7 +103,12 @@ func buildFileNotifyTask(id string, temp model2.FileOperate) (task notify.File, 
 
 	if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
 		task.Finished = true
-		task.Status = "FINISHED"
+		if temp.Cancelled {
+			task.Cancelled = true
+			task.Status = "CANCELLED"
+		} else {
+			task.Status = "FINISHED"
+		}
 		return task, true
 	}
 
@@ -115,6 +120,30 @@ func buildFileNotifyTask(id string, temp model2.FileOperate) (task notify.File, 
 	}
 
 	return task, false
+}
+
+// pushSingleFileNotify publishes a single task's terminal update immediately,
+// independent of SendFileOperateNotify's periodic broadcast loop. It exists
+// for FileOperate's cancellation path (service/file.go, via the indirected
+// terminalNotifyFn): a cancelled task's terminal notification must be
+// guaranteed to go out the moment cancellation is observed rather than
+// depending on the task still being visible to the next periodic poll —
+// which is exactly what the pre-A3 bug got wrong (DELETE removed the id from
+// the queue before the poller could ever find it and notify).
+func pushSingleFileNotify(task notify.File) {
+	model := notify.NotifyModel{State: "NORMAL", Data: []notify.File{task}}
+	msg := map[string]string{}
+	if bt, err := json.Marshal(map[string]interface{}{"file_operate": model}); err == nil {
+		msg["file_operate"] = string(bt)
+	}
+	response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:file:operate", msg)
+	if err != nil {
+		logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
+		return
+	}
+	if response.StatusCode() != http.StatusOK {
+		logger.Error("failed to publish event to message bus", zap.String("status", response.Status()), zap.Any("response", response))
+	}
 }
 
 // Send periodic broadcast messages
