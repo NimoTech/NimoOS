@@ -338,6 +338,179 @@ func TestFileOperateMove_ConflictReplace_RollbackOnFailure(t *testing.T) {
 	}
 }
 
+// TestFileOperateCopy_ConflictReplace_Success verifies R2's "replace" row on
+// the copy branch's happy path: the old conflicting destination content is
+// fully replaced by the new data, and — unlike move — the source is left
+// completely untouched.
+func TestFileOperateCopy_ConflictReplace_Success(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "folderF")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "new.txt"), []byte("new-data"), 0o644))
+
+	conflictDir := filepath.Join(dstDir, "folderF")
+	require.NoError(t, os.MkdirAll(conflictDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(conflictDir, "old.txt"), []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	op := model.FileOperate{
+		Type:  "copy",
+		To:    dstDir,
+		Style: "overwrite",
+		Item:  []model.FileItem{{From: itemDir, Size: size}},
+	}
+	k := "copy-conflict-replace-ok-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	require.True(t, file.CheckNotExist(filepath.Join(conflictDir, "old.txt")), "old conflicting data must be gone after a successful copy-replace")
+	newContent, err := os.ReadFile(filepath.Join(conflictDir, "new.txt"))
+	require.NoError(t, err)
+	require.Equal(t, []byte("new-data"), newContent)
+
+	srcContent, err := os.ReadFile(filepath.Join(itemDir, "new.txt"))
+	require.NoError(t, err, "copy must never remove the source")
+	require.Equal(t, []byte("new-data"), srcContent)
+
+	entries, err := os.ReadDir(dstDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NotContains(t, e.Name(), "nimoos-replacing", "no temp staging directory should remain")
+	}
+}
+
+// TestFileOperateCopy_ConflictReplace_RollbackOnFailure verifies R2's
+// "replace" row on the copy branch's failure path: if the CopyDir call
+// invoked from inside replaceConflict fails after the old destination has
+// been staged aside, the original destination content must be restored —
+// zero data loss. The failure is a genuine filesystem fault (an unreadable
+// source directory, so `cp -a` and the manual ReadDir fallback both fail),
+// not a mock.
+func TestFileOperateCopy_ConflictReplace_RollbackOnFailure(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "folderG")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "new.txt"), []byte("new-data"), 0o644))
+
+	conflictDir := filepath.Join(dstDir, "folderG")
+	require.NoError(t, os.MkdirAll(conflictDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(conflictDir, "old.txt"), []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	// Strip all permissions from the source item dir itself: `cp -a` can't
+	// even open it, and the manual os.ReadDir fallback fails too, so
+	// file.CopyDir genuinely fails — but this has no effect on dstDir's own
+	// permissions, so replaceConflict's stage-aside rename still succeeds
+	// and we exercise the doOp-fails-after-staging rollback path.
+	require.NoError(t, os.Chmod(itemDir, 0o000))
+	defer os.Chmod(itemDir, 0o755) // let t.TempDir() clean up afterwards
+
+	op := model.FileOperate{
+		Type:  "copy",
+		To:    dstDir,
+		Style: "replace",
+		Item:  []model.FileItem{{From: itemDir, Size: size}},
+	}
+	k := "copy-conflict-replace-fail-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	oldContent, err := os.ReadFile(filepath.Join(conflictDir, "old.txt"))
+	require.NoError(t, err, "old destination data must be restored after a failed copy-replace")
+	require.Equal(t, []byte("old-data"), oldContent)
+	require.True(t, file.CheckNotExist(filepath.Join(conflictDir, "new.txt")), "new data must not appear when the replace failed")
+
+	entries, err := os.ReadDir(dstDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NotContains(t, e.Name(), "nimoos-replacing", "rollback must not leave a temp staging dir behind")
+	}
+}
+
+// TestFileOperateMove_ConflictReplace_RollbackFailure_ParksAndRecordsPath
+// verifies the second review finding: when the rollback rename itself
+// (tmp -> dst, inside replaceConflict) fails — not just the original doOp —
+// the parked temp path must be surfaced in the task/item state
+// (model.FileItem.ParkedPath), not just logged.
+//
+// This needs a real fault that hits ONLY the rollback rename, not the
+// earlier stage-aside rename (dst -> tmp), which must still succeed so we
+// actually reach the rollback branch. Both renames share dstDir as their
+// parent, so dstDir can't simply be made read-only up front. Instead the
+// one mock the spec allows (renameFn, used by moveItem for the primary
+// from->dst attempt) is used as the trigger point: it flips dstDir to
+// read-only as a side effect and then returns a plain (non-EXDEV) error.
+// By the time this runs, replaceConflict's stage-aside rename has already
+// completed (it runs before doOp/moveItem is even called), so:
+//  1. stage-aside (dst -> tmp): succeeds, dstDir still writable.
+//  2. moveItem calls renameFn(from, dst): the mock chmods dstDir read-only
+//     and returns EACCES -> moveItem returns a real (non-EXDEV) error.
+//  3. replaceConflict's rollback (os.Rename(tmp, dst)): now genuinely fails
+//     for real, because dstDir is read-only — this is the exact scenario
+//     under test.
+func TestFileOperateMove_ConflictReplace_RollbackFailure_ParksAndRecordsPath(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "folderH")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "new.txt"), []byte("new-data"), 0o644))
+
+	conflictDir := filepath.Join(dstDir, "folderH")
+	require.NoError(t, os.MkdirAll(conflictDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(conflictDir, "old.txt"), []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	orig := renameFn
+	renameFn = func(oldpath, newpath string) error {
+		require.NoError(t, os.Chmod(dstDir, 0o555))
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EACCES}
+	}
+	defer func() { renameFn = orig }()
+	defer os.Chmod(dstDir, 0o755) // let t.TempDir() clean up afterwards
+
+	op := model.FileOperate{
+		Type:  "move",
+		To:    dstDir,
+		Style: "replace",
+		Item:  []model.FileItem{{From: itemDir, Size: size}},
+	}
+	k := "conflict-replace-park-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	loaded, ok := FileQueue.Load(k)
+	require.True(t, ok)
+	result := loaded.(model.FileOperate)
+	require.NotEmpty(t, result.Item[0].ParkedPath, "when the rollback rename itself fails, the parked path must be recorded in the task state")
+
+	parkedContent, err := os.ReadFile(filepath.Join(result.Item[0].ParkedPath, "old.txt"))
+	require.NoError(t, err, "the original data must actually be sitting at the recorded parked path")
+	require.Equal(t, []byte("old-data"), parkedContent)
+}
+
 // TestFileOperateMove_CrossDeviceFallback verifies R1's EXDEV branch: when
 // the rename attempt fails because src/dst are on different devices, the
 // existing copy -> verify -> delete-source path is used instead. Since a

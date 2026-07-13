@@ -25,6 +25,14 @@ type FileItem struct {
 	Finished      bool   `json:"finished"`
 	Size          int64  `json:"size"`
 	ProcessedSize int64  `json:"processed_size"`
+	// ParkedPath is set only in the rare case where a conflict-replace
+	// rollback itself failed (see service.replaceConflict): the user's
+	// original destination data could not be renamed back from its
+	// ".nimoos-replacing-<uuid>" staging path and is left there instead of
+	// at From/dst. It is surfaced here (rather than only logged) so the
+	// task-status JSON the UI already polls can report the parked location
+	// instead of silently losing track of the data.
+	ParkedPath string `json:"parked_path,omitempty"`
 }
 
 type FileUpdate struct {

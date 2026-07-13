@@ -196,10 +196,16 @@ func moveItem(from, to, dst, style string) (usedRename bool, err error) {
 // on failure it is renamed straight back over dst, so a failed replace
 // never loses data — the caller sees an error but both the original
 // destination and (if untouched) the source remain intact.
-func replaceConflict(dst string, doOp func() error) error {
+//
+// If the rollback rename (tmp -> dst) itself fails, the original data is
+// left sitting at tmp instead of being lost — that path is returned as
+// parkedPath (empty in every other case, including the happy path and a
+// doOp failure that rolled back cleanly) so the caller can record it in the
+// task state instead of it being observable only via the log line below.
+func replaceConflict(dst string, doOp func() error) (parkedPath string, err error) {
 	tmp := dst + ".nimoos-replacing-" + uuid.NewString()[:8]
 	if err := os.Rename(dst, tmp); err != nil {
-		return fmt.Errorf("could not stage existing destination aside: %w", err)
+		return "", fmt.Errorf("could not stage existing destination aside: %w", err)
 	}
 	if err := doOp(); err != nil {
 		// Roll back: clear whatever doOp may have partially written at dst,
@@ -208,11 +214,12 @@ func replaceConflict(dst string, doOp func() error) error {
 		if rerr := os.Rename(tmp, dst); rerr != nil {
 			logger.Error("replace: rollback failed, original data stuck at temp path",
 				zap.String("temp", tmp), zap.String("dst", dst), zap.Error(rerr))
+			return tmp, err
 		}
-		return err
+		return "", err
 	}
 	os.RemoveAll(tmp)
-	return nil
+	return "", nil
 }
 
 func FileOperate(k string) {
@@ -262,12 +269,15 @@ func FileOperate(k string) {
 					// (FilePanel.vue's paste() defaults to style="overwrite");
 					// "replace" is treated identically as the forward-looking name.
 					var usedRename bool
-					replaceErr := replaceConflict(dst, func() error {
+					parkedPath, replaceErr := replaceConflict(dst, func() error {
 						var opErr error
 						usedRename, opErr = moveItem(v.From, temp.To, dst, temp.Style)
 						return opErr
 					})
 					if replaceErr != nil {
+						if parkedPath != "" {
+							temp.Item[i].ParkedPath = parkedPath
+						}
 						logger.Error("move: replace failed, rolled back to original destination",
 							zap.String("from", v.From), zap.String("dst", dst), zap.Error(replaceErr))
 						continue
@@ -311,10 +321,13 @@ func FileOperate(k string) {
 					// 目的地已存在且策略为 skip:没有真正落盘,不发 media:created
 					continue
 				case "replace", "overwrite":
-					replaceErr := replaceConflict(dst, func() error {
+					parkedPath, replaceErr := replaceConflict(dst, func() error {
 						return file.CopyDir(v.From, temp.To, temp.Style)
 					})
 					if replaceErr != nil {
+						if parkedPath != "" {
+							temp.Item[i].ParkedPath = parkedPath
+						}
 						logger.Error("copy: replace failed, rolled back to original destination",
 							zap.String("from", v.From), zap.String("dst", dst), zap.Error(replaceErr))
 						continue
