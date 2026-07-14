@@ -14,14 +14,12 @@ import (
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/service"
 	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
 	"go.uber.org/zap"
 )
-
-// FileUploadMaxSizeForTest exposes the upload size limit for tests.
-func FileUploadMaxSizeForTest() int64 { return common.FileUploadMaxSize }
 
 // freeBytesFn returns available bytes for a storage path; injectable for tests.
 type freeBytesFn func() (uint64, error)
@@ -92,9 +90,7 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 	if hook.Upload.Size <= 0 {
 		return reject(400, "ERR_EMPTY_FILE", "empty file rejected")
 	}
-	if hook.Upload.Size > common.FileUploadMaxSize {
-		return reject(413, "ERR_FILE_TOO_LARGE", fmt.Sprintf("file exceeds %d byte limit", common.FileUploadMaxSize))
-	}
+	// 单文件不设人为大小上限:只要 staging 盘空间足够(×1.05 余量)就放行。
 	if err := checkFileUploadQuota(hook.Upload.Size, available); err != nil {
 		return reject(413, "ERR_INSUFFICIENT_STORAGE", err.Error())
 	}
@@ -254,7 +250,6 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 		NotifyCreatedUploads:     true,
 		NotifyUploadProgress:     true,
 		NotifyTerminatedUploads:  true,
-		MaxSize:                  common.FileUploadMaxSize,
 		PreUploadCreateCallback:  validateFileUploadMetadata,
 	})
 	if err != nil {
@@ -300,7 +295,7 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 			if policy == "" && event.Upload.MetaData["resumed"] == "1" {
 				policy = "overwrite"
 			}
-			dest, _, ierr := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
+			dest, skipped, ierr := ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy)
 			if ierr != nil {
 				logger.Error("Files tus ingest failed",
 					zap.String("id", event.Upload.ID), zap.Error(ierr))
@@ -310,6 +305,9 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 			}
 			_ = store.SetStatus(event.Upload.ID, commonUpload.UploadStatusCompleted, 0)
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
+			if !skipped {
+				go service.PublishMediaCreated([]string{dest})
+			}
 		}
 	}()
 

@@ -18,6 +18,12 @@ type FileOperate struct {
 	To            string     `json:"to" binding:"required"`
 	Style         string     `json:"style"`
 	Finished      bool       `json:"finished"`
+	// Cancelled is set when this task was stopped via
+	// DELETE /file/operate/:id (or /0) instead of running to natural
+	// completion. Terminal either way (Finished is also set), but callers
+	// that need to distinguish "done" from "stopped early" (the UI) can
+	// check this. Omitted from JSON for every normal, non-cancelled task.
+	Cancelled bool `json:"cancelled,omitempty"`
 }
 
 type FileItem struct {
@@ -25,6 +31,14 @@ type FileItem struct {
 	Finished      bool   `json:"finished"`
 	Size          int64  `json:"size"`
 	ProcessedSize int64  `json:"processed_size"`
+	// ParkedPath is set only in the rare case where a conflict-replace
+	// rollback itself failed (see service.replaceConflict): the user's
+	// original destination data could not be renamed back from its
+	// ".nimoos-replacing-<uuid>" staging path and is left there instead of
+	// at From/dst. It is surfaced here (rather than only logged) so the
+	// task-status JSON the UI already polls can report the parked location
+	// instead of silently losing track of the data.
+	ParkedPath string `json:"parked_path,omitempty"`
 }
 
 type FileUpdate struct {

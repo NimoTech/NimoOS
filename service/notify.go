@@ -69,6 +69,83 @@ func (i *notifyServer) SendNotify(name string, message map[string]interface{}) {
 	// SocketServer.BroadcastToRoom("/", "public", path, message)
 }
 
+// buildFileNotifyTask maps a single queued model2.FileOperate (keyed by id)
+// onto the notify.File DTO that gets published over MessageBus/WS. It is a
+// pure mapping with no side effects, kept separate from SendFileOperateNotify
+// so the mapping (including ParkedPath surfacing) can be unit tested without
+// touching the message bus or FileQueue.
+func buildFileNotifyTask(id string, temp model2.FileOperate) (task notify.File, finished bool) {
+	task.Id = id
+	task.ProcessedSize = temp.ProcessedSize
+	task.TotalSize = temp.TotalSize
+	task.To = temp.To
+	task.Type = temp.Type
+	if task.ProcessedSize == 0 {
+		task.Status = "STARTING"
+	} else {
+		task.Status = "PROCESSING"
+	}
+
+	// ParkedPath is scanned unconditionally, before the finished early-return.
+	// In production, FileItem.ParkedPath is only ever set inside FileOperate's
+	// per-item loop (service/file.go), together with temp.Finished=true stored
+	// right after that same loop — so every real queue entry carrying a
+	// ParkedPath also has Finished==true. The finished branch below is the
+	// only notification actually sent for that task id before FileQueue
+	// deletes the entry, so it must carry ParkedPath too, or it is
+	// unreachable in practice.
+	for _, v := range temp.Item {
+		if v.ParkedPath != "" {
+			task.ParkedPath = v.ParkedPath
+			break
+		}
+	}
+
+	if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
+		task.Finished = true
+		if temp.Cancelled {
+			task.Cancelled = true
+			task.Status = "CANCELLED"
+		} else {
+			task.Status = "FINISHED"
+		}
+		return task, true
+	}
+
+	for _, v := range temp.Item {
+		if v.Size != v.ProcessedSize {
+			task.ProcessingPath = v.From
+			break
+		}
+	}
+
+	return task, false
+}
+
+// pushSingleFileNotify publishes a single task's terminal update immediately,
+// independent of SendFileOperateNotify's periodic broadcast loop. It exists
+// for FileOperate's cancellation path (service/file.go, via the indirected
+// terminalNotifyFn): a cancelled task's terminal notification must be
+// guaranteed to go out the moment cancellation is observed rather than
+// depending on the task still being visible to the next periodic poll —
+// which is exactly what the pre-A3 bug got wrong (DELETE removed the id from
+// the queue before the poller could ever find it and notify).
+func pushSingleFileNotify(task notify.File) {
+	model := notify.NotifyModel{State: "NORMAL", Data: []notify.File{task}}
+	msg := map[string]string{}
+	if bt, err := json.Marshal(map[string]interface{}{"file_operate": model}); err == nil {
+		msg["file_operate"] = string(bt)
+	}
+	response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "nimoos:file:operate", msg)
+	if err != nil {
+		logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
+		return
+	}
+	if response.StatusCode() != http.StatusOK {
+		logger.Error("failed to publish event to message bus", zap.String("status", response.Status()), zap.Any("response", response))
+	}
+}
+
 // Send periodic broadcast messages
 func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 	if nowSend {
@@ -108,33 +185,13 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 			if !ok {
 				continue
 			}
-			task := notify.File{}
-			task.Id = v
-			task.ProcessedSize = temp.ProcessedSize
-			task.TotalSize = temp.TotalSize
-			task.To = temp.To
-			task.Type = temp.Type
-			if task.ProcessedSize == 0 {
-				task.Status = "STARTING"
-			} else {
-				task.Status = "PROCESSING"
-			}
-
-			if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
-
-				task.Finished = true
-				task.Status = "FINISHED"
+			task, finished := buildFileNotifyTask(v, temp)
+			if finished {
 				FileQueue.Delete(v)
 				DequeueOp(v)
 				go ExecOpFile()
 				list = append(list, task)
 				continue
-			}
-			for _, v := range temp.Item {
-				if v.Size != v.ProcessedSize {
-					task.ProcessingPath = v.From
-					break
-				}
 			}
 
 			list = append(list, task)
@@ -178,32 +235,13 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 				if !ok {
 					continue
 				}
-				task := notify.File{}
-				task.Id = v
-				task.ProcessedSize = temp.ProcessedSize
-				task.TotalSize = temp.TotalSize
-				task.To = temp.To
-				task.Type = temp.Type
-				if task.ProcessedSize == 0 {
-					task.Status = "STARTING"
-				} else {
-					task.Status = "PROCESSING"
-				}
-				if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
-
-					task.Finished = true
-					task.Status = "FINISHED"
+				task, finished := buildFileNotifyTask(v, temp)
+				if finished {
 					FileQueue.Delete(v)
 					DequeueOp(v)
 					go ExecOpFile()
 					list = append(list, task)
 					continue
-				}
-				for _, v := range temp.Item {
-					if v.Size != v.ProcessedSize {
-						task.ProcessingPath = v.From
-						break
-					}
 				}
 
 				list = append(list, task)

@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,11 +14,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
-	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/model"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -689,6 +686,8 @@ func PostFileUpload(ctx echo.Context) error {
 			if err := file.RMDir(tempDir); err != nil {
 				logger.Error("error when trying to remove `"+tempDir+"`", zap.Error(err))
 			}
+			// Final merged file has landed at `path` — notify Photos.
+			go service.PublishMediaCreated([]string{path})
 		}
 	} else {
 		unlock := pathlock.LockWrite(path)
@@ -705,6 +704,8 @@ func PostFileUpload(ctx echo.Context) error {
 			logger.Error("error when trying to write to `"+path+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 		}
+		// Single-shot direct write landed at `path` — notify Photos.
+		go service.PublishMediaCreated([]string{path})
 	}
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
@@ -773,6 +774,7 @@ func PostFileOctet(ctx echo.Context) error {
 // @Security ApiKeyAuth
 // @Param body body model.FileOperate true "type:move,copy"
 // @Success 200 {string} string "ok"
+// @Failure 409 {object} model.Result "identical file operation already in progress"
 // @Router /file/operate [post]
 func PostOperateFileOrDir(ctx echo.Context) error {
 	list := model.FileOperate{}
@@ -820,8 +822,11 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	list.ProcessedSize = 0
 
 	uid := uuid.NewString()
-	service.FileQueue.Store(uid, list)
-	if isFirst := service.EnqueueOp(uid); isFirst {
+	isFirst, duplicate := service.EnqueueOp(uid, list)
+	if duplicate {
+		return ctx.JSON(common_err.CONFLICT, model.Result{Success: common_err.DUPLICATE_FILE_OPERATION, Message: common_err.GetMsg(common_err.DUPLICATE_FILE_OPERATION)})
+	}
+	if isFirst {
 		go service.ExecOpFile()
 		go service.CheckFileStatus()
 		go service.MyService.Notify().SendFileOperateNotify(false)
@@ -897,24 +902,7 @@ func DeleteFile(ctx echo.Context) error {
 				media = append(media, p)
 			}
 		}
-		if len(media) == 0 {
-			return
-		}
-		b, err := json.Marshal(media)
-		if err != nil {
-			return
-		}
-		response, err := service.MyService.MessageBus().PublishEventWithResponse(
-			context.Background(), common.SERVICENAME, "nimoos:media:deleted",
-			map[string]string{"paths": string(b)},
-		)
-		if err != nil {
-			logger.Error("failed to publish nimoos:media:deleted", zap.Error(err))
-			return
-		}
-		if response.StatusCode() != http.StatusOK {
-			logger.Error("failed to publish nimoos:media:deleted", zap.String("status", response.Status()))
-		}
+		service.PublishMediaPathsEvent("nimoos:media:deleted", media)
 	}(append([]string(nil), paths...))
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
@@ -996,14 +984,21 @@ func GetFileImage(ctx echo.Context) error {
 	return nil
 }
 
+// DeleteOperateFileOrDir cancels a file move/copy task. id == "0" cancels
+// every in-flight task (queued and currently executing) and clears the
+// queue; any other id cancels just that task. A queued task that has not
+// started yet is removed outright (unchanged from before); a task that is
+// currently executing has its context cancelled — the running FileOperate
+// goroutine observes that and performs its own cleanup, terminal
+// notification, and retirement (see service.CancelOp/CancelAllOps and
+// service.FileOperate). Cancelling an unknown id or an already-completed
+// task is a no-op; the response shape is unchanged either way.
 func DeleteOperateFileOrDir(ctx echo.Context) error {
 	id := ctx.Param("id")
 	if id == "0" {
-		service.FileQueue = sync.Map{}
-		service.ClearOps()
+		service.CancelAllOps()
 	} else {
-		service.FileQueue.Delete(id)
-		service.DequeueOp(id)
+		service.CancelOp(id)
 	}
 
 	go service.MyService.Notify().SendFileOperateNotify(true)

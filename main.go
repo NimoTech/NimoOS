@@ -189,7 +189,7 @@ func main() {
 		if response != nil && response.StatusCode() != http.StatusOK {
 			logger.Error("error when trying to register one or more event types - some event type will not be discoverable", zap.String("status", response.Status()), zap.String("body", string(response.Body)))
 		}
-		if response.StatusCode() == http.StatusOK {
+		if response != nil && response.StatusCode() == http.StatusOK {
 			break
 		}
 		time.Sleep(time.Second)
