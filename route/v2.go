@@ -133,6 +133,10 @@ func InitV2Router() http.Handler {
 			if strings.Contains(c.Request().URL.Path, "/local_storage/") {
 				return true
 			}
+			// Skip validation for network routes since they are manually registered and missing from embedded swagger
+			if strings.HasPrefix(c.Request().URL.Path, V2APIPath+"/network/") {
+				return true
+			}
 			// tus 上传端点不在 OpenAPI 规格里，跳过校验。
 			if strings.Contains(c.Request().URL.Path, "/file/upload-tus") {
 				return true
@@ -159,9 +163,17 @@ func InitV2Router() http.Handler {
 	if si, ok := appManagement.(interface {
 		GetLocalStorageDisplayNames(echo.Context) error
 		UpdateLocalStorageDisplayName(echo.Context) error
+		GetNetworkInterfaces(echo.Context) error
+		UpdateNetworkInterface(echo.Context) error
+		GetWifiScanResults(echo.Context) error
 	}); ok {
 		e.GET(V2APIPath+"/local_storage/display_names", si.GetLocalStorageDisplayNames)
 		e.PUT(V2APIPath+"/local_storage/display_name", si.UpdateLocalStorageDisplayName)
+		
+		// Network Endpoints
+		e.GET(V2APIPath+"/network/interfaces", si.GetNetworkInterfaces)
+		e.PUT(V2APIPath+"/network/interfaces", si.UpdateNetworkInterface)
+		e.GET(V2APIPath+"/network/wifi/scan", si.GetWifiScanResults)
 	}
 
 	// 构造上传任务 store(复用全局 gorm 句柄)并注入路由层。
