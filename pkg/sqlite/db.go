@@ -16,6 +16,7 @@ import (
 
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	model2 "github.com/NimoTech/NimoOS/service/model"
+	upload "github.com/NimoTech/NimoOS/service/upload"
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -42,7 +43,7 @@ func GetDb(dbPath string) *gorm.DB {
 	c.SetConnMaxIdleTime(time.Second * 1000)
 	gdb = db
 
-	err = db.AutoMigrate(&model2.AppNotify{}, model2.SharesDBModel{}, model2.ConnectionsDBModel{}, model2.PeerDriveDBModel{}, &commonUpload.UploadTask{})
+	err = db.AutoMigrate(&model2.AppNotify{}, model2.SharesDBModel{}, model2.ConnectionsDBModel{}, model2.PeerDriveDBModel{}, &commonUpload.UploadTask{}, &upload.UploadBatch{}, &upload.UploadBatchItem{})
 	if err != nil {
 		fmt.Println(err)
 	}
