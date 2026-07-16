@@ -29,8 +29,8 @@ import (
 	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/NimoTech/NimoOS/service"
-	"github.com/NimoTech/NimoOS/service/pathlock"
 	model2 "github.com/NimoTech/NimoOS/service/model"
+	"github.com/NimoTech/NimoOS/service/pathlock"
 	uploadsvc "github.com/NimoTech/NimoOS/service/upload"
 
 	"github.com/google/uuid"
@@ -97,10 +97,10 @@ func getUploadBatchStore() *uploadsvc.BatchStore {
 func checkPathAccess(ctx echo.Context, path string) error {
 	role := ctx.Request().Header.Get("user_role")
 	userID := ctx.Request().Header.Get("user_id")
-	
-	logger.Info("Checking path access", 
-		zap.String("path", path), 
-		zap.String("userID", userID), 
+
+	logger.Info("Checking path access",
+		zap.String("path", path),
+		zap.String("userID", userID),
 		zap.String("role", role),
 		zap.String("remoteIP", ctx.RealIP()))
 
@@ -114,18 +114,18 @@ func checkPathAccess(ctx echo.Context, path string) error {
 	// Other admins (like admin1) must still follow explicit folder grants for security isolation.
 	isSuperAdmin := userID == "1"
 	cleanPath := filepath.Clean(path)
- 
+
 	// Fast path: Super-admin gets everything.
 	if isSuperAdmin {
 		return nil
 	}
- 
+
 	// 3. 基本放行规则检测。
 	// Base safety check (empty for users now that prefixes are removed).
 	if utils.IsPathAllowed(cleanPath, false) {
 		return nil
 	}
- 
+
 	// 4. 显式文件夹授权校验。
 	// Slow path: check whether the user has an explicit folder grant.
 	if userID != "" {
