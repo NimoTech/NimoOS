@@ -84,6 +84,21 @@ func TestInterruptedRevertsToActiveOnProgress(t *testing.T) {
 	}
 }
 
+func TestMarkItemDoneRevertsInterruptedToActive(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "b1", "a.jpg", "b.jpg")
+	if err := s.SetInterrupted("b1", 2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkItemDone("b1", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get("b1")
+	if got.Status != BatchStatusActive || got.Done != 1 {
+		t.Fatalf("want active/done=1, got %s/%d", got.Status, got.Done)
+	}
+}
+
 func TestBrokenChildren(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "备份/2024/x.jpg", "备份/2025/y.jpg", "loose.jpg")
