@@ -235,7 +235,7 @@ func withRelativeLocation(h http.Handler) http.Handler {
 
 // NewFileTUSHandler 创建 Files 用 tusd handler：staging 存储 + 创建校验 +
 // 完成后移动到用户目标路径。返回 http.Handler 供 echo.WrapHandler 使用。
-func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
+func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (http.Handler, error) {
 	if err := os.MkdirAll(common.FileUploadStagingDir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir staging: %w", err)
 	}
@@ -271,6 +271,9 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 		for ev := range tusH.UploadProgress {
 			_ = store.UpdateOffset(ev.Upload.ID, ev.Upload.Offset,
 				time.Now().Unix()+common.UploadIdleTimeoutSeconds)
+			if bid := ev.Upload.MetaData["batch_id"]; bid != "" {
+				_ = batches.TouchProgress(bid, time.Now().Unix())
+			}
 		}
 	}()
 
@@ -304,6 +307,9 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 				continue
 			}
 			_ = store.SetStatus(event.Upload.ID, commonUpload.UploadStatusCompleted, 0)
+			if bid := event.Upload.MetaData["batch_id"]; bid != "" {
+				_ = batches.MarkItemDone(bid, relativePath, time.Now().Unix())
+			}
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
 			if !skipped {
 				go service.PublishMediaCreated([]string{dest})
@@ -312,6 +318,7 @@ func NewFileTUSHandler(store *upload.TaskStore) (http.Handler, error) {
 	}()
 
 	commonUpload.StartGC(store, upload.DefaultGCConfig())
+	upload.StartBatchSweeper(batches, store, common.FileUploadStagingDir)
 	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
 }
 

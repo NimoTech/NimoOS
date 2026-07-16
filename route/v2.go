@@ -174,7 +174,7 @@ func InitV2Router() http.Handler {
 	uploadBatches := upload.NewBatchStore(sqlite.GetDb(config.AppInfo.DBPath + "/db"))
 	v2Route.SetBatchStore(uploadBatches)
 
-	if tusH, terr := v2Route.NewFileTUSHandler(uploadStore); terr != nil {
+	if tusH, terr := v2Route.NewFileTUSHandler(uploadStore, uploadBatches); terr != nil {
 		logger.Error("Files tus handler init failed", zap.Error(terr))
 	} else {
 		e.Any(V2APIPath+"/file/upload-tus", echo.WrapHandler(tusH))
