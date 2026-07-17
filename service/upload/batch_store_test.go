@@ -69,6 +69,26 @@ func TestMarkItemDoneCompletesBatch(t *testing.T) {
 	}
 }
 
+// TestMarkItemDoneRepeatedDoesNotDoubleCount 防回归:同一 item 重复 MarkItemDone
+// 多次(模拟前端重试/重复上报),done 计数只应自增一次,不能被 gorm.Expr("done + 1")
+// 在 RowsAffected==0 时重复触发。
+func TestMarkItemDoneRepeatedDoesNotDoubleCount(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "b1", "a.jpg", "b.jpg", "c.jpg")
+	for i := 0; i < 5; i++ {
+		if err := s.MarkItemDone("b1", "a.jpg", int64(1000+i)); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+	got, _ := s.Get("b1")
+	if got.Done != 1 {
+		t.Fatalf("done should stay 1 after 5 repeated MarkItemDone calls, got %d", got.Done)
+	}
+	if got.Status != BatchStatusActive {
+		t.Fatalf("status should stay active, got %s", got.Status)
+	}
+}
+
 func TestInterruptedRevertsToActiveOnProgress(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "a.jpg")

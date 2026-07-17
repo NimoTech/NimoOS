@@ -67,25 +67,25 @@ func (s *BatchStore) MarkItemDone(batchID, relativePath string, now int64) error
 		if res.RowsAffected == 0 {
 			return nil
 		}
-		var b UploadBatch
-		if err := tx.Where("id = ?", batchID).First(&b).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil
-			}
+		// done 计数原子自增(item 的 false→true 恰好一次,由上面 RowsAffected 保证)。
+		if err := tx.Model(&UploadBatch{}).Where("id = ?", batchID).
+			Updates(map[string]interface{}{
+				"done":             gorm.Expr("done + 1"),
+				"last_progress_at": now,
+			}).Error; err != nil {
 			return err
 		}
-		var done int64
-		if err := tx.Model(&UploadBatchItem{}).
-			Where("batch_id = ? AND done = ?", batchID, true).Count(&done).Error; err != nil {
+		// 全部完成 → completed(active/interrupted 均可迁移)。
+		if err := tx.Model(&UploadBatch{}).
+			Where("id = ? AND done >= total AND status IN ?", batchID,
+				[]string{BatchStatusActive, BatchStatusInterrupted}).
+			Update("status", BatchStatusCompleted).Error; err != nil {
 			return err
 		}
-		updates := map[string]interface{}{"done": done, "last_progress_at": now}
-		if int(done) >= b.Total {
-			updates["status"] = BatchStatusCompleted
-		} else if b.Status == BatchStatusInterrupted {
-			updates["status"] = BatchStatusActive
-		}
-		return tx.Model(&UploadBatch{}).Where("id = ?", batchID).Updates(updates).Error
+		// 未完成但批次此前被判中断 → 回 active(超时误判/补传可逆)。
+		return tx.Model(&UploadBatch{}).
+			Where("id = ? AND status = ? AND done < total", batchID, BatchStatusInterrupted).
+			Update("status", BatchStatusActive).Error
 	})
 }
 
