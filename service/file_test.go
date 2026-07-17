@@ -574,6 +574,360 @@ func TestFileOperateMove_CrossDeviceFallback(t *testing.T) {
 	require.True(t, file.CheckNotExist(itemDir), "source must be removed after fallback copy+verify")
 }
 
+// --- R4: "rename" (keep-both) conflict style ---
+//
+// Style stays batch-level (unchanged): the UI splits a paste batch into
+// per-style groups client-side and submits "rename" only for the items the
+// user explicitly chose keep-both for. These tests exercise FileOperate's
+// "rename" branch directly, the same way the "skip"/"replace" tests above do.
+
+// TestFileOperateMove_ConflictRename_File_Success verifies the "rename" row
+// for a plain file conflict: the existing dst is left completely alone, and
+// the moved file lands at the "(1)" sibling name.
+func TestFileOperateMove_ConflictRename_File_Success(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemFile := filepath.Join(srcParent, "report.docx")
+	require.NoError(t, os.WriteFile(itemFile, []byte("new-data"), 0o644))
+
+	conflictFile := filepath.Join(dstDir, "report.docx")
+	require.NoError(t, os.WriteFile(conflictFile, []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemFile)
+	require.NoError(t, err)
+
+	op := model.FileOperate{
+		Type:  "move",
+		To:    dstDir,
+		Style: "rename",
+		Item:  []model.FileItem{{From: itemFile, Size: size}},
+	}
+	k := "conflict-rename-move-file-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	old, err := os.ReadFile(conflictFile)
+	require.NoError(t, err, "the existing destination file must be untouched")
+	require.Equal(t, []byte("old-data"), old)
+
+	renamed, err := os.ReadFile(filepath.Join(dstDir, "report(1).docx"))
+	require.NoError(t, err, "moved data must land at the de-conflicted sibling name")
+	require.Equal(t, []byte("new-data"), renamed)
+
+	require.True(t, file.CheckNotExist(itemFile), "source must be removed after a successful rename-move")
+
+	loaded, ok := FileQueue.Load(k)
+	require.True(t, ok)
+	result := loaded.(model.FileOperate)
+	require.True(t, result.Item[0].Finished)
+}
+
+// TestFileOperateMove_ConflictRename_Directory_Success verifies the "rename"
+// row for a directory conflict, including that the directory's contents
+// (not just an empty shell) land intact at the sibling name.
+func TestFileOperateMove_ConflictRename_Directory_Success(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "folderRen")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "new.txt"), []byte("new-data"), 0o644))
+
+	conflictDir := filepath.Join(dstDir, "folderRen")
+	require.NoError(t, os.MkdirAll(conflictDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(conflictDir, "old.txt"), []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	op := model.FileOperate{
+		Type:  "move",
+		To:    dstDir,
+		Style: "rename",
+		Item:  []model.FileItem{{From: itemDir, Size: size}},
+	}
+	k := "conflict-rename-move-dir-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	old, err := os.ReadFile(filepath.Join(conflictDir, "old.txt"))
+	require.NoError(t, err, "the existing destination directory must be untouched")
+	require.Equal(t, []byte("old-data"), old)
+
+	renamedDir := filepath.Join(dstDir, "folderRen(1)")
+	renamed, err := os.ReadFile(filepath.Join(renamedDir, "new.txt"))
+	require.NoError(t, err, "moved directory must land at the de-conflicted sibling name")
+	require.Equal(t, []byte("new-data"), renamed)
+
+	require.True(t, file.CheckNotExist(itemDir), "source must be removed after a successful rename-move")
+}
+
+// TestFileOperateCopy_ConflictRename_File_Success mirrors the move-file test
+// above for the copy branch: source must survive (copy never deletes it).
+func TestFileOperateCopy_ConflictRename_File_Success(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemFile := filepath.Join(srcParent, "report.docx")
+	require.NoError(t, os.WriteFile(itemFile, []byte("new-data"), 0o644))
+
+	conflictFile := filepath.Join(dstDir, "report.docx")
+	require.NoError(t, os.WriteFile(conflictFile, []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemFile)
+	require.NoError(t, err)
+
+	op := model.FileOperate{
+		Type:  "copy",
+		To:    dstDir,
+		Style: "rename",
+		Item:  []model.FileItem{{From: itemFile, Size: size}},
+	}
+	k := "conflict-rename-copy-file-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	old, err := os.ReadFile(conflictFile)
+	require.NoError(t, err, "the existing destination file must be untouched")
+	require.Equal(t, []byte("old-data"), old)
+
+	renamed, err := os.ReadFile(filepath.Join(dstDir, "report(1).docx"))
+	require.NoError(t, err, "copied data must land at the de-conflicted sibling name")
+	require.Equal(t, []byte("new-data"), renamed)
+
+	srcContent, err := os.ReadFile(itemFile)
+	require.NoError(t, err, "copy must never remove the source")
+	require.Equal(t, []byte("new-data"), srcContent)
+}
+
+// TestFileOperateCopy_ConflictRename_Directory_Success mirrors the
+// move-directory test above for the copy branch.
+func TestFileOperateCopy_ConflictRename_Directory_Success(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemDir := filepath.Join(srcParent, "folderRenC")
+	require.NoError(t, os.MkdirAll(itemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(itemDir, "new.txt"), []byte("new-data"), 0o644))
+
+	conflictDir := filepath.Join(dstDir, "folderRenC")
+	require.NoError(t, os.MkdirAll(conflictDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(conflictDir, "old.txt"), []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemDir)
+	require.NoError(t, err)
+
+	op := model.FileOperate{
+		Type:  "copy",
+		To:    dstDir,
+		Style: "rename",
+		Item:  []model.FileItem{{From: itemDir, Size: size}},
+	}
+	k := "conflict-rename-copy-dir-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	old, err := os.ReadFile(filepath.Join(conflictDir, "old.txt"))
+	require.NoError(t, err, "the existing destination directory must be untouched")
+	require.Equal(t, []byte("old-data"), old)
+
+	renamedDir := filepath.Join(dstDir, "folderRenC(1)")
+	renamed, err := os.ReadFile(filepath.Join(renamedDir, "new.txt"))
+	require.NoError(t, err, "copied directory must land at the de-conflicted sibling name")
+	require.Equal(t, []byte("new-data"), renamed)
+
+	srcContent, err := os.ReadFile(filepath.Join(itemDir, "new.txt"))
+	require.NoError(t, err, "copy must never remove the source")
+	require.Equal(t, []byte("new-data"), srcContent)
+}
+
+// TestResolveRenameTarget_ChainedConflicts_SkipsTakenNumbers verifies the
+// naming rule end to end: when "report.docx", "report(1).docx" AND
+// "report(2).docx" already exist, the next free candidate is
+// "report(3).docx" — not a restart at "(1)" and not some other scheme.
+func TestResolveRenameTarget_ChainedConflicts_SkipsTakenNumbers(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "report.docx")
+	require.NoError(t, os.WriteFile(dst, []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "report(1).docx"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "report(2).docx"), []byte("x"), 0o644))
+
+	got, err := resolveRenameTarget(dst)
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(root, "report(3).docx"), got)
+}
+
+// TestResolveRenameTarget_ExecutionWindowRace_DefersToNextCandidate exercises
+// the TOCTOU guard between resolveRenameTarget's probe (via
+// file.GetNoDuplicateFileName) and its final re-check: something else claims
+// the exact candidate name in that window, and the function must defer to
+// the next candidate rather than the caller going on to overwrite it. The
+// race is driven deterministically through the afterRenameCandidateScan test
+// seam (mirroring how renameFn is used elsewhere in this file to simulate
+// EXDEV) instead of depending on real goroutine-scheduling timing.
+func TestResolveRenameTarget_ExecutionWindowRace_DefersToNextCandidate(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "report.docx")
+	require.NoError(t, os.WriteFile(dst, []byte("x"), 0o644))
+
+	claimed := filepath.Join(root, "report(1).docx")
+	orig := afterRenameCandidateScan
+	fired := false
+	afterRenameCandidateScan = func(candidate string) {
+		if !fired && candidate == claimed {
+			fired = true
+			// Simulate something else claiming this exact name in the gap
+			// between the scan and resolveRenameTarget's re-check.
+			require.NoError(t, os.WriteFile(claimed, []byte("raced-in"), 0o644))
+		}
+	}
+	defer func() { afterRenameCandidateScan = orig }()
+
+	got, err := resolveRenameTarget(dst)
+	require.NoError(t, err)
+	require.True(t, fired, "test seam never fired — race was not exercised")
+	require.Equal(t, filepath.Join(root, "report(2).docx"), got, "must defer past the name claimed mid-window")
+
+	// The raced-in file must be completely untouched — resolveRenameTarget
+	// must never overwrite it.
+	racedContent, err := os.ReadFile(claimed)
+	require.NoError(t, err)
+	require.Equal(t, []byte("raced-in"), racedContent)
+}
+
+// TestResolveRenameTarget_AttemptsExhausted_ReturnsError verifies the bound
+// on the TOCTOU retry loop: if whatever candidate the internal scan comes up
+// with keeps getting claimed out from under it (pathological, unrelenting
+// churn), resolveRenameTarget gives up with an error after
+// maxRenameCandidateAttempts tries instead of spinning forever or falling
+// back to some other (silently overwriting) behavior. The churn is driven
+// deterministically via the afterRenameCandidateScan test seam — it claims
+// every single candidate the scan produces, forcing every retry to actually
+// retry (a plain pile of pre-created "(1)".."(N)" files would not exercise
+// this: file.GetNoDuplicateFileName's own internal scan already skips past
+// those in one call, so the retry loop would never actually loop).
+// maxRenameCandidateAttempts is shrunk so the test doesn't need hundreds of
+// iterations.
+func TestResolveRenameTarget_AttemptsExhausted_ReturnsError(t *testing.T) {
+	origMax := maxRenameCandidateAttempts
+	maxRenameCandidateAttempts = 3
+	defer func() { maxRenameCandidateAttempts = origMax }()
+
+	root := t.TempDir()
+	dst := filepath.Join(root, "report.docx")
+	require.NoError(t, os.WriteFile(dst, []byte("x"), 0o644))
+
+	origHook := afterRenameCandidateScan
+	claimedCount := 0
+	afterRenameCandidateScan = func(candidate string) {
+		require.NoError(t, os.WriteFile(candidate, []byte("raced-in"), 0o644))
+		claimedCount++
+	}
+	defer func() { afterRenameCandidateScan = origHook }()
+
+	_, err := resolveRenameTarget(dst)
+	require.Error(t, err)
+	require.Equal(t, maxRenameCandidateAttempts, claimedCount, "must have actually retried up to the bound, not given up early or looped past it")
+}
+
+// TestFileOperateMove_UnknownStyle_TreatedAsSkip_Regression is a regression
+// test locking in the pre-existing (unchanged) conservative default: an
+// unrecognized Style value must never delete or touch anything, exactly
+// like "skip" — this must keep holding true after adding the "rename" case
+// alongside it.
+func TestFileOperateMove_UnknownStyle_TreatedAsSkip_Regression(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemFile := filepath.Join(srcParent, "x.txt")
+	require.NoError(t, os.WriteFile(itemFile, []byte("new-data"), 0o644))
+
+	conflictFile := filepath.Join(dstDir, "x.txt")
+	require.NoError(t, os.WriteFile(conflictFile, []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemFile)
+	require.NoError(t, err)
+
+	op := model.FileOperate{
+		Type:  "move",
+		To:    dstDir,
+		Style: "some-future-style-the-backend-does-not-know-yet",
+		Item:  []model.FileItem{{From: itemFile, Size: size}},
+	}
+	k := "unknown-style-move-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	old, err := os.ReadFile(conflictFile)
+	require.NoError(t, err)
+	require.Equal(t, []byte("old-data"), old, "unknown style must never overwrite the existing destination")
+	require.True(t, file.CheckNotExist(filepath.Join(dstDir, "x(1).txt")), "unknown style must not silently behave like rename either")
+
+	src, err := os.ReadFile(itemFile)
+	require.NoError(t, err, "unknown style must leave the source in place, same as skip")
+	require.Equal(t, []byte("new-data"), src)
+}
+
+// TestFileOperateCopy_UnknownStyle_TreatedAsSkip_Regression mirrors the move
+// test above for the copy branch.
+func TestFileOperateCopy_UnknownStyle_TreatedAsSkip_Regression(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	root := t.TempDir()
+	srcParent := filepath.Join(root, "src")
+	dstDir := filepath.Join(root, "dst")
+	require.NoError(t, os.MkdirAll(srcParent, 0o755))
+	require.NoError(t, os.MkdirAll(dstDir, 0o755))
+
+	itemFile := filepath.Join(srcParent, "x.txt")
+	require.NoError(t, os.WriteFile(itemFile, []byte("new-data"), 0o644))
+
+	conflictFile := filepath.Join(dstDir, "x.txt")
+	require.NoError(t, os.WriteFile(conflictFile, []byte("old-data"), 0o644))
+
+	size, err := file.GetFileOrDirSize(itemFile)
+	require.NoError(t, err)
+
+	op := model.FileOperate{
+		Type:  "copy",
+		To:    dstDir,
+		Style: "some-future-style-the-backend-does-not-know-yet",
+		Item:  []model.FileItem{{From: itemFile, Size: size}},
+	}
+	k := "unknown-style-copy-" + uuid.NewString()
+	FileQueue.Store(k, op)
+	FileOperate(k)
+
+	old, err := os.ReadFile(conflictFile)
+	require.NoError(t, err)
+	require.Equal(t, []byte("old-data"), old, "unknown style must never overwrite the existing destination")
+	require.True(t, file.CheckNotExist(filepath.Join(dstDir, "x(1).txt")), "unknown style must not silently behave like rename either")
+
+	src, err := os.ReadFile(itemFile)
+	require.NoError(t, err, "unknown style must leave the source in place (copy never deletes it anyway)")
+	require.Equal(t, []byte("new-data"), src)
+}
+
 // --- R3: task dedup (test case 6) ---
 //
 // These tests exercise EnqueueOp/DequeueOp/ClearOps directly rather than

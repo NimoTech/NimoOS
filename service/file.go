@@ -448,14 +448,23 @@ func isCrossDevice(err error) bool {
 	return false
 }
 
-// moveItem moves from into dst (dst is the full destination path, i.e.
-// opDestPath(from, to)). It tries an atomic os.Rename first — the fast,
-// same-filesystem path, instantaneous even for huge directories. Only when
-// that fails with EXDEV does it fall back to the pre-existing
-// copy -> verify size -> delete source path, which is the correct shape for
-// a genuine cross-device move. Any other rename failure is returned
-// untouched: callers must not delete dst and retry.
-func moveItem(ctx context.Context, from, to, dst, style string) (usedRename bool, err error) {
+// moveItem moves from into dst (the exact final destination path — for the
+// ordinary conflict-free/overwrite flows this is opDestPath(from, to); for
+// the "rename" (keep-both) style it is whatever de-conflicted name the
+// caller already resolved, which need not share from's basename). It tries
+// an atomic os.Rename first — the fast, same-filesystem path, instantaneous
+// even for huge directories. Only when that fails with EXDEV does it fall
+// back to the pre-existing copy -> verify size -> delete source path, which
+// is the correct shape for a genuine cross-device move. Any other rename
+// failure is returned untouched: callers must not delete dst and retry.
+//
+// The copy fallback uses file.CopyDirContents (not file.CopyDir) precisely
+// because it copies to dst exactly as given, without re-deriving it from a
+// parent dir + from's basename — CopyDir would recompute
+// filepath.Join(to, filepath.Base(from)), which only coincides with dst in
+// the no-rename case and would silently land a rename-style copy at the
+// wrong (conflicting) path.
+func moveItem(ctx context.Context, from, dst, style string) (usedRename bool, err error) {
 	if rErr := renameFn(from, dst); rErr == nil {
 		return true, nil
 	} else if !isCrossDevice(rErr) {
@@ -463,7 +472,7 @@ func moveItem(ctx context.Context, from, to, dst, style string) (usedRename bool
 	}
 
 	// Cross-device: fall back to copy -> verify -> delete source.
-	if err := file.CopyDir(ctx, from, to, style); err != nil {
+	if err := file.CopyDirContents(ctx, from, dst, style); err != nil {
 		if ctx.Err() != nil {
 			// Cancelled mid-copy. dst did not exist before this attempt (the
 			// caller only reaches this cross-device branch when there was no
@@ -525,6 +534,65 @@ func replaceConflict(dst string, doOp func() error) (parkedPath string, err erro
 	}
 	os.RemoveAll(tmp)
 	return "", nil
+}
+
+// maxRenameCandidateAttempts bounds resolveRenameTarget's TOCTOU-guard retry
+// loop. Pathological external churn that keeps re-occupying every
+// freshly-picked candidate name is not something worth retrying forever;
+// past this many attempts we give up and let the caller skip the item
+// rather than spin indefinitely. A var (not a const) so tests can shrink it
+// instead of having to create hundreds of files to exercise exhaustion.
+var maxRenameCandidateAttempts = 1000
+
+// afterRenameCandidateScan is a test seam, mirroring renameFn above: it runs
+// after file.GetNoDuplicateFileName picks a candidate but before the final
+// existence re-check below, letting tests deterministically simulate the
+// probe-to-execution race (something else claiming the exact candidate name
+// in that window) instead of depending on real goroutine-scheduling luck.
+// A no-op in production.
+var afterRenameCandidateScan = func(candidate string) {}
+
+// resolveRenameTarget implements the "rename" (keep-both) conflict style:
+// it picks a destination path that does not collide with anything already
+// on disk, using file.GetNoDuplicateFileName's existing "name(n).ext"
+// numbering (e.g. "report.docx" -> "report(1).docx", or "(2)", "(3)", ...
+// skipping past whichever numbers are already taken — this is the same
+// convention the 2026-07 recovery-link flow already produces, so this
+// keeps naming consistent across the codebase). It works identically for
+// files and directories: file.Exists (which GetNoDuplicateFileName's loop
+// is built on) is a plain os.Stat check with no type distinction, and
+// splitting on a directory's last path segment for a "suffix" is harmless
+// when that segment happens to contain no dot.
+//
+// GetNoDuplicateFileName itself only guarantees the name it returns was
+// free at the instant it scanned — between that scan and the caller acting
+// on the result, something else could claim the same name. This function
+// closes that race down (it cannot eliminate it — no rename-based approach
+// can without abandoning the "reuse the R1 fast path" requirement) by
+// re-verifying the candidate with a fresh existence check immediately
+// before handing it back, and retrying with a freshly recomputed candidate
+// — always rescanning from the ORIGINAL dst, never from the stale
+// candidate, so GetNoDuplicateFileName's stateless scan naturally skips
+// past whatever just got claimed and lands on the next actually-free name —
+// if the race is lost. This leaves the same residual check-then-act gap
+// between "verified free" and "caller's rename/copy call" that the rest of
+// FileOperate's conflict handling already carries (e.g. the no-conflict
+// fast path's CheckNotExist(dst) followed later by the actual move/copy);
+// it never widens that gap, and it never overwrites — if every attempt
+// loses the race, the caller gets an error instead of a silent clobber.
+func resolveRenameTarget(dst string) (string, error) {
+	for i := 0; i < maxRenameCandidateAttempts; i++ {
+		candidate := file.GetNoDuplicateFileName(dst)
+		afterRenameCandidateScan(candidate)
+		if file.CheckNotExist(candidate) {
+			return candidate, nil
+		}
+		// Raced: something claimed `candidate` between the scan inside
+		// GetNoDuplicateFileName and the check above. Loop and let a fresh
+		// call (from the original dst, not the stale candidate) rescan and
+		// skip past it.
+	}
+	return "", fmt.Errorf("could not find a non-conflicting rename target for %q after %d attempts", dst, maxRenameCandidateAttempts)
 }
 
 func FileOperate(k string) {
@@ -605,7 +673,7 @@ itemsLoop:
 					var usedRename bool
 					parkedPath, replaceErr := replaceConflict(dst, func() error {
 						var opErr error
-						usedRename, opErr = moveItem(ctx, v.From, temp.To, dst, temp.Style)
+						usedRename, opErr = moveItem(ctx, v.From, dst, temp.Style)
 						return opErr
 					})
 					if replaceErr != nil {
@@ -631,6 +699,37 @@ itemsLoop:
 					}
 					createdPaths = append(createdPaths, dst)
 					continue
+				case "rename":
+					// Keep-both: land at a de-conflicted sibling name instead
+					// of touching the existing dst at all.
+					renameDst, resolveErr := resolveRenameTarget(dst)
+					if resolveErr != nil {
+						logger.Error("move: could not resolve a non-conflicting rename target, skipping item",
+							zap.String("from", v.From), zap.String("dst", dst), zap.Error(resolveErr))
+						continue
+					}
+					usedRename, err := moveItem(ctx, v.From, renameDst, temp.Style)
+					if err != nil {
+						logger.Error("move: rename (keep-both) failed", zap.String("from", v.From), zap.String("dst", renameDst), zap.Error(err))
+						// moveItem already removed any half-written renameDst
+						// if this failure was caused by cancellation (see
+						// moveItem) — renameDst is a freshly-resolved,
+						// previously-nonexistent path, same shape as the
+						// no-conflict fast path below.
+						if ctx.Err() != nil {
+							cancelled = true
+							break itemsLoop
+						}
+						continue
+					}
+					if usedRename {
+						temp.Item[i].Finished = true
+						temp.Item[i].ProcessedSize = v.Size
+					}
+					createdPaths = append(createdPaths, renameDst)
+					logger.Info("move: conflict resolved via rename (keep-both)",
+						zap.String("from", v.From), zap.String("original_dst", dst), zap.String("final_dst", renameDst))
+					continue
 				default:
 					// Conservative default: an unknown/empty Style must never
 					// re-introduce a deleting behavior. Treat exactly like skip.
@@ -641,7 +740,7 @@ itemsLoop:
 				}
 			}
 
-			usedRename, err := moveItem(ctx, v.From, temp.To, dst, temp.Style)
+			usedRename, err := moveItem(ctx, v.From, dst, temp.Style)
 			if err != nil {
 				logger.Error("move: failed", zap.String("from", v.From), zap.String("dst", dst), zap.Error(err))
 				// moveItem already removed any half-written dst if this
@@ -686,6 +785,36 @@ itemsLoop:
 						continue
 					}
 					createdPaths = append(createdPaths, dst)
+					continue
+				case "rename":
+					// Keep-both: land at a de-conflicted sibling name instead
+					// of touching the existing dst at all. file.CopyDirContents
+					// (not file.CopyDir) is used because it copies to the
+					// exact path given, rather than re-deriving the target
+					// from temp.To + v.From's basename — which would put the
+					// copy right back at the conflicting dst.
+					renameDst, resolveErr := resolveRenameTarget(dst)
+					if resolveErr != nil {
+						logger.Error("copy: could not resolve a non-conflicting rename target, skipping item",
+							zap.String("from", v.From), zap.String("dst", dst), zap.Error(resolveErr))
+						continue
+					}
+					if err := file.CopyDirContents(ctx, v.From, renameDst, temp.Style); err != nil {
+						logger.Error("copy: rename (keep-both) failed", zap.String("from", v.From), zap.String("dst", renameDst), zap.Error(err))
+						if ctx.Err() != nil {
+							// renameDst is a freshly-resolved, previously-
+							// nonexistent path — whatever got written there
+							// is wholly this attempt's own fragment, same as
+							// the no-conflict fast path below.
+							os.RemoveAll(renameDst)
+							cancelled = true
+							break itemsLoop
+						}
+						continue
+					}
+					createdPaths = append(createdPaths, renameDst)
+					logger.Info("copy: conflict resolved via rename (keep-both)",
+						zap.String("from", v.From), zap.String("original_dst", dst), zap.String("final_dst", renameDst))
 					continue
 				default:
 					logger.Info("copy: unrecognized conflict style, treating as skip",
