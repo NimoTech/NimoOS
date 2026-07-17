@@ -266,13 +266,23 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 		}
 	}()
 
-	// 进度:节流更新 offset(每次事件即更新 offset 与 expires;tusd 已按 chunk 粒度发,足够稀疏)。
+	// 进度:双节流写库,避免 7000 文件汇总后数万次小 UPDATE 拖慢上传。
+	// 节流间隔均为 5s,与两个下游超时阈值相比都留有充分裕量,不影响判定:
+	//   - UpdateOffset 同时续 expires_at(空闲超时阈值 6h = 21600s),5s 节流对它几乎无感知。
+	//   - TouchProgress 供批次超时判定用(阈值 120s),5s 节流仍远小于该阈值,不会误判 interrupted。
 	go func() {
+		offsetThrottle := upload.NewTouchThrottle(5)
+		progressThrottle := upload.NewTouchThrottle(5)
 		for ev := range tusH.UploadProgress {
-			_ = store.UpdateOffset(ev.Upload.ID, ev.Upload.Offset,
-				time.Now().Unix()+common.UploadIdleTimeoutSeconds)
+			now := time.Now().Unix()
+			if offsetThrottle.Allow(ev.Upload.ID, now) {
+				_ = store.UpdateOffset(ev.Upload.ID, ev.Upload.Offset,
+					now+common.UploadIdleTimeoutSeconds)
+			}
 			if bid := ev.Upload.MetaData["batch_id"]; bid != "" {
-				_ = batches.TouchProgress(bid, time.Now().Unix())
+				if progressThrottle.Allow(bid, now) {
+					_ = batches.TouchProgress(bid, now)
+				}
 			}
 		}
 	}()
