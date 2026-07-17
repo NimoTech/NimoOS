@@ -23,12 +23,15 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/tidwall/gjson"
 
+	"github.com/NimoTech/NimoOS/pkg/config"
+	"github.com/NimoTech/NimoOS/pkg/sqlite"
 	"github.com/NimoTech/NimoOS/pkg/utils"
 	"github.com/NimoTech/NimoOS/pkg/utils/common_err"
 	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/NimoTech/NimoOS/service"
-	"github.com/NimoTech/NimoOS/service/pathlock"
 	model2 "github.com/NimoTech/NimoOS/service/model"
+	"github.com/NimoTech/NimoOS/service/pathlock"
+	uploadsvc "github.com/NimoTech/NimoOS/service/upload"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -75,7 +78,17 @@ var (
 	}
 	conn *websocket.Conn
 	err  error
+
+	// uploadBatchStore 惰性初始化:复用全局 gorm 单例(与 route/v2.go 的构造同源)。
+	uploadBatchStore *uploadsvc.BatchStore
 )
+
+func getUploadBatchStore() *uploadsvc.BatchStore {
+	if uploadBatchStore == nil {
+		uploadBatchStore = uploadsvc.NewBatchStore(sqlite.GetDb(config.AppInfo.DBPath + "/db"))
+	}
+	return uploadBatchStore
+}
 
 // checkPathAccess returns an error response if the authenticated user is not
 // allowed to access the given path. Returns nil if access is permitted.
@@ -84,10 +97,10 @@ var (
 func checkPathAccess(ctx echo.Context, path string) error {
 	role := ctx.Request().Header.Get("user_role")
 	userID := ctx.Request().Header.Get("user_id")
-	
-	logger.Info("Checking path access", 
-		zap.String("path", path), 
-		zap.String("userID", userID), 
+
+	logger.Info("Checking path access",
+		zap.String("path", path),
+		zap.String("userID", userID),
 		zap.String("role", role),
 		zap.String("remoteIP", ctx.RealIP()))
 
@@ -101,18 +114,18 @@ func checkPathAccess(ctx echo.Context, path string) error {
 	// Other admins (like admin1) must still follow explicit folder grants for security isolation.
 	isSuperAdmin := userID == "1"
 	cleanPath := filepath.Clean(path)
- 
+
 	// Fast path: Super-admin gets everything.
 	if isSuperAdmin {
 		return nil
 	}
- 
+
 	// 3. 基本放行规则检测。
 	// Base safety check (empty for users now that prefixes are removed).
 	if utils.IsPathAllowed(cleanPath, false) {
 		return nil
 	}
- 
+
 	// 4. 显式文件夹授权校验。
 	// Slow path: check whether the user has an explicit folder grant.
 	if userID != "" {
@@ -388,6 +401,23 @@ func DirPath(ctx echo.Context) error {
 			shareEx["id"] = v
 			ex["share"] = shareEx
 			ex["mounted"] = false
+			info[i].Extensions = ex
+		}
+	}
+	// 上传中断角标:凡有 interrupted 批次的缺失文件落在某子条目路径下,该条目
+	// 注入 extensions.upload,前端据此叠加「裂开」角标。查询失败只降级不报错——
+	// 角标是提示性信息,不能拖垮列目录主流程。
+	if broken, berr := getUploadBatchStore().BrokenChildren(req.Path); berr == nil && len(broken) > 0 {
+		for i := (req.Index - 1) * req.Size; i < forEnd; i++ {
+			bid, ok := broken[info[i].Name]
+			if !ok {
+				continue
+			}
+			ex := info[i].Extensions
+			if ex == nil {
+				ex = make(map[string]interface{})
+			}
+			ex["upload"] = map[string]interface{}{"broken": true, "batchId": bid}
 			info[i].Extensions = ex
 		}
 	}

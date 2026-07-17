@@ -65,3 +65,14 @@ func (s *TaskStore) SetFailed(id, errMsg string, lastErrorAt, expiresAt int64) e
 func (s *TaskStore) Delete(id string) error {
 	return s.db.Where("id = ?", id).Delete(&upload.UploadTask{}).Error
 }
+
+// ListUnfinishedByBatch 返回某批次尚未完成的任务(uploading/paused/failed),
+// 供批次中断时统一终止并清 staging。
+func (s *TaskStore) ListUnfinishedByBatch(batchID string) ([]upload.UploadTask, error) {
+	var ts []upload.UploadTask
+	err := s.db.
+		Where("batch_id = ? AND status IN ?", batchID,
+			[]string{upload.UploadStatusUploading, upload.UploadStatusPaused, upload.UploadStatusFailed}).
+		Find(&ts).Error
+	return ts, err
+}
