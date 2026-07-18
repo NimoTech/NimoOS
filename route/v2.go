@@ -151,6 +151,10 @@ func InitV2Router() http.Handler {
 				if p == V2APIPath+"/file/uploads" || strings.HasPrefix(p, V2APIPath+"/file/uploads/") {
 					return true
 				}
+				// upload-batches 批次对账端点不在 OpenAPI 规格里，跳过校验。
+				if p == V2APIPath+"/file/upload-batches" || strings.HasPrefix(p, V2APIPath+"/file/upload-batches/") {
+					return true
+				}
 			}
 			return false
 		},
@@ -179,8 +183,10 @@ func InitV2Router() http.Handler {
 	// 构造上传任务 store(复用全局 gorm 句柄)并注入路由层。
 	uploadStore := upload.NewTaskStore(sqlite.GetDb(config.AppInfo.DBPath + "/db"))
 	v2Route.SetTaskStore(uploadStore)
+	uploadBatches := upload.NewBatchStore(sqlite.GetDb(config.AppInfo.DBPath + "/db"))
+	v2Route.SetBatchStore(uploadBatches)
 
-	if tusH, terr := v2Route.NewFileTUSHandler(uploadStore); terr != nil {
+	if tusH, terr := v2Route.NewFileTUSHandler(uploadStore, uploadBatches); terr != nil {
 		logger.Error("Files tus handler init failed", zap.Error(terr))
 	} else {
 		e.Any(V2APIPath+"/file/upload-tus", echo.WrapHandler(tusH))
@@ -193,6 +199,12 @@ func InitV2Router() http.Handler {
 	e.GET(V2APIPath+"/file/uploads", v2Route.ListUploads)
 	e.GET(V2APIPath+"/file/uploads/:id", v2Route.GetUpload)
 	e.POST(V2APIPath+"/file/uploads/:id/cancel", v2Route.CancelUpload)
+
+	// 上传批次对账:创建 / 清单 / 中断信号 / 放弃。
+	e.POST(V2APIPath+"/file/upload-batches", v2Route.CreateUploadBatch)
+	e.GET(V2APIPath+"/file/upload-batches/:id", v2Route.GetUploadBatch)
+	e.POST(V2APIPath+"/file/upload-batches/:id/interrupt", v2Route.InterruptUploadBatch)
+	e.POST(V2APIPath+"/file/upload-batches/:id/abandon", v2Route.AbandonUploadBatch)
 
 	e.Any("/v2/nimoos/testecho", func(c echo.Context) error {
 		return c.String(200, "echo works at "+c.Request().URL.Path)
