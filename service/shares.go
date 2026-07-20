@@ -12,6 +12,7 @@ package service
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/NimoTech/NimoOS-Common/utils/command"
 	"github.com/NimoTech/NimoOS/pkg/config"
@@ -36,8 +37,28 @@ type sharesStruct struct {
 	db *gorm.DB
 }
 
+// sharePathScope 把「清理某路径上/下所有分享」的匹配范围规范化为
+// (精确路径, 子树 LIKE 模式):尾斜杠归一;LIKE 通配符(\ % _)转义,防止
+// 路径里出现通配符时误匹配;子树模式带 "/" 边界——旧实现裸 `path+"%"` 会在
+// 删 /a/b 时误删 /a/bc 上的分享。
+func sharePathScope(path string) (exact string, subtreePattern string) {
+	exact = strings.TrimRight(path, "/")
+	if exact == "" {
+		exact = "/"
+	}
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(exact)
+	if exact == "/" {
+		return exact, "/%"
+	}
+	return exact, esc + "/%"
+}
+
+// DeleteShareByPath 删除挂在 path 本身及其子树上的全部分享记录并重写 smb
+// 配置。供删除文件夹的链路调用:目录没了,分享再留着就是「已共享」Tab 里
+// 永远打不开的悬挂项。
 func (s *sharesStruct) DeleteShareByPath(path string) {
-	s.db.Where("path LIKE ?", path+"%").Delete(&model.SharesDBModel{})
+	exact, subtree := sharePathScope(path)
+	s.db.Where(`path = ? OR path LIKE ? ESCAPE '\'`, exact, subtree).Delete(&model.SharesDBModel{})
 	s.UpdateConfigFile()
 }
 

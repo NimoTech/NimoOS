@@ -59,7 +59,7 @@ func (fakeRepository) Gateway() external.ManagementService          { return nil
 func (fakeRepository) Health() service.HealthService                { return nil }
 func (fakeRepository) Notify() service.NotifyServer                 { return nil }
 func (fakeRepository) Rely() service.RelyService                    { return nil }
-func (fakeRepository) Shares() service.SharesService                { return nil }
+func (fakeRepository) Shares() service.SharesService                { return fakeSharesService{} }
 func (fakeRepository) System() service.SystemService                { return nil }
 func (fakeRepository) Storage() service.StorageService              { return nil }
 func (fakeRepository) MessageBus() *message_bus.ClientWithResponses { return nil }
@@ -249,5 +249,48 @@ func TestDeleteFileHandlerMangledNameRescue(t *testing.T) {
 	}
 	if _, err := os.Stat(realPath); !os.IsNotExist(err) {
 		t.Fatalf("expected real directory to be deleted, stat err=%v", err)
+	}
+}
+
+// fakeSharesService 记录 DeleteShareByPath 调用,供「删目录须连带清理分享」
+// 的 handler 级断言;其余方法为满足接口的空实现。
+type fakeSharesService struct{}
+
+var recordedShareCleanups []string
+
+func (fakeSharesService) GetSharesList() []model2.SharesDBModel         { return nil }
+func (fakeSharesService) GetSharesByPath(string) []model2.SharesDBModel { return nil }
+func (fakeSharesService) GetSharesByName(string) []model2.SharesDBModel { return nil }
+func (fakeSharesService) CreateShare(model2.SharesDBModel)              {}
+func (fakeSharesService) DeleteShare(string)                            {}
+func (fakeSharesService) UpdateConfigFile()                             {}
+func (fakeSharesService) InitSambaConfig()                              {}
+func (fakeSharesService) DeleteShareByPath(p string) {
+	recordedShareCleanups = append(recordedShareCleanups, p)
+}
+
+// 删除成功的目录必须触发分享清理(带被删路径),否则「已共享」Tab 留悬挂项。
+func TestDeleteFileCleansSharesUnderDeletedPath(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "上传和下载")
+	if err := os.MkdirAll(filepath.Join(victim, "1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	recordedShareCleanups = nil
+	body, _ := json.Marshal([]string{victim})
+	req := httptest.NewRequest(http.MethodDelete, "/v1/batch", bytes.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+
+	if err := DeleteFile(c); err != nil {
+		t.Fatal(err)
+	}
+	if len(recordedShareCleanups) != 1 || recordedShareCleanups[0] != victim {
+		t.Fatalf("share cleanup calls = %v, want [%s]", recordedShareCleanups, victim)
+	}
+	if _, err := os.Stat(victim); !os.IsNotExist(err) {
+		t.Fatalf("victim dir still exists")
 	}
 }

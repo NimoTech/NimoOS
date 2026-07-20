@@ -1010,6 +1010,13 @@ func DeleteFile(ctx echo.Context) error {
 		if err != nil {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
 		}
+		// 目录删掉后,挂在它自身/子树上的 Samba 分享记录就成了「已共享」Tab 里
+		// 永远打不开的悬挂项(实测:删父目录后其下已分享的子文件夹仍列在 Tab 里)。
+		// 同步清掉并重写 smb 配置;DeleteShareByPath 自带 "/" 边界,不伤同前缀
+		// 兄弟目录的分享。
+		if shares := service.MyService.Shares(); shares != nil {
+			shares.DeleteShareByPath(v)
+		}
 	}
 
 	// Publish the deleted media paths so Photos can clean up its index/CLIP
