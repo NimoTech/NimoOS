@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	url2 "net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -249,9 +248,6 @@ func GetDownloadFile(ctx echo.Context) error {
 			})
 		}
 	}
-	ctx.Request().Header.Add("Content-Type", "application/octet-stream")
-	ctx.Request().Header.Add("Content-Transfer-Encoding", "binary")
-	ctx.Request().Header.Add("Cache-Control", "no-cache")
 	// handles only single files not folders and multiple files
 	if len(list) == 1 {
 
@@ -271,18 +267,29 @@ func GetDownloadFile(ctx echo.Context) error {
 
 			// 获取文件的名称
 			fileName := path.Base(filePath)
-			ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
+			ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 			ctx.File(filePath)
+			return nil
 		}
 	}
 
-	extension, ar, err := file.GetCompressionAlgorithm(t)
+	_, ar, err := file.GetCompressionAlgorithm(t)
 	if err != nil {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{
 			Success: common_err.INVALID_PARAMS,
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+
+	// 这三个头只对 zip 打包分支生效;单文件分支上面已经 return,
+	// 走到这里必然是 zip 打包响应,ctx.File 自带的 Content-Type 不受影响。
+	ctx.Response().Header().Set("Content-Type", "application/zip")
+	ctx.Response().Header().Set("Content-Transfer-Encoding", "binary")
+	ctx.Response().Header().Set("Cache-Control", "no-cache")
+
+	name := downloadZipName(list)
+	// 必须在 ar.Create(写响应体) 之前设置,写入响应体后响应头会被锁死。
+	ctx.Response().Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
 
 	err = ar.Create(ctx.Response().Writer)
 	if err != nil {
@@ -295,11 +302,6 @@ func GetDownloadFile(ctx echo.Context) error {
 	defer ar.Close()
 	commonDir := file.CommonPrefix(filepath.Separator, list...)
 
-	currentPath := filepath.Base(commonDir)
-
-	name := "_" + currentPath
-	name += extension
-	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
 	for _, fname := range list {
 		err = file.AddFile(ar, fname, commonDir)
 		if err != nil {
@@ -307,6 +309,23 @@ func GetDownloadFile(ctx echo.Context) error {
 		}
 	}
 	return nil
+}
+
+// downloadZipName 决定批量下载 zip 的对外文件名:
+// 单个文件夹 → 文件夹名.zip;多选 → 公共父目录名.zip(群晖式:在 photos 目录
+// 选 5 个文件 → photos.zip);公共父目录是根("/" 或空)时兜底 NimoOS.zip。
+func downloadZipName(list []string) string {
+	var base string
+	if len(list) == 1 {
+		base = filepath.Base(path.Clean(list[0]))
+	} else {
+		commonDir := file.CommonPrefix(filepath.Separator, list...)
+		base = filepath.Base(commonDir)
+	}
+	if base == "/" || base == "." || base == "" {
+		base = "NimoOS"
+	}
+	return base + ".zip"
 }
 
 func GetDownloadSingleFile(ctx echo.Context) error {
@@ -322,7 +341,7 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 	}
 	fileName := path.Base(filePath)
 	// c.Header("Content-Disposition", "inline")
-	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
+	ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 
 	fi, err := os.Open(filePath)
 	if err != nil {
