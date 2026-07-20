@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/model"
@@ -895,6 +896,64 @@ var deletedMediaExts = map[string]bool{
 	".m4v": true, ".3gp": true,
 }
 
+// jsonMangledName 复现 encoding/json 对非法 UTF-8 的处理:每个非法字节替换为
+// U+FFFD,合法多字节 rune 原样保留。用于把磁盘上的真实目录名映射到「前端经
+// 列表接口看到的名字」,以便删除时反向匹配。
+//
+// 不用 strings.ToValidUTF8——它把连续非法字节整段换成一个 U+FFFD,与 JSON 的
+// 逐字节替换语义不一致(encoding/json 的字符串编码器也是按 utf8.DecodeRuneInString
+// 逐 rune 前进,非法字节时该函数返回 (RuneError, 1),即每个非法字节各自产出一个
+// U+FFFD,这里的循环与之完全对应)。
+func jsonMangledName(name string) string {
+	if utf8.ValidString(name) {
+		return name
+	}
+	var b strings.Builder
+	for i := 0; i < len(name); {
+		r, size := utf8.DecodeRuneInString(name[i:])
+		b.WriteRune(r) // 非法字节时 DecodeRuneInString 返回 (RuneError, 1),恰好逐字节替换
+		i += size
+	}
+	return b.String()
+}
+
+// resolveDeletePath 把客户端送来的删除路径解析为磁盘真实路径。
+// 路径存在 → 原样返回。不存在(Lstat ENOENT)→ 在父目录中找「JSON 整形后
+// 恰好等于请求名」的真实条目:唯一命中返回真实路径;零命中返回 os.ErrNotExist;
+// 多个命中返回歧义错误(绝不猜删)。其余 Lstat 错误原样返回。
+func resolveDeletePath(p string) (string, error) {
+	if _, err := os.Lstat(p); err == nil {
+		return p, nil
+	} else if !os.IsNotExist(err) {
+		return p, err
+	}
+
+	dir := filepath.Dir(p)
+	base := filepath.Base(p)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// 父目录本身都读不到,没有救援的余地。
+		return p, os.ErrNotExist
+	}
+
+	var matches []string
+	for _, entry := range entries {
+		if jsonMangledName(entry.Name()) == base {
+			matches = append(matches, filepath.Join(dir, entry.Name()))
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return p, os.ErrNotExist
+	case 1:
+		return matches[0], nil
+	default:
+		return p, fmt.Errorf("multiple entries match the requested name %q; delete it via terminal", base)
+	}
+}
+
 func DeleteFile(ctx echo.Context) error {
 	paths := []string{}
 	ctx.Bind(&paths)
@@ -911,6 +970,30 @@ func DeleteFile(ctx echo.Context) error {
 		if isAncestorOfSystemPath(p) {
 			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("Folder '%s' contains a system-critical directory and cannot be deleted", filepath.Base(p))})
 		}
+	}
+
+	// 把每个请求路径解析为磁盘真实路径。不存在时消灭"假成功":直接返回
+	// FILE_DOES_NOT_EXIST,而不是让后面的 os.RemoveAll 对着一个不存在的路径
+	// 悄悄返回 nil。命中救援匹配的真实路径与请求路径可能不同名,需要重新过一遍
+	// 保护名/系统路径祖先检查(checkPathAccess 基于父目录路径语义等价,不必重跑)。
+	for i, p := range paths {
+		resolved, err := resolveDeletePath(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DOES_NOT_EXIST, Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST)})
+			}
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+		}
+		if resolved != p {
+			logger.Info("delete path rescued via mangled-name match", zap.String("requested", p), zap.String("resolved", resolved))
+			if isProtectedName(filepath.Base(resolved)) {
+				return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(resolved))})
+			}
+			if isAncestorOfSystemPath(resolved) {
+				return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("Folder '%s' contains a system-critical directory and cannot be deleted", filepath.Base(resolved))})
+			}
+		}
+		paths[i] = resolved
 	}
 
 	for _, v := range paths {
