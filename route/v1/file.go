@@ -34,8 +34,6 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-
-	"github.com/h2non/filetype"
 )
 
 type ListReq struct {
@@ -273,7 +271,7 @@ func GetDownloadFile(ctx echo.Context) error {
 		}
 	}
 
-	_, ar, err := file.GetCompressionAlgorithm(t)
+	extension, ar, err := file.GetCompressionAlgorithm(t)
 	if err != nil {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{
 			Success: common_err.INVALID_PARAMS,
@@ -281,13 +279,17 @@ func GetDownloadFile(ctx echo.Context) error {
 		})
 	}
 
-	// 这三个头只对 zip 打包分支生效;单文件分支上面已经 return,
-	// 走到这里必然是 zip 打包响应,ctx.File 自带的 Content-Type 不受影响。
-	ctx.Response().Header().Set("Content-Type", "application/zip")
+	// 这三个头只对打包分支生效;单文件分支上面已经 return,
+	// 走到这里必然是归档打包响应,ctx.File 自带的 Content-Type 不受影响。
+	// Content-Type 只对 zip 明确声明,其余格式(tar/targz…,前端当前不传)交给
+	// net/http 首写时的内容嗅探,避免张冠李戴。
+	if extension == ".zip" {
+		ctx.Response().Header().Set("Content-Type", "application/zip")
+	}
 	ctx.Response().Header().Set("Content-Transfer-Encoding", "binary")
 	ctx.Response().Header().Set("Cache-Control", "no-cache")
 
-	name := downloadZipName(list)
+	name := downloadArchiveName(list, extension)
 	// 必须在 ar.Create(写响应体) 之前设置,写入响应体后响应头会被锁死。
 	ctx.Response().Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
 
@@ -311,10 +313,11 @@ func GetDownloadFile(ctx echo.Context) error {
 	return nil
 }
 
-// downloadZipName 决定批量下载 zip 的对外文件名:
-// 单个文件夹 → 文件夹名.zip;多选 → 公共父目录名.zip(群晖式:在 photos 目录
-// 选 5 个文件 → photos.zip);公共父目录是根("/" 或空)时兜底 NimoOS.zip。
-func downloadZipName(list []string) string {
+// downloadArchiveName 决定批量下载归档的对外文件名:
+// 单个文件夹 → 文件夹名+扩展名;多选 → 公共父目录名+扩展名(群晖式:在 photos
+// 目录选 5 个文件 → photos.zip);公共父目录是根("/" 或空)时兜底 NimoOS。
+// extension 来自 GetCompressionAlgorithm(如 ".zip"/".tar.gz"),跟随 format 参数。
+func downloadArchiveName(list []string, extension string) string {
 	var base string
 	if len(list) == 1 {
 		base = filepath.Base(path.Clean(list[0]))
@@ -325,7 +328,10 @@ func downloadZipName(list []string) string {
 	if base == "/" || base == "." || base == "" {
 		base = "NimoOS"
 	}
-	return base + ".zip"
+	if extension == "" {
+		extension = ".zip"
+	}
+	return base + extension
 }
 
 func GetDownloadSingleFile(ctx echo.Context) error {
@@ -345,37 +351,24 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 
 	fi, err := os.Open(filePath)
 	if err != nil {
-		panic(err)
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
+			Success: common_err.FILE_DOES_NOT_EXIST,
+			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
+		})
 	}
-
-	// We only have to pass the file header = first 261 bytes
-	buffer := make([]byte, 261)
-
-	_, _ = fi.Read(buffer)
-
-	kind, _ := filetype.Match(buffer)
-	if kind != filetype.Unknown {
-		ctx.Request().Header.Add("Content-Type", kind.MIME.Value)
-	}
-	node, err := os.Stat(filePath)
-	// Set the Last-Modified header to the timestamp
-	ctx.Request().Header.Add("Last-Modified", node.ModTime().UTC().Format(http.TimeFormat))
-
-	knownSize := node.Size() >= 0
-	if knownSize {
-		ctx.Request().Header.Add("Content-Length", strconv.FormatInt(node.Size(), 10))
-	}
-	http.ServeContent(ctx.Response().Writer, ctx.Request(), fileName, node.ModTime(), fi)
 	defer fi.Close()
-	fileTmp, err := os.Open(filePath)
+
+	node, err := os.Stat(filePath)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
 			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
 		})
 	}
-	defer fileTmp.Close()
-
+	// Content-Type/Last-Modified/Content-Length 由 ServeContent 自行设置
+	// (按文件名扩展/内容嗅探 + modtime + seeker 长度)。此前这里手工把这三个头
+	// 加在 ctx.Request().Header 上——写错了对象,纯空操作,已删。
+	http.ServeContent(ctx.Response().Writer, ctx.Request(), fileName, node.ModTime(), fi)
 	return nil
 }
 

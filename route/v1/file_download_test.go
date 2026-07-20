@@ -56,9 +56,9 @@ func TestDownloadZipName(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := downloadZipName(c.list)
+			got := downloadArchiveName(c.list, ".zip")
 			if got != c.want {
-				t.Fatalf("downloadZipName(%v) = %q, want %q", c.list, got, c.want)
+				t.Fatalf("downloadArchiveName(%v, \".zip\") = %q, want %q", c.list, got, c.want)
 			}
 		})
 	}
@@ -111,5 +111,15 @@ func TestGetDownloadFileZipContentDisposition(t *testing.T) {
 
 	if rec.Body.Len() == 0 {
 		t.Fatalf("expected non-empty zip body")
+	}
+}
+
+func TestDownloadArchiveNameFollowsFormatExtension(t *testing.T) {
+	if got := downloadArchiveName([]string{"/DATA/photos"}, ".tar.gz"); got != "photos.tar.gz" {
+		t.Fatalf("got %q, want photos.tar.gz", got)
+	}
+	// 空扩展名兜底 .zip(GetCompressionAlgorithm 对 "" 也返回 .zip,双保险)
+	if got := downloadArchiveName([]string{"/DATA/photos"}, ""); got != "photos.zip" {
+		t.Fatalf("got %q, want photos.zip", got)
 	}
 }
