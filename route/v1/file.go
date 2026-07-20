@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -1194,7 +1195,24 @@ type Client struct {
 	Name         service.Name `json:"name"`
 	RtcSupported bool         `json:"rtcSupported"`
 	TimerId      int          `json:"timerId"`
-	LastBeat     time.Time    `json:"lastBeat"`
+	// mu 只保护 LastBeat：readPump（收到 pong/任意消息时）与 monitoring 的
+	// 心跳超时检查分属两个 goroutine，读写都要过锁。
+	mu       sync.Mutex
+	LastBeat time.Time `json:"lastBeat"`
+}
+
+// touchLastBeat 记录一次心跳/活动时间，供 monitoring 的超时检查读取。
+func (c *Client) touchLastBeat(now time.Time) {
+	c.mu.Lock()
+	c.LastBeat = now
+	c.mu.Unlock()
+}
+
+// snapshotLastBeat 读取当前心跳时间（加锁，避免与 touchLastBeat 数据竞争）。
+func (c *Client) snapshotLastBeat() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.LastBeat
 }
 
 type PeerModel struct {
@@ -1395,7 +1413,7 @@ func (c *Client) readPump() {
 			// c.handler.broadcast <- otherBy
 			break
 		} else if t.String() == "pong" {
-			c.LastBeat = time.Now()
+			c.touchLastBeat(time.Now())
 			continue
 		}
 		to := gjson.GetBytes(message, "to")
@@ -1418,7 +1436,29 @@ func (c *Client) readPump() {
 	}
 }
 
+// heartbeatTimeout 心跳假死判定阈值：ping 广播每 30s 一次，容忍 3 个周期
+// 没有回应（考虑到瞬时网络抖动），超过判定为假死（网线拔出/系统休眠等无
+// TCP FIN 的场景）。
+const heartbeatTimeout = 90 * time.Second
+
+// staleClientIDs 返回心跳超时的客户端：lastBeats 为 id→最后心跳时间，
+// now-lastBeat > timeout 判定假死。恰好等于 timeout 不算超时。
+func staleClientIDs(lastBeats map[string]time.Time, now time.Time, timeout time.Duration) []string {
+	var stale []string
+	for id, lastBeat := range lastBeats {
+		if now.Sub(lastBeat) > timeout {
+			stale = append(stale, id)
+		}
+	}
+	return stale
+}
+
 func (ch *CenterHandler) monitoring() {
+	// 与 ping 广播同周期（30s）巡检一次心跳超时的假死连接。ch.clients 只在
+	// monitoring 这个 goroutine 里被读写，因此心跳超时的踢出逻辑也放在这个
+	// select 循环里处理，不需要额外给 clients map 加锁。
+	staleTicker := time.NewTicker(30 * time.Second)
+	defer staleTicker.Stop()
 	for {
 		select {
 		// 注册，新用户连接过来会推进注册通道，这里接收推进来的用户指针
@@ -1434,6 +1474,37 @@ func (ch *CenterHandler) monitoring() {
 			for _, client := range ch.clients {
 				client.send <- message
 			}
+		case now := <-staleTicker.C:
+			ch.kickStaleClients(now)
+		}
+	}
+}
+
+// kickStaleClients 踢出心跳超时（假死）的 client：关闭其连接、从 clients
+// 集合中移除，并按现有「peer-left」的广播消息形态通知其余在线 peer（前端
+// Network.js 已在消费这个 type，断线时走的是同一条路径）。
+//
+// 注意：这里直接遍历 ch.clients 推送，而不是发去 ch.broadcast 通道——
+// kickStaleClients 本身就是在 monitoring 的 select 循环内被调用，
+// 若改成往 ch.broadcast 发送会因为没有其它 goroutine 接收而死锁。
+func (ch *CenterHandler) kickStaleClients(now time.Time) {
+	lastBeats := make(map[string]time.Time, len(ch.clients))
+	for id, c := range ch.clients {
+		lastBeats[id] = c.snapshotLastBeat()
+	}
+	for _, id := range staleClientIDs(lastBeats, now, heartbeatTimeout) {
+		c, ok := ch.clients[id]
+		if !ok {
+			continue
+		}
+		logger.Info("filesdrop: kicking stale peer (heartbeat timeout)",
+			zap.String("peerId", id),
+			zap.Duration("silence", now.Sub(lastBeats[id])))
+		c.conn.Close()
+		delete(ch.clients, id)
+		peerLeft := []byte(`{"type":"peer-left","peerId":"` + id + `"}`)
+		for _, other := range ch.clients {
+			other.send <- peerLeft
 		}
 	}
 }
