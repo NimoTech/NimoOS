@@ -526,6 +526,14 @@ func RenamePath(ctx echo.Context) error {
 	}
 
 	success, err := service.MyService.System().RenameFile(op, np)
+	if success == common_err.SUCCESS {
+		// 重命名/移动成功后,挂在 op 自身/子树上的分享记录 path 仍指旧位置,
+		// 会在「已共享」Tab 里变成永远打不开的悬挂项——正确语义是改写路径,
+		// 不是删除(与删除目录时的 DeleteShareByPath 对应)。
+		if shares := service.MyService.Shares(); shares != nil {
+			shares.RewriteSharePathPrefix(op, np)
+		}
+	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: success, Message: common_err.GetMsg(success), Data: err})
 }
 

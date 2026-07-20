@@ -633,6 +633,16 @@ func FileOperate(k string) {
 
 	createdPaths := make([]string, 0, len(temp.Item))
 
+	// movedPairs records (from, actual-landed-path) for every move item that
+	// truly landed on disk this run — used after the loop to keep any Samba
+	// share hanging off that item's old path from becoming a dead entry in
+	// the "Shared" tab. This deliberately mirrors createdPaths' append sites
+	// for the move branches (NOT copy: the source still exists there, so no
+	// share is left dangling) rather than reusing createdPaths itself,
+	// because the two diverge on the "rename" (keep-both) conflict style:
+	// the landed path there is renameDst, not dst.
+	var movedPairs [][2]string
+
 	// cancelled records whether cancellation actually prevented or
 	// interrupted work — set only at the specific break sites below, all
 	// of which are themselves gated on ctx.Err() != nil. It is
@@ -698,6 +708,7 @@ itemsLoop:
 						temp.Item[i].ProcessedSize = v.Size
 					}
 					createdPaths = append(createdPaths, dst)
+					movedPairs = append(movedPairs, [2]string{v.From, dst})
 					continue
 				case "rename":
 					// Keep-both: land at a de-conflicted sibling name instead
@@ -727,6 +738,7 @@ itemsLoop:
 						temp.Item[i].ProcessedSize = v.Size
 					}
 					createdPaths = append(createdPaths, renameDst)
+					movedPairs = append(movedPairs, [2]string{v.From, renameDst})
 					logger.Info("move: conflict resolved via rename (keep-both)",
 						zap.String("from", v.From), zap.String("original_dst", dst), zap.String("final_dst", renameDst))
 					continue
@@ -759,6 +771,7 @@ itemsLoop:
 				temp.Item[i].ProcessedSize = v.Size
 			}
 			createdPaths = append(createdPaths, dst)
+			movedPairs = append(movedPairs, [2]string{v.From, dst})
 
 		} else if temp.Type == "copy" {
 			dst := opDestPath(v.From, temp.To)
@@ -865,6 +878,21 @@ itemsLoop:
 
 	if len(createdPaths) > 0 {
 		go PublishMediaCreated(createdPaths)
+	}
+
+	// Keep any Samba share hanging off a moved item's OLD path from becoming
+	// a dead "Shared" tab entry: rewrite it to follow the item to its actual
+	// landed path. Done synchronously (unlike the PublishMediaCreated
+	// fire-and-forget above) and still before the deferred unlocks release —
+	// the data has already landed on disk by this point, so there is nothing
+	// left to race against.
+	for _, p := range movedPairs {
+		if MyService == nil {
+			continue
+		}
+		if shares := MyService.Shares(); shares != nil {
+			shares.RewriteSharePathPrefix(p[0], p[1])
+		}
 	}
 }
 

@@ -258,6 +258,10 @@ type fakeSharesService struct{}
 
 var recordedShareCleanups []string
 
+// recordedShareRewrites 记录 RewriteSharePathPrefix 的调用,供「重命名含分享
+// 目录的父目录 → 分享路径跟随改写」的 handler 级断言使用。
+var recordedShareRewrites [][2]string
+
 func (fakeSharesService) GetSharesList() []model2.SharesDBModel         { return nil }
 func (fakeSharesService) GetSharesByPath(string) []model2.SharesDBModel { return nil }
 func (fakeSharesService) GetSharesByName(string) []model2.SharesDBModel { return nil }
@@ -267,6 +271,10 @@ func (fakeSharesService) UpdateConfigFile()                             {}
 func (fakeSharesService) InitSambaConfig()                              {}
 func (fakeSharesService) DeleteShareByPath(p string) {
 	recordedShareCleanups = append(recordedShareCleanups, p)
+}
+func (fakeSharesService) RewriteSharePathPrefix(oldPath, newPath string) int {
+	recordedShareRewrites = append(recordedShareRewrites, [2]string{oldPath, newPath})
+	return 1
 }
 
 // 删除成功的目录必须触发分享清理(带被删路径),否则「已共享」Tab 留悬挂项。

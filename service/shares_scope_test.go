@@ -27,6 +27,34 @@ func TestSharePathScope(t *testing.T) {
 	}
 }
 
+// TestRewriteSharePath 锁定「移动/重命名含分享目录时改写分享路径」的纯函数
+// 语义:恰为 oldExact 本身整体替换为 newExact;在其子树内做前缀替换;不在
+// 范围内(含同前缀兄弟目录、祖先路径)原样返回。
+func TestRewriteSharePath(t *testing.T) {
+	cases := []struct {
+		name      string
+		sharePath string
+		oldExact  string
+		newExact  string
+		want      string
+	}{
+		{"恰为本身", "/a/b", "/a/b", "/x", "/x"},
+		{"子树内一级", "/a/b/c", "/a/b", "/x", "/x/c"},
+		{"子树内多级", "/a/b/c/d/e", "/a/b", "/x/y", "/x/y/c/d/e"},
+		{"范围外:同前缀兄弟", "/a/bc", "/a/b", "/x", "/a/bc"},
+		{"范围外:祖先", "/a", "/a/b", "/x", "/a"},
+		{"范围外:完全无关", "/z/q", "/a/b", "/x", "/z/q"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := rewriteSharePath(c.sharePath, c.oldExact, c.newExact)
+			if got != c.want {
+				t.Fatalf("rewriteSharePath(%q, %q, %q) = %q, want %q", c.sharePath, c.oldExact, c.newExact, got, c.want)
+			}
+		})
+	}
+}
+
 // 语义自证:子树模式 + "/" 边界的组合下,/a/bc 不应命中 /a/b 的清理范围。
 // (用 Go 侧等价前缀判断模拟 LIKE 语义;真实 SQL 由 DeleteShareByPath 拼接,
 // 模式串本身已在上面的用例中锁定。)

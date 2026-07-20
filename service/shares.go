@@ -31,6 +31,7 @@ type SharesService interface {
 	UpdateConfigFile()
 	InitSambaConfig()
 	DeleteShareByPath(path string)
+	RewriteSharePathPrefix(oldPath, newPath string) int
 }
 
 type sharesStruct struct {
@@ -60,6 +61,50 @@ func (s *sharesStruct) DeleteShareByPath(path string) {
 	exact, subtree := sharePathScope(path)
 	s.db.Where(`path = ? OR path LIKE ? ESCAPE '\'`, exact, subtree).Delete(&model.SharesDBModel{})
 	s.UpdateConfigFile()
+}
+
+// rewriteSharePath 把 sharePath 从 oldExact 子树映射到 newExact 子树:恰为
+// oldExact 本身 → newExact;在其子树内 → 前缀替换;不在范围内原样返回。
+// oldExact/newExact 须已做尾斜杠归一(调用方经 sharePathScope/TrimRight)。
+func rewriteSharePath(sharePath, oldExact, newExact string) string {
+	if sharePath == oldExact {
+		return newExact
+	}
+	if strings.HasPrefix(sharePath, oldExact+"/") {
+		return newExact + sharePath[len(oldExact):]
+	}
+	return sharePath
+}
+
+// RewriteSharePathPrefix 把挂在 oldPath 自身/子树上的分享记录改写到 newPath
+// 下,并同步更新 Name(smb 配置节名取自 basename)。返回改写条数;仅在确有
+// 改写时才重写 smb 配置(避免普通移动触发无谓的 smbd 重启)。供移动/重命名
+// 含分享(自身或子树)目录的链路调用:分享记录的 path 若仍指旧位置,会在
+// 「已共享」Tab 里成为永远打不开的悬挂项——正确语义是改写路径,不是删除。
+func (s *sharesStruct) RewriteSharePathPrefix(oldPath, newPath string) int {
+	oldExact, subtree := sharePathScope(oldPath)
+	newExact := strings.TrimRight(newPath, "/")
+
+	rows := []model2.SharesDBModel{}
+	s.db.Where(`path = ? OR path LIKE ? ESCAPE '\'`, oldExact, subtree).Find(&rows)
+
+	count := 0
+	for _, row := range rows {
+		newSharePath := rewriteSharePath(row.Path, oldExact, newExact)
+		if newSharePath == row.Path {
+			continue
+		}
+		s.db.Model(&model.SharesDBModel{}).Where("id = ?", row.ID).Updates(map[string]interface{}{
+			"path": newSharePath,
+			"name": filepath.Base(newSharePath),
+		})
+		count++
+	}
+
+	if count > 0 {
+		s.UpdateConfigFile()
+	}
+	return count
 }
 
 func (s *sharesStruct) GetSharesByName(name string) (shares []model2.SharesDBModel) {
