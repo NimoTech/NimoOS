@@ -995,11 +995,24 @@ func GetFileImage(ctx echo.Context) error {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
 	if t == "thumbnail" {
-		f, err := file.GetImage(path, 100, 0)
-		if err != nil {
-			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		// BF23: previously this branch wrote the (small) thumbnail bytes
+		// and then fell through — with no `return` — into the code below,
+		// which re-opened and wrote the *full original file* right after
+		// it. The response was thumbnail-bytes + full-original-bytes
+		// concatenated, which is why a 723KB photo came back as ~729KB
+		// instead of a real ~20-50KB thumbnail: it was never actually
+		// short-circuiting.
+		//
+		// Cache hit/miss + generation now lives in file.GetOrCreateThumbnailCached
+		// (disk cache under file.ThumbCacheDir, keyed by path+mtime+size,
+		// singleflight-guarded, with a short-TTL negative cache for
+		// formats/files that fail to decode e.g. HEIC).
+		if cachedPath, ok := file.GetOrCreateThumbnailCached(path); ok {
+			ctx.Response().Header().Set("Cache-Control", "public, max-age=86400")
+			return ctx.File(cachedPath)
 		}
-		ctx.Response().Writer.Write(f)
+		// Thumbnail generation failed (unsupported format such as HEIC, or
+		// a corrupt file) — fall back to serving the original below.
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -1010,6 +1023,7 @@ func GetFileImage(ctx echo.Context) error {
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 	}
+	ctx.Response().Header().Set("Cache-Control", "public, max-age=86400")
 	ctx.Response().Writer.Write(data)
 	return nil
 }
