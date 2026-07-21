@@ -89,6 +89,24 @@ func (s *BatchStore) MarkItemDone(batchID, relativePath string, now int64) error
 	})
 }
 
+// MarkItemDoneAcrossBatches 把 (targetPath, relativePath) 在所有 active/
+// interrupted 批次中的同名未完成项都记账(不限 batchID)。普通重传(新批次)
+// 补齐文件时,旧中断批次的对应项隐式销账,数量对齐即自动 completed、角标消失。
+func (s *BatchStore) MarkItemDoneAcrossBatches(targetPath, relativePath string, now int64) error {
+	var ids []string
+	if err := s.db.Model(&UploadBatch{}).
+		Where("target_path = ? AND status IN ?", targetPath, []string{BatchStatusActive, BatchStatusInterrupted}).
+		Pluck("id", &ids).Error; err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := s.MarkItemDone(id, relativePath, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // TouchProgress 记录批次仍有上传进度;interrupted 批次借此回 active(超时误判可逆)。
 func (s *BatchStore) TouchProgress(batchID string, now int64) error {
 	return s.db.Model(&UploadBatch{}).

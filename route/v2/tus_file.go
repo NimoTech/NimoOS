@@ -342,8 +342,16 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 				continue
 			}
 			_ = store.SetStatus(event.Upload.ID, commonUpload.UploadStatusCompleted, 0)
+			now := time.Now().Unix()
 			if bid := event.Upload.MetaData["batch_id"]; bid != "" {
-				_ = batches.MarkItemDone(bid, relativePath, time.Now().Unix())
+				_ = batches.MarkItemDone(bid, relativePath, now)
+			}
+			// 普通重传(无论有无 batch_id)隐式对账:同 targetPath 下其它
+			// active/interrupted 批次里同名未完成项一并销账,旧的裂开角标
+			// 因此自动消失,失败仅 log 不阻断主流程。
+			if err := batches.MarkItemDoneAcrossBatches(targetPath, relativePath, now); err != nil {
+				logger.Error("Files tus MarkItemDoneAcrossBatches failed",
+					zap.String("targetPath", targetPath), zap.String("relativePath", relativePath), zap.Error(err))
 			}
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
 			if !skipped {
