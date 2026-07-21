@@ -29,8 +29,51 @@ func setupTaskStore(t *testing.T) *upload.TaskStore {
 
 func stagingDirForTest() string {
 	d := filepath.Join(os.TempDir(), "nimoos-cancel-test")
-	cancelStagingDir = d
+	cancelStagingDirsFn = func() []string { return []string{d} }
 	return d
+}
+
+// A task routed to a per-volume staging dir (ID carries a volume prefix, see
+// tus_routing_store.go) must still get its staging file cleaned up on cancel:
+// cancelStagingDirsFn now returns every known staging dir, and cancel must try
+// them all rather than assuming a single legacy directory.
+func TestCancelUploadCleansAcrossMultipleStagingDirs(t *testing.T) {
+	s := setupTaskStore(t)
+	SetTaskStore(s)
+	id := "hexroot~subid2"
+	_ = s.Create(&commonUpload.UploadTask{ID: id, OwnerUserID: "1", Status: commonUpload.UploadStatusUploading})
+
+	legacyDir := filepath.Join(os.TempDir(), "nimoos-cancel-test-legacy")
+	volumeDir := filepath.Join(os.TempDir(), "nimoos-cancel-test-volume")
+	_ = os.MkdirAll(legacyDir, 0700)
+	_ = os.MkdirAll(volumeDir, 0700)
+	defer func() {
+		_ = os.RemoveAll(legacyDir)
+		_ = os.RemoveAll(volumeDir)
+	}()
+	cancelStagingDirsFn = func() []string { return []string{legacyDir, volumeDir} }
+	_ = os.WriteFile(filepath.Join(volumeDir, id), []byte("d"), 0600)
+	_ = os.WriteFile(filepath.Join(volumeDir, id+".info"), []byte("{}"), 0600)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/v2/nimoos/file/uploads/"+id+"/cancel", nil)
+	req.Header.Set("user_id", "1")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues(id)
+	if err := CancelUpload(c); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != 200 {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	if _, err := os.Stat(filepath.Join(volumeDir, id)); !os.IsNotExist(err) {
+		t.Fatal("staged file on the volume dir should have been removed")
+	}
+	if _, err := os.Stat(filepath.Join(volumeDir, id+".info")); !os.IsNotExist(err) {
+		t.Fatal("staged .info file on the volume dir should have been removed")
+	}
 }
 
 func TestListUploadsFiltersByOwner(t *testing.T) {

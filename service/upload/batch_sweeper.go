@@ -25,7 +25,11 @@ const (
 //  1. active 且 (now - last_progress_at) > 120s → interrupted(角标出现)
 //  2. interrupted 且未清 staging 且 (now - interrupted_at) > 600s → 终止任务 + 清 staging
 //  3. expires_at 到期 → 删除批次与 items
-func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDir string, now int64) error {
+//
+// stagingDirs 是当前所有在用的暂存目录(见 StagingDirs):任务 ID 现在可能带卷前缀、
+// 落在不同卷的暂存目录里,不能再假设单一目录,清理时逐个尝试(不存在则 os.Remove
+// 静默失败,忽略即可)。
+func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDirs []string, now int64) error {
 	actives, err := batches.ListByStatus(BatchStatusActive)
 	if err != nil {
 		return err
@@ -56,8 +60,10 @@ func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDir string, now 
 		expires := now + common.UploadCanceledTTLSeconds
 		for _, t := range list {
 			_, _ = commonUpload.Cancel(tasks, t.ID, expires)
-			os.Remove(filepath.Join(stagingDir, t.ID))         //nolint:errcheck
-			os.Remove(filepath.Join(stagingDir, t.ID+".info")) //nolint:errcheck
+			for _, dir := range stagingDirs {
+				os.Remove(filepath.Join(dir, t.ID))         //nolint:errcheck
+				os.Remove(filepath.Join(dir, t.ID+".info")) //nolint:errcheck
+			}
 		}
 		if err := batches.MarkStagingCleaned(b.ID); err != nil {
 			return err
@@ -71,12 +77,14 @@ func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDir string, now 
 
 // StartBatchSweeper 在独立 goroutine 中按固定间隔扫描(与任务 GC 并存,职责不同:
 // 任务 GC 管 o_upload_tasks 生命周期,本扫描器管批次状态机与延迟清理)。
-func StartBatchSweeper(batches *BatchStore, tasks *TaskStore, stagingDir string) {
+// stagingDirsFn 每轮重新枚举当前在用的暂存目录(见 StagingDirs),而非固定传入一次
+// ——这样运行期间新挂载的卷一旦产生了暂存目录,下一轮扫描就能覆盖到。
+func StartBatchSweeper(batches *BatchStore, tasks *TaskStore, stagingDirsFn func() []string) {
 	go func() {
 		ticker := time.NewTicker(time.Duration(BatchSweepIntervalSeconds) * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := SweepBatches(batches, tasks, stagingDir, time.Now().Unix()); err != nil {
+			if err := SweepBatches(batches, tasks, stagingDirsFn(), time.Now().Unix()); err != nil {
 				logger.Error("upload batch sweep failed", zap.Error(err))
 			}
 		}
