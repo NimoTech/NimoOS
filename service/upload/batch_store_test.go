@@ -220,6 +220,89 @@ func TestMarkItemDoneAcrossBatchesIdempotent(t *testing.T) {
 	}
 }
 
+// TestMarkItemDoneAcrossBatchesAbsolutePathParentBatchChildUpload 覆盖真机截图
+// 场景:用户原上传整个文件夹(批次 targetPath=/DATA/Media,item=backup/a.jpg),
+// 手动补传时进入子目录直传(完成上传:targetPath=/DATA/Media/backup,
+// relativePath=a.jpg)——绝对路径相同但二元组不同,应按绝对路径等价销账。
+func TestMarkItemDoneAcrossBatchesAbsolutePathParentBatchChildUpload(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "old", "backup/a.jpg", "backup/b.jpg")
+	_ = s.SetInterrupted("old", 2000) // 缺 backup/a.jpg、backup/b.jpg
+
+	// 子目录直传:targetPath=/DATA/Media/backup, relativePath=a.jpg
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media/backup", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("old")
+	if got.Done != 1 || got.Status != BatchStatusActive {
+		t.Fatalf("want done=1/active (interrupted->active on progress), got done=%d status=%s", got.Done, got.Status)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesAbsolutePathChildBatchParentUpload 覆盖反向场景:
+// 批次落在子目录(targetPath=/DATA/Media/backup,item=a.jpg),补传却在父目录
+// 带子路径直传(targetPath=/DATA/Media,relativePath=backup/a.jpg),同样应命中。
+func TestMarkItemDoneAcrossBatchesAbsolutePathChildBatchParentUpload(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	b := &UploadBatch{ID: "old", OwnerUserID: "u1", TargetPath: "/DATA/Media/backup",
+		Status: BatchStatusActive, Total: 1, ExpiresAt: 9999999999}
+	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetInterrupted("old", 2000)
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "backup/a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("old")
+	if got.Done != 1 || got.Status != BatchStatusCompleted {
+		t.Fatalf("want done=1/completed, got done=%d status=%s", got.Done, got.Status)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesUnrelatedDirNotCleared 不相关目录(仅字符串前缀
+// 相似,如 /DATA/Media 与 /DATA/Medias)不应被误销账。
+func TestMarkItemDoneAcrossBatchesUnrelatedDirNotCleared(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	b := &UploadBatch{ID: "sibling", OwnerUserID: "u1", TargetPath: "/DATA/Medias",
+		Status: BatchStatusInterrupted, Total: 1, ExpiresAt: 9999999999}
+	if err := s.Create(b, []UploadBatchItem{{BatchID: "sibling", RelativePath: "a.jpg", Size: 100}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("sibling")
+	if got.Status != BatchStatusInterrupted || got.Done != 0 {
+		t.Fatalf("string-prefix-similar sibling dir should be untouched, got %s/%d", got.Status, got.Done)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesTrailingSlashNormalized 批次 targetPath 带尾斜杠
+// 应被归一化后仍能正确匹配。
+func TestMarkItemDoneAcrossBatchesTrailingSlashNormalized(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	b := &UploadBatch{ID: "old", OwnerUserID: "u1", TargetPath: "/DATA/Media/backup/",
+		Status: BatchStatusActive, Total: 1, ExpiresAt: 9999999999}
+	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetInterrupted("old", 2000)
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media/backup", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("old")
+	if got.Done != 1 || got.Status != BatchStatusCompleted {
+		t.Fatalf("want done=1/completed, got done=%d status=%s", got.Done, got.Status)
+	}
+}
+
 func TestDeleteExpired(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "a.jpg")

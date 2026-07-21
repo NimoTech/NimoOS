@@ -89,18 +89,36 @@ func (s *BatchStore) MarkItemDone(batchID, relativePath string, now int64) error
 	})
 }
 
-// MarkItemDoneAcrossBatches 把 (targetPath, relativePath) 在所有 active/
-// interrupted 批次中的同名未完成项都记账(不限 batchID)。普通重传(新批次)
-// 补齐文件时,旧中断批次的对应项隐式销账,数量对齐即自动 completed、角标消失。
+// MarkItemDoneAcrossBatches 按绝对路径等价,在所有 active/interrupted 批次中
+// 把命中的未完成项都记账(不限 batchID、不要求 targetPath 二元组完全相同)。
+// completedAbs = filepath.Join(targetPath, relativePath);对每个候选批次,若
+// completedAbs 落在 batch.TargetPath 之下(前缀匹配,以 "/" 分隔避免误伤
+// /DATA/Media 与 /DATA/Medias 这类字符串前缀相似但目录不同的情况),则取去
+// 掉批次根路径后的余部作为该批次坐标系下的 relativePath 调 MarkItemDone。
+// 典型场景:用户整夹上传(批次 targetPath=/X,item=backup/a.jpg),手动补传时
+// 进入子目录直传(targetPath=/X/backup,relativePath=a.jpg)——二元组不同但绝对
+// 路径相同,以前 miss、现在能命中;反之批次落在子目录、补传在父目录带子路径
+// 同样命中。原有精确路径匹配(targetPath 相同、relativePath 相同)天然被覆盖。
 func (s *BatchStore) MarkItemDoneAcrossBatches(targetPath, relativePath string, now int64) error {
-	var ids []string
-	if err := s.db.Model(&UploadBatch{}).
-		Where("target_path = ? AND status IN ?", targetPath, []string{BatchStatusActive, BatchStatusInterrupted}).
-		Pluck("id", &ids).Error; err != nil {
+	completedAbs := filepath.Clean(filepath.Join(targetPath, relativePath))
+
+	var candidates []UploadBatch
+	if err := s.db.Where("status IN ?", []string{BatchStatusActive, BatchStatusInterrupted}).
+		Find(&candidates).Error; err != nil {
 		return err
 	}
-	for _, id := range ids {
-		if err := s.MarkItemDone(id, relativePath, now); err != nil {
+
+	for _, b := range candidates {
+		root := strings.TrimRight(filepath.Clean(b.TargetPath), "/")
+		prefix := root + "/"
+		if !strings.HasPrefix(completedAbs, prefix) {
+			continue
+		}
+		rel := strings.TrimPrefix(completedAbs, prefix)
+		if rel == "" {
+			continue
+		}
+		if err := s.MarkItemDone(b.ID, rel, now); err != nil {
 			return err
 		}
 	}
