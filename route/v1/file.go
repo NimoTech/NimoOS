@@ -8,13 +8,14 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	url2 "net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/model"
@@ -35,8 +36,6 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-
-	"github.com/h2non/filetype"
 )
 
 type ListReq struct {
@@ -249,9 +248,6 @@ func GetDownloadFile(ctx echo.Context) error {
 			})
 		}
 	}
-	ctx.Request().Header.Add("Content-Type", "application/octet-stream")
-	ctx.Request().Header.Add("Content-Transfer-Encoding", "binary")
-	ctx.Request().Header.Add("Cache-Control", "no-cache")
 	// handles only single files not folders and multiple files
 	if len(list) == 1 {
 
@@ -271,8 +267,9 @@ func GetDownloadFile(ctx echo.Context) error {
 
 			// 获取文件的名称
 			fileName := path.Base(filePath)
-			ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
+			ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 			ctx.File(filePath)
+			return nil
 		}
 	}
 
@@ -283,6 +280,20 @@ func GetDownloadFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+
+	// 这三个头只对打包分支生效;单文件分支上面已经 return,
+	// 走到这里必然是归档打包响应,ctx.File 自带的 Content-Type 不受影响。
+	// Content-Type 只对 zip 明确声明,其余格式(tar/targz…,前端当前不传)交给
+	// net/http 首写时的内容嗅探,避免张冠李戴。
+	if extension == ".zip" {
+		ctx.Response().Header().Set("Content-Type", "application/zip")
+	}
+	ctx.Response().Header().Set("Content-Transfer-Encoding", "binary")
+	ctx.Response().Header().Set("Cache-Control", "no-cache")
+
+	name := downloadArchiveName(list, extension)
+	// 必须在 ar.Create(写响应体) 之前设置,写入响应体后响应头会被锁死。
+	ctx.Response().Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
 
 	err = ar.Create(ctx.Response().Writer)
 	if err != nil {
@@ -295,11 +306,6 @@ func GetDownloadFile(ctx echo.Context) error {
 	defer ar.Close()
 	commonDir := file.CommonPrefix(filepath.Separator, list...)
 
-	currentPath := filepath.Base(commonDir)
-
-	name := "_" + currentPath
-	name += extension
-	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
 	for _, fname := range list {
 		err = file.AddFile(ar, fname, commonDir)
 		if err != nil {
@@ -307,6 +313,27 @@ func GetDownloadFile(ctx echo.Context) error {
 		}
 	}
 	return nil
+}
+
+// downloadArchiveName 决定批量下载归档的对外文件名:
+// 单个文件夹 → 文件夹名+扩展名;多选 → 公共父目录名+扩展名(群晖式:在 photos
+// 目录选 5 个文件 → photos.zip);公共父目录是根("/" 或空)时兜底 NimoOS。
+// extension 来自 GetCompressionAlgorithm(如 ".zip"/".tar.gz"),跟随 format 参数。
+func downloadArchiveName(list []string, extension string) string {
+	var base string
+	if len(list) == 1 {
+		base = filepath.Base(path.Clean(list[0]))
+	} else {
+		commonDir := file.CommonPrefix(filepath.Separator, list...)
+		base = filepath.Base(commonDir)
+	}
+	if base == "/" || base == "." || base == "" {
+		base = "NimoOS"
+	}
+	if extension == "" {
+		extension = ".zip"
+	}
+	return base + extension
 }
 
 func GetDownloadSingleFile(ctx echo.Context) error {
@@ -322,41 +349,28 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 	}
 	fileName := path.Base(filePath)
 	// c.Header("Content-Disposition", "inline")
-	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
+	ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 
 	fi, err := os.Open(filePath)
-	if err != nil {
-		panic(err)
-	}
-
-	// We only have to pass the file header = first 261 bytes
-	buffer := make([]byte, 261)
-
-	_, _ = fi.Read(buffer)
-
-	kind, _ := filetype.Match(buffer)
-	if kind != filetype.Unknown {
-		ctx.Request().Header.Add("Content-Type", kind.MIME.Value)
-	}
-	node, err := os.Stat(filePath)
-	// Set the Last-Modified header to the timestamp
-	ctx.Request().Header.Add("Last-Modified", node.ModTime().UTC().Format(http.TimeFormat))
-
-	knownSize := node.Size() >= 0
-	if knownSize {
-		ctx.Request().Header.Add("Content-Length", strconv.FormatInt(node.Size(), 10))
-	}
-	http.ServeContent(ctx.Response().Writer, ctx.Request(), fileName, node.ModTime(), fi)
-	defer fi.Close()
-	fileTmp, err := os.Open(filePath)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
 			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
 		})
 	}
-	defer fileTmp.Close()
+	defer fi.Close()
 
+	node, err := os.Stat(filePath)
+	if err != nil {
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
+			Success: common_err.FILE_DOES_NOT_EXIST,
+			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
+		})
+	}
+	// Content-Type/Last-Modified/Content-Length 由 ServeContent 自行设置
+	// (按文件名扩展/内容嗅探 + modtime + seeker 长度)。此前这里手工把这三个头
+	// 加在 ctx.Request().Header 上——写错了对象,纯空操作,已删。
+	http.ServeContent(ctx.Response().Writer, ctx.Request(), fileName, node.ModTime(), fi)
 	return nil
 }
 
@@ -513,6 +527,14 @@ func RenamePath(ctx echo.Context) error {
 	}
 
 	success, err := service.MyService.System().RenameFile(op, np)
+	if success == common_err.SUCCESS {
+		// 重命名/移动成功后,挂在 op 自身/子树上的分享记录 path 仍指旧位置,
+		// 会在「已共享」Tab 里变成永远打不开的悬挂项——正确语义是改写路径,
+		// 不是删除(与删除目录时的 DeleteShareByPath 对应)。
+		if shares := service.MyService.Shares(); shares != nil {
+			shares.RewriteSharePathPrefix(op, np)
+		}
+	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: success, Message: common_err.GetMsg(success), Data: err})
 }
 
@@ -883,6 +905,64 @@ var deletedMediaExts = map[string]bool{
 	".m4v": true, ".3gp": true,
 }
 
+// jsonMangledName 复现 encoding/json 对非法 UTF-8 的处理:每个非法字节替换为
+// U+FFFD,合法多字节 rune 原样保留。用于把磁盘上的真实目录名映射到「前端经
+// 列表接口看到的名字」,以便删除时反向匹配。
+//
+// 不用 strings.ToValidUTF8——它把连续非法字节整段换成一个 U+FFFD,与 JSON 的
+// 逐字节替换语义不一致(encoding/json 的字符串编码器也是按 utf8.DecodeRuneInString
+// 逐 rune 前进,非法字节时该函数返回 (RuneError, 1),即每个非法字节各自产出一个
+// U+FFFD,这里的循环与之完全对应)。
+func jsonMangledName(name string) string {
+	if utf8.ValidString(name) {
+		return name
+	}
+	var b strings.Builder
+	for i := 0; i < len(name); {
+		r, size := utf8.DecodeRuneInString(name[i:])
+		b.WriteRune(r) // 非法字节时 DecodeRuneInString 返回 (RuneError, 1),恰好逐字节替换
+		i += size
+	}
+	return b.String()
+}
+
+// resolveDeletePath 把客户端送来的删除路径解析为磁盘真实路径。
+// 路径存在 → 原样返回。不存在(Lstat ENOENT)→ 在父目录中找「JSON 整形后
+// 恰好等于请求名」的真实条目:唯一命中返回真实路径;零命中返回 os.ErrNotExist;
+// 多个命中返回歧义错误(绝不猜删)。其余 Lstat 错误原样返回。
+func resolveDeletePath(p string) (string, error) {
+	if _, err := os.Lstat(p); err == nil {
+		return p, nil
+	} else if !os.IsNotExist(err) {
+		return p, err
+	}
+
+	dir := filepath.Dir(p)
+	base := filepath.Base(p)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// 父目录本身都读不到,没有救援的余地。
+		return p, os.ErrNotExist
+	}
+
+	var matches []string
+	for _, entry := range entries {
+		if jsonMangledName(entry.Name()) == base {
+			matches = append(matches, filepath.Join(dir, entry.Name()))
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return p, os.ErrNotExist
+	case 1:
+		return matches[0], nil
+	default:
+		return p, fmt.Errorf("multiple entries match the requested name %q; delete it via terminal", base)
+	}
+}
+
 func DeleteFile(ctx echo.Context) error {
 	paths := []string{}
 	ctx.Bind(&paths)
@@ -901,6 +981,30 @@ func DeleteFile(ctx echo.Context) error {
 		}
 	}
 
+	// 把每个请求路径解析为磁盘真实路径。不存在时消灭"假成功":直接返回
+	// FILE_DOES_NOT_EXIST,而不是让后面的 os.RemoveAll 对着一个不存在的路径
+	// 悄悄返回 nil。命中救援匹配的真实路径与请求路径可能不同名,需要重新过一遍
+	// 保护名/系统路径祖先检查(checkPathAccess 基于父目录路径语义等价,不必重跑)。
+	for i, p := range paths {
+		resolved, err := resolveDeletePath(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DOES_NOT_EXIST, Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST)})
+			}
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+		}
+		if resolved != p {
+			logger.Info("delete path rescued via mangled-name match", zap.String("requested", p), zap.String("resolved", resolved))
+			if isProtectedName(filepath.Base(resolved)) {
+				return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("System default folder name '%s' is protected", filepath.Base(resolved))})
+			}
+			if isAncestorOfSystemPath(resolved) {
+				return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: fmt.Sprintf("Folder '%s' contains a system-critical directory and cannot be deleted", filepath.Base(resolved))})
+			}
+		}
+		paths[i] = resolved
+	}
+
 	for _, v := range paths {
 		mounted := service.IsMounted(v)
 		if mounted {
@@ -914,6 +1018,13 @@ func DeleteFile(ctx echo.Context) error {
 		unlock()
 		if err != nil {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
+		}
+		// 目录删掉后,挂在它自身/子树上的 Samba 分享记录就成了「已共享」Tab 里
+		// 永远打不开的悬挂项(实测:删父目录后其下已分享的子文件夹仍列在 Tab 里)。
+		// 同步清掉并重写 smb 配置;DeleteShareByPath 自带 "/" 边界,不伤同前缀
+		// 兄弟目录的分享。
+		if shares := service.MyService.Shares(); shares != nil {
+			shares.DeleteShareByPath(v)
 		}
 	}
 
@@ -1084,7 +1195,24 @@ type Client struct {
 	Name         service.Name `json:"name"`
 	RtcSupported bool         `json:"rtcSupported"`
 	TimerId      int          `json:"timerId"`
-	LastBeat     time.Time    `json:"lastBeat"`
+	// mu 只保护 LastBeat：readPump（收到 pong/任意消息时）与 monitoring 的
+	// 心跳超时检查分属两个 goroutine，读写都要过锁。
+	mu       sync.Mutex
+	LastBeat time.Time `json:"lastBeat"`
+}
+
+// touchLastBeat 记录一次心跳/活动时间，供 monitoring 的超时检查读取。
+func (c *Client) touchLastBeat(now time.Time) {
+	c.mu.Lock()
+	c.LastBeat = now
+	c.mu.Unlock()
+}
+
+// snapshotLastBeat 读取当前心跳时间（加锁，避免与 touchLastBeat 数据竞争）。
+func (c *Client) snapshotLastBeat() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.LastBeat
 }
 
 type PeerModel struct {
@@ -1285,7 +1413,7 @@ func (c *Client) readPump() {
 			// c.handler.broadcast <- otherBy
 			break
 		} else if t.String() == "pong" {
-			c.LastBeat = time.Now()
+			c.touchLastBeat(time.Now())
 			continue
 		}
 		to := gjson.GetBytes(message, "to")
@@ -1308,7 +1436,29 @@ func (c *Client) readPump() {
 	}
 }
 
+// heartbeatTimeout 心跳假死判定阈值：ping 广播每 30s 一次，容忍 3 个周期
+// 没有回应（考虑到瞬时网络抖动），超过判定为假死（网线拔出/系统休眠等无
+// TCP FIN 的场景）。
+const heartbeatTimeout = 90 * time.Second
+
+// staleClientIDs 返回心跳超时的客户端：lastBeats 为 id→最后心跳时间，
+// now-lastBeat > timeout 判定假死。恰好等于 timeout 不算超时。
+func staleClientIDs(lastBeats map[string]time.Time, now time.Time, timeout time.Duration) []string {
+	var stale []string
+	for id, lastBeat := range lastBeats {
+		if now.Sub(lastBeat) > timeout {
+			stale = append(stale, id)
+		}
+	}
+	return stale
+}
+
 func (ch *CenterHandler) monitoring() {
+	// 与 ping 广播同周期（30s）巡检一次心跳超时的假死连接。ch.clients 只在
+	// monitoring 这个 goroutine 里被读写，因此心跳超时的踢出逻辑也放在这个
+	// select 循环里处理，不需要额外给 clients map 加锁。
+	staleTicker := time.NewTicker(30 * time.Second)
+	defer staleTicker.Stop()
 	for {
 		select {
 		// 注册，新用户连接过来会推进注册通道，这里接收推进来的用户指针
@@ -1324,6 +1474,37 @@ func (ch *CenterHandler) monitoring() {
 			for _, client := range ch.clients {
 				client.send <- message
 			}
+		case now := <-staleTicker.C:
+			ch.kickStaleClients(now)
+		}
+	}
+}
+
+// kickStaleClients 踢出心跳超时（假死）的 client：关闭其连接、从 clients
+// 集合中移除，并按现有「peer-left」的广播消息形态通知其余在线 peer（前端
+// Network.js 已在消费这个 type，断线时走的是同一条路径）。
+//
+// 注意：这里直接遍历 ch.clients 推送，而不是发去 ch.broadcast 通道——
+// kickStaleClients 本身就是在 monitoring 的 select 循环内被调用，
+// 若改成往 ch.broadcast 发送会因为没有其它 goroutine 接收而死锁。
+func (ch *CenterHandler) kickStaleClients(now time.Time) {
+	lastBeats := make(map[string]time.Time, len(ch.clients))
+	for id, c := range ch.clients {
+		lastBeats[id] = c.snapshotLastBeat()
+	}
+	for _, id := range staleClientIDs(lastBeats, now, heartbeatTimeout) {
+		c, ok := ch.clients[id]
+		if !ok {
+			continue
+		}
+		logger.Info("filesdrop: kicking stale peer (heartbeat timeout)",
+			zap.String("peerId", id),
+			zap.Duration("silence", now.Sub(lastBeats[id])))
+		c.conn.Close()
+		delete(ch.clients, id)
+		peerLeft := []byte(`{"type":"peer-left","peerId":"` + id + `"}`)
+		for _, other := range ch.clients {
+			other.send <- peerLeft
 		}
 	}
 }
