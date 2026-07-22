@@ -16,7 +16,6 @@ import (
 	"github.com/NimoTech/NimoOS/common"
 	"github.com/NimoTech/NimoOS/service"
 	"github.com/NimoTech/NimoOS/service/upload"
-	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
 	"go.uber.org/zap"
 )
@@ -24,10 +23,14 @@ import (
 // freeBytesFn returns available bytes for a storage path; injectable for tests.
 type freeBytesFn func() (uint64, error)
 
-// statfsDATA returns available bytes on /DATA via syscall.Statfs.
-func statfsDATA() (uint64, error) {
+// statfsPath returns available bytes on the filesystem containing path via
+// syscall.Statfs. Replaces the old hardcoded statfsDATA: the quota check must
+// look at whichever volume the upload is actually staged on/headed to, not
+// always /DATA (that mismatch is what caused spurious 413s for uploads to
+// other volumes, e.g. a RAID array with plenty of free space).
+func statfsPath(path string) (uint64, error) {
 	var s syscall.Statfs_t
-	if err := syscall.Statfs("/DATA", &s); err != nil {
+	if err := syscall.Statfs(path, &s); err != nil {
 		return 0, err
 	}
 	return s.Bavail * uint64(s.Bsize), nil
@@ -97,9 +100,18 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 	return handler.HTTPResponse{}, handler.FileInfoChanges{}, nil
 }
 
+// validateFileUploadMetadataForRoot resolves targetPath's staging root via
+// mountsFn and checks quota against that root's filesystem (statfsPath),
+// instead of always /DATA. mountsFn is injectable for tests.
+func validateFileUploadMetadataForRoot(hook handler.HookEvent, mountsFn func() []MountEntry) (handler.HTTPResponse, handler.FileInfoChanges, error) {
+	targetPath := hook.Upload.MetaData["targetPath"]
+	root, _ := resolveStagingRoot(targetPath, mountsFn())
+	return validateFileUploadMetadataWithQuota(hook, func() (uint64, error) { return statfsPath(root) })
+}
+
 // validateFileUploadMetadata is the production entry point.
 func validateFileUploadMetadata(hook handler.HookEvent) (handler.HTTPResponse, handler.FileInfoChanges, error) {
-	return validateFileUploadMetadataWithQuota(hook, statfsDATA)
+	return validateFileUploadMetadataForRoot(hook, liveMounts)
 }
 
 // uniqueDestPath returns a path that does not conflict with an existing file.
@@ -239,18 +251,25 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 	if err := os.MkdirAll(common.FileUploadStagingDir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir staging: %w", err)
 	}
-	st := filestore.New(common.FileUploadStagingDir)
+	// routingStore 按目标卷把暂存分片就地放在 <卷挂载根>/.system_data/file-tus-staging,
+	// 而不是写死 /DATA:配额检查/落盘都跟目标卷走,完成后 ingest 变成同盘 rename。
+	// 无法就地放置(FUSE/网络挂载、解析失败)时回退现有 /DATA 目录,行为不变。
+	rs := newRoutingStore(common.FileUploadStagingDir, liveMounts)
 	composer := handler.NewStoreComposer()
-	st.UseIn(composer)
+	composer.UseCore(rs)
+	composer.UseTerminater(rs)
+	composer.UseConcater(rs)
+	composer.UseLengthDeferrer(rs)
+	composer.UseContentServer(rs)
 
 	tusH, err := handler.NewHandler(handler.Config{
-		BasePath:                 fileTusBasePath + "/",
-		StoreComposer:            composer,
-		NotifyCompleteUploads:    true,
-		NotifyCreatedUploads:     true,
-		NotifyUploadProgress:     true,
-		NotifyTerminatedUploads:  true,
-		PreUploadCreateCallback:  validateFileUploadMetadata,
+		BasePath:                fileTusBasePath + "/",
+		StoreComposer:           composer,
+		NotifyCompleteUploads:   true,
+		NotifyCreatedUploads:    true,
+		NotifyUploadProgress:    true,
+		NotifyTerminatedUploads: true,
+		PreUploadCreateCallback: validateFileUploadMetadata,
 	})
 	if err != nil {
 		return nil, err
@@ -298,7 +317,13 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 	// 完成:ingest + 置 completed / failed。
 	go func() {
 		for event := range tusH.CompleteUploads {
-			stagedPath := filepath.Join(common.FileUploadStagingDir, event.Upload.ID)
+			// stagedPath 从 tusd filestore 写回的 Storage["Path"] 取——这是分片实际落盘的
+			// 绝对路径,routingStore 下可能在 /DATA 也可能在某个卷内,不能再假设固定拼
+			// common.FileUploadStagingDir/id。缺失时(理论上不会发生)兜底按旧规则拼。
+			stagedPath := event.Upload.Storage["Path"]
+			if stagedPath == "" {
+				stagedPath = filepath.Join(common.FileUploadStagingDir, event.Upload.ID)
+			}
 			targetPath := event.Upload.MetaData["targetPath"]
 			relativePath := event.Upload.MetaData["relativePath"]
 			if relativePath == "" {
@@ -317,8 +342,16 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 				continue
 			}
 			_ = store.SetStatus(event.Upload.ID, commonUpload.UploadStatusCompleted, 0)
+			now := time.Now().Unix()
 			if bid := event.Upload.MetaData["batch_id"]; bid != "" {
-				_ = batches.MarkItemDone(bid, relativePath, time.Now().Unix())
+				_ = batches.MarkItemDone(bid, relativePath, now)
+			}
+			// 普通重传(无论有无 batch_id)隐式对账:同 targetPath 下其它
+			// active/interrupted 批次里同名未完成项一并销账,旧的裂开角标
+			// 因此自动消失,失败仅 log 不阻断主流程。
+			if err := batches.MarkItemDoneAcrossBatches(targetPath, relativePath, now); err != nil {
+				logger.Error("Files tus MarkItemDoneAcrossBatches failed",
+					zap.String("targetPath", targetPath), zap.String("relativePath", relativePath), zap.Error(err))
 			}
 			logger.Info("Files tus upload complete", zap.String("dest", dest))
 			if !skipped {
@@ -328,7 +361,11 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 	}()
 
 	commonUpload.StartGC(store, upload.DefaultGCConfig())
-	upload.StartBatchSweeper(batches, store, common.FileUploadStagingDir)
+	// 任务 ID 现在可能带卷前缀、落在不同卷的暂存目录里,清扫不能再假设单一目录:
+	// 每轮重新枚举 /DATA 旧目录 + 所有已存在的 /media/*/.system_data/file-tus-staging。
+	upload.StartBatchSweeper(batches, store, func() []string {
+		return upload.StagingDirs(common.FileUploadStagingDir, "/media")
+	})
 	return withRelativeLocation(http.StripPrefix(fileTusBasePath, tusH)), nil
 }
 

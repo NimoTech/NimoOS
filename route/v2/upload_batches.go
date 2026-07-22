@@ -103,8 +103,10 @@ func cancelBatchTasks(tasks *upload.TaskStore, batchID string) {
 	expires := time.Now().Unix() + common.UploadCanceledTTLSeconds
 	for _, t := range list {
 		_, _ = commonUpload.Cancel(tasks, t.ID, expires)
-		os.Remove(filepath.Join(cancelStagingDir, t.ID))         //nolint:errcheck
-		os.Remove(filepath.Join(cancelStagingDir, t.ID+".info")) //nolint:errcheck
+		for _, dir := range cancelStagingDirsFn() {
+			os.Remove(filepath.Join(dir, t.ID))         //nolint:errcheck
+			os.Remove(filepath.Join(dir, t.ID+".info")) //nolint:errcheck
+		}
 	}
 }
 
