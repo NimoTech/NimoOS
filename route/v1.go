@@ -101,8 +101,10 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/hardware", v1.GetSystemHardwareInfo) // hardware/info
 			v1SysGroup.GET("/baseinfo", v1.GetSystemBaseInfo)
 
-			v1SysGroup.GET("/wsssh", v1.WsSsh)
-			v1SysGroup.POST("/ssh-login", v1.PostSshLogin)
+			// Legacy web terminal (WebSocket -> local sshd), superseded by NimoOS-Terminal.
+			// Handlers kept in route/v1/ssh.go; uncomment to restore.
+			// v1SysGroup.GET("/wsssh", v1.WsSsh)
+			// v1SysGroup.POST("/ssh-login", v1.PostSshLogin)
 			// v1SysGroup.GET("/config", v1.GetSystemConfig) //delete
 			// v1SysGroup.POST("/config", v1.PostSetSystemConfig)
 			v1SysGroup.GET("/logs", v1.GetNimoOSErrorLogs) // error/logs
