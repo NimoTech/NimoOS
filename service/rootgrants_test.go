@@ -78,6 +78,36 @@ func TestRootGrant_ReconcileWikiKeepsVirtual(t *testing.T) {
 	}
 }
 
+// TestRootGrant_EnabledRootIDs_EmptyTableReturnsEmptySlice 硬化契约:空表要返回
+// 初始化过的空切片([]string{}),而不是 nil,调用方(如 SearchRoots handler)
+// 序列化后才能得到 JSON [] 而不是 null。
+//
+// 注意:这里不能复用 newRGRepo——它固定用 "file::memory:?cache=shared" 这个
+// 匿名共享内存库,本文件里所有调用 newRGRepo 的测试实际共享同一张物理表,
+// 表里会残留其它测试写入的行,不是真正的空表。这里用一个带唯一名字的内存库,
+// 独立于测试执行顺序,保证测出的确实是「刚建表、一行都没有」的状态。
+func TestRootGrant_EnabledRootIDs_EmptyTableReturnsEmptySlice(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rootgrant_empty_test?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.RootGrant{}); err != nil {
+		t.Fatal(err)
+	}
+	r := service.NewRootGrantRepo(db)
+
+	got, err := r.EnabledRootIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("EnabledRootIDs 空表时不应返回 nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("空表应返回空切片,got %v", got)
+	}
+}
+
 func mustEnabled(t *testing.T, r service.RootGrantRepo) []string {
 	t.Helper()
 	ids, err := r.EnabledRootIDs()

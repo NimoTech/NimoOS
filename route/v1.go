@@ -231,8 +231,7 @@ func InitV1Router() http.Handler {
 		v1NimoOSGroup := v1Group.Group("/nimoos")
 		v1NimoOSGroup.Use()
 		{
-			rootGrantHandler := v1.NewRootGrantHandler(service.MyService.RootGrants())
-			v1NimoOSGroup.GET("/search-roots", rootGrantHandler.SearchRoots)
+			registerRootGrantRoutes(v1NimoOSGroup, service.MyService.RootGrants())
 		}
 	}
 

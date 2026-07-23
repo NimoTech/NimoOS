@@ -59,7 +59,10 @@ func (s *rootGrantStore) DeleteGrant(rootID string) error {
 }
 
 func (s *rootGrantStore) EnabledRootIDs() ([]string, error) {
-	var ids []string
+	// 显式以初始化过的空切片起始(而非 var ids []string 的 nil),硬化契约:
+	// 空表也要返回 []string{},调用方(如 SearchRoots handler)JSON 序列化后
+	// 得到 [] 而不是 null。不依赖 gorm Pluck 对目标切片的内部初始化行为。
+	ids := []string{}
 	err := s.db.Model(&model.RootGrant{}).Where("enabled = ?", true).Pluck("root_id", &ids).Error
 	if err != nil {
 		return nil, err
