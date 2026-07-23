@@ -228,6 +228,12 @@ func InitV1Router() http.Handler {
 		{
 			v1ZerotierGroup.Any("/*url", v1.ZerotierProxy)
 		}
+		v1NimoOSGroup := v1Group.Group("/nimoos")
+		v1NimoOSGroup.Use()
+		{
+			rootGrantHandler := v1.NewRootGrantHandler(service.MyService.RootGrants())
+			v1NimoOSGroup.GET("/search-roots", rootGrantHandler.SearchRoots)
+		}
 	}
 
 	return e

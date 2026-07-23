@@ -89,6 +89,13 @@ func init() {
 	userDBPath := config.AppInfo.DBPath + "/db/user.db"
 	service.MyService = service.NewServiceWithUserDB(sqliteDB, config.CommonInfo.RuntimePath, userDBPath)
 
+	// 启动 seed:登记 "photos" 为虚拟检索根(幂等),供 search-roots 读端点返回。
+	// 失败仅告警不 panic——下次启动会重试补上。logger 包目前只暴露 Info/Error,
+	// 这里用 zap.L()(logger.LogInit 时已 ReplaceGlobals)直接打 Warn 级别。
+	if err := service.MyService.RootGrants().SeedVirtual("photos"); err != nil {
+		zap.L().Warn("failed to seed virtual root grant for photos", zap.Error(err))
+	}
+
 	service.Cache = cache.Init()
 
 	service.GetCPUThermalZone()
@@ -162,6 +169,7 @@ func main() {
 		"/v1/recover",
 		"/v1/other",
 		"/v1/zt",
+		"/v1/nimoos",
 		"/v1/test",
 		route.V2APIPath,
 		route.V2DocPath,
