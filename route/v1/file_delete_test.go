@@ -59,6 +59,7 @@ func (fakeRepository) Gateway() external.ManagementService          { return nil
 func (fakeRepository) Health() service.HealthService                { return nil }
 func (fakeRepository) Notify() service.NotifyServer                 { return nil }
 func (fakeRepository) Rely() service.RelyService                    { return nil }
+func (fakeRepository) RootGrants() service.RootGrantRepo            { return nil }
 func (fakeRepository) Shares() service.SharesService                { return fakeSharesService{} }
 func (fakeRepository) System() service.SystemService                { return nil }
 func (fakeRepository) Storage() service.StorageService              { return nil }
