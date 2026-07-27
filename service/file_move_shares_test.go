@@ -58,6 +58,7 @@ func (f fakeMoveRepository) Gateway() external.ManagementService          { retu
 func (f fakeMoveRepository) Health() HealthService                        { return nil }
 func (f fakeMoveRepository) Notify() NotifyServer                         { return nil }
 func (f fakeMoveRepository) Rely() RelyService                            { return nil }
+func (f fakeMoveRepository) RootGrants() RootGrantRepo                    { return nil }
 func (f fakeMoveRepository) Shares() SharesService                        { return f.shares }
 func (f fakeMoveRepository) System() SystemService                        { return nil }
 func (f fakeMoveRepository) Storage() StorageService                      { return nil }

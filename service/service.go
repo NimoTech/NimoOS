@@ -37,6 +37,7 @@ type Repository interface {
 	Health() HealthService
 	Notify() NotifyServer
 	Rely() RelyService
+	RootGrants() RootGrantRepo
 	Shares() SharesService
 	System() SystemService
 	Storage() StorageService
@@ -62,6 +63,7 @@ func NewServiceWithUserDB(db *gorm.DB, RuntimePath string, userDBPath string) Re
 		gateway:     gatewayManagement,
 		notify:      NewNotifyService(db),
 		rely:        NewRelyService(db),
+		rootGrants:  NewRootGrantRepo(db),
 		system:      NewSystemService(),
 		health:      NewHealthService(),
 		shares:      NewSharesService(db),
@@ -79,6 +81,7 @@ type store struct {
 	casa        CasaService
 	notify      NotifyServer
 	rely        RelyService
+	rootGrants  RootGrantRepo
 	system      SystemService
 	shares      SharesService
 	connections ConnectionsService
@@ -115,6 +118,10 @@ func (s *store) Connections() ConnectionsService {
 
 func (s *store) Shares() SharesService {
 	return s.shares
+}
+
+func (s *store) RootGrants() RootGrantRepo {
+	return s.rootGrants
 }
 
 func (c *store) Rely() RelyService {
