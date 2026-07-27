@@ -9,7 +9,9 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/service"
 	"github.com/NimoTech/NimoOS/service/model"
 )
@@ -27,12 +29,18 @@ func NewRootGrantHandler(repo service.RootGrantRepo) *RootGrantHandler {
 // SearchRoots 返回当前所有 enabled=true 的 root_id 列表。
 // user_id query 参数当前读了即忽略——MVP 阶段不做按用户的 ACL 过滤,
 // 真正的多用户权限是独立需求,留待后续任务。
+//
+// 这是经网关对外暴露的公开读端点(不同于本文件其余三个只挂在
+// loopback-only 分组下的 _internal 写端点),DB 原始报错可能带路径/SQL
+// 片段等内部信息,不能透传给外部调用方——出错时记日志、响应体固定为
+// {"error":"internal error"}。
 func (h *RootGrantHandler) SearchRoots(c echo.Context) error {
 	_ = c.QueryParam("user_id") // MVP:读了即忽略,真实多用户 ACL 是独立需求
 
 	ids, err := h.repo.EnabledRootIDs()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		logger.Error("SearchRoots: EnabledRootIDs failed", zap.Error(err))
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
 
 	return c.JSON(http.StatusOK, map[string][]string{"root_ids": ids})

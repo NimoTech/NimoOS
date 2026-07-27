@@ -73,6 +73,15 @@ func (s *rootGrantStore) EnabledRootIDs() ([]string, error) {
 // ReconcileWiki 在一个事务里全量对账 source="wiki" 的行:先删掉不在入参列表里的
 // wiki 行,再逐条 upsert 入参(source 固定写死为 "wiki",忽略入参里可能带的其它
 // 值)。入参为空时,删除所有 source="wiki" 的行。全程不涉及 source="virtual"。
+//
+// 命名空间假设(隐含、未做防御代码,YAGNI):下面的 upsert 循环不检查入参
+// grants 里的 root_id 是否撞上了 SeedVirtual 登记的虚拟根(如 "photos")。
+// 这依赖 Wiki 侧 root_id 的生成方式与虚拟根命名空间事实不相交:Wiki 的
+// root_id 取自 crypto/rand 生成的 16 字节随机数的 hex 编码(128 位随机空间),
+// 而 "photos" 这类虚拟根 id 是硬编码的短常量字符串,二者长度和字符分布都
+// 对不上,可忽略 Wiki 侧传入一个恰好等于某虚拟根 id 的随机 root_id 的可能性。
+// 若未来虚拟根改用与 Wiki root_id 同构的命名(比如也上 16 字节 hex),
+// 这条假设就不再成立,需要在这里补显式的命名空间校验。
 func (s *rootGrantStore) ReconcileWiki(grants []model.RootGrant) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		ids := make([]string, 0, len(grants))
