@@ -68,6 +68,10 @@ func GetOrCreateThumbnailCached(path string) (cachedPath string, ok bool) {
 	cp := thumbCachePath(key)
 
 	if _, err := os.Stat(cp); err == nil {
+		// 刷新 mtime 作为"最近使用"标记,PruneThumbCache 据此做近似 LRU;
+		// 缓存 key 取的是源文件 mtime,与这里无关,刷新不影响命中判定。
+		now := time.Now()
+		_ = os.Chtimes(cp, now, now)
 		return cp, true
 	}
 
@@ -116,4 +120,33 @@ func generateAndCacheThumbnail(path, key, cachePath string) {
 	if err := os.Rename(tmp, cachePath); err != nil {
 		_ = os.Remove(tmp)
 	}
+}
+
+// PruneThumbCache 删除 ThumbCacheDir 下 mtime 早于 maxAge 的条目(.jpg 与
+// .neg)。源文件被删/改/移后旧条目只会孤儿化(key 含 path+mtime+size),没有
+// 任何联动清理,本函数是唯一回收路径;配合命中刷 mtime,效果≈按最近使用淘汰。
+// 目录不存在返回 (0, nil)。
+func PruneThumbCache(maxAge time.Duration) (int, error) {
+	entries, err := os.ReadDir(ThumbCacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fi, ierr := e.Info()
+		if ierr != nil || !fi.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(ThumbCacheDir, e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
 }

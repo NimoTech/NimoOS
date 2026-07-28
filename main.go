@@ -77,6 +77,10 @@ func init() {
 
 	config.InitSetup(*configFlag, _confSample)
 
+	if config.FileSettingInfo.ThumbCacheDir != "" {
+		file.ThumbCacheDir = config.FileSettingInfo.ThumbCacheDir
+	}
+
 	logger.LogInit(config.AppInfo.LogPath, config.AppInfo.LogSaveName, config.AppInfo.LogFileExt)
 	if len(*dbFlag) == 0 {
 		*dbFlag = config.AppInfo.DBPath + "/db"
@@ -146,6 +150,16 @@ func main() {
 	crontab := cron.New(cron.WithSeconds())
 	if _, err := crontab.AddFunc("@every 5s", route.SendAllHardwareStatusBySocket); err != nil {
 		logger.Error("add crontab error", zap.Error(err))
+	}
+
+	if _, err := crontab.AddFunc("@every 24h", func() {
+		if n, err := file.PruneThumbCache(30 * 24 * time.Hour); err != nil {
+			logger.Error("thumb-cache prune failed", zap.Error(err))
+		} else if n > 0 {
+			logger.Info("thumb-cache prune", zap.Int("removed", n))
+		}
+	}); err != nil {
+		logger.Error("add thumb-cache prune crontab error", zap.Error(err))
 	}
 
 	crontab.Start()

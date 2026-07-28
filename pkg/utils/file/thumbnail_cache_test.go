@@ -78,8 +78,11 @@ func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected cache file to still exist: %v", err)
 	}
-	if !info1.ModTime().Equal(info2.ModTime()) {
-		t.Error("expected cache hit to reuse the existing file, not regenerate it")
+	// 命中分支现在会 Chtimes 刷新 mtime 作为"最近使用"标记(供
+	// PruneThumbCache 做近似 LRU),因此不再断言 mtime 不变——只断言内容
+	// 没有被重新生成(mtime 不早于第一次生成时的 mtime)。
+	if info2.ModTime().Before(info1.ModTime()) {
+		t.Error("expected cache hit's mtime to not regress")
 	}
 }
 
@@ -158,5 +161,83 @@ func TestThumbCachePath_IsUnderThumbCacheDir(t *testing.T) {
 	p := thumbCachePath(key)
 	if filepath.Dir(p) != filepath.Clean(dir) {
 		t.Errorf("expected cache path to live under ThumbCacheDir %q, got %q", dir, p)
+	}
+}
+
+// TestCacheHitRefreshesMtime verifies a cache hit (GetOrCreateThumbnailCached
+// on an already-cached source) refreshes the cached file's mtime to "now",
+// so it reads as recently-used and PruneThumbCache's age-based sweep won't
+// reap a still-in-use entry just because it was generated long ago.
+func TestCacheHitRefreshesMtime(t *testing.T) {
+	withTempThumbCacheDir(t)
+	srcPath, _ := makeLargeJPEG(t, 800, 600)
+
+	cachedPath, ok := GetOrCreateThumbnailCached(srcPath)
+	if !ok {
+		t.Fatal("expected cache miss path to succeed (generate + store)")
+	}
+
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(cachedPath, past, past); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	if _, ok := GetOrCreateThumbnailCached(srcPath); !ok {
+		t.Fatal("expected cache hit to succeed")
+	}
+
+	info, err := os.Stat(cachedPath)
+	if err != nil {
+		t.Fatalf("stat cached file: %v", err)
+	}
+	if time.Since(info.ModTime()) > time.Minute {
+		t.Errorf("expected cache hit to refresh mtime to now, got mtime %v", info.ModTime())
+	}
+}
+
+// TestPruneThumbCacheRemovesOldEntries verifies PruneThumbCache removes
+// entries (both .jpg and .neg) whose mtime is older than maxAge, and leaves
+// fresh entries untouched.
+func TestPruneThumbCacheRemovesOldEntries(t *testing.T) {
+	dir := t.TempDir()
+	old := ThumbCacheDir
+	ThumbCacheDir = dir
+	defer func() { ThumbCacheDir = old }()
+
+	fresh := filepath.Join(dir, "fresh.jpg")
+	stale := filepath.Join(dir, "stale.jpg")
+	staleNeg := filepath.Join(dir, "stale.neg")
+	for _, p := range []string{fresh, stale, staleNeg} {
+		os.WriteFile(p, []byte("x"), 0644)
+	}
+	past := time.Now().Add(-31 * 24 * time.Hour)
+	os.Chtimes(stale, past, past)
+	os.Chtimes(staleNeg, past, past)
+
+	n, err := PruneThumbCache(30 * 24 * time.Hour)
+	if err != nil || n != 2 {
+		t.Fatalf("want removed=2, got %d err=%v", n, err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatal("fresh 不应被删")
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("stale 应被删")
+	}
+}
+
+// TestPruneThumbCache_MissingDirIsNoop verifies pruning a ThumbCacheDir that
+// doesn't exist yet (e.g. before any thumbnail was ever generated) returns
+// (0, nil) rather than an error.
+func TestPruneThumbCache_MissingDirIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+	old := ThumbCacheDir
+	ThumbCacheDir = missing
+	defer func() { ThumbCacheDir = old }()
+
+	n, err := PruneThumbCache(30 * 24 * time.Hour)
+	if err != nil || n != 0 {
+		t.Fatalf("want removed=0, err=nil, got %d err=%v", n, err)
 	}
 }
