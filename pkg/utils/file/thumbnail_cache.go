@@ -125,6 +125,26 @@ func generateAndCacheThumbnail(path, key, cachePath string) {
 	}
 }
 
+// PurgeThumbCacheEntry 在源文件即将被删除/移动前调用:按当前 stat 计算 key
+// 并删除对应缓存条目(.jpg 与 .neg)。best-effort、静默——找不到条目、删除失
+// 败等都不返回错误,最坏后果只是留给 30 天 LRU 清扫(PruneThumbCache)兜底,
+// 不影响正确性。path 不是普通文件(目录、不存在、stat 失败等)时不做任何
+// 事:目录删除不会递归给每个子文件都算一次 key 去清缓存(成本考虑),留给
+// LRU 兜底即可。
+//
+// 调用时机是本函数正确性的前提:必须在源文件真正被删除/重命名/覆盖之前调
+// 用——缓存 key 里包含 mtime 和 size,一旦源文件已经不存在或已被改写,就再
+// 也无法算出当初生成缓存时用的那个 key 了。
+func PurgeThumbCacheEntry(path string) {
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() || !fi.Mode().IsRegular() {
+		return
+	}
+	key := ThumbCacheKey(path, fi.ModTime(), fi.Size())
+	_ = os.Remove(thumbCachePath(key))
+	_ = os.Remove(thumbNegativePath(key))
+}
+
 // PruneThumbCache 清扫 ThumbCacheDir 目录下所有 mtime 早于 maxAge 的普通
 // 文件(.jpg/.neg 及孤儿 .tmp 等),不做扩展名过滤。源文件被删/改/移后旧条目
 // 只会孤儿化(key 含 path+mtime+size),没有任何联动清理,本函数是唯一回收

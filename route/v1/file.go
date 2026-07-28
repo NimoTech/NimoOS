@@ -526,6 +526,9 @@ func RenamePath(ctx echo.Context) error {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES)})
 	}
 
+	// 必须在实际 rename 之前调用:缓存 key 含旧路径的 mtime/size,rename 之
+	// 后旧路径已不存在,再也算不出当初的 key 了。
+	file.PurgeThumbCacheEntry(op)
 	success, err := service.MyService.System().RenameFile(op, np)
 	if success == common_err.SUCCESS {
 		// 重命名/移动成功后,挂在 op 自身/子树上的分享记录 path 仍指旧位置,
@@ -1014,6 +1017,9 @@ func DeleteFile(ctx echo.Context) error {
 
 	for _, v := range paths {
 		unlock := pathlock.LockWrite(v)
+		// 必须在 RemoveAll 之前调用:缓存 key 含 mtime/size,文件没了就再也算
+		// 不出当初的 key。目录不遍历子文件即时清缓存(成本考虑),留给 LRU 兜底。
+		file.PurgeThumbCacheEntry(v)
 		err := os.RemoveAll(v)
 		unlock()
 		if err != nil {

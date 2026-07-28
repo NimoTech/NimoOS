@@ -465,6 +465,12 @@ func isCrossDevice(err error) bool {
 // the no-rename case and would silently land a rename-style copy at the
 // wrong (conflicting) path.
 func moveItem(ctx context.Context, from, dst, style string) (usedRename bool, err error) {
+	// 必须在 from 真正消失之前调用:无论走哪条分支(下面的原子 rename,还是
+	// 跨设备时的 copy->校验->删源),from 最终都会不再存在于原路径上,缓存
+	// key 含 mtime/size,事后无法再算出。moveItem 只在 move 类型任务里调用
+	// (copy 分支源文件保留,不在这里),所以在函数入口统一 purge 一次就够。
+	file.PurgeThumbCacheEntry(from)
+
 	if rErr := renameFn(from, dst); rErr == nil {
 		return true, nil
 	} else if !isCrossDevice(rErr) {
