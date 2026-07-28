@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
@@ -228,6 +229,48 @@ type migrateUnit struct {
 	dst    string
 }
 
+// checkTargetFreeSpace verifies the filesystem backing probePath has at least
+// need bytes free, plus a 5% + 1GiB safety margin, before a migration starts
+// copying — so a near-full target disk fails fast instead of rsync-ing partway
+// through and leaving data in a half-migrated state.
+//
+// probePath itself does not need to exist yet (migrations often stage into a
+// not-yet-created destination directory): if it is missing, checkTargetFreeSpace
+// walks up to the nearest existing ancestor directory and statfs's that instead,
+// since it lives on the same filesystem/mount point.
+func checkTargetFreeSpace(probePath string, need int64) error {
+	if need <= 0 {
+		return nil
+	}
+
+	dir := probePath
+	for {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the filesystem root without finding an existing directory;
+			// statfs("/") below will still succeed and report the root's free space.
+			break
+		}
+		dir = parent
+	}
+
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return fmt.Errorf("failed to check free space at %s: %w", dir, err)
+	}
+	free := int64(st.Bavail) * int64(st.Bsize)
+	const oneGiB = int64(1) << 30
+	required := need + need/20 + oneGiB
+
+	if free < required {
+		return fmt.Errorf("空间不足: 目标盘 %s 剩余可用空间 %d 字节,本次迁移至少需要 %d 字节(含 5%% 余量与 1GiB 保留空间)", dir, free, required)
+	}
+	return nil
+}
+
 func executeMigration(jobID, migrationType, targetMountPoint string) (string, error) {
 	cfg := ResolveActivePaths()
 
@@ -415,13 +458,32 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 	// 2. Size tracking — done after service stop so overlay mounts are gone and size is accurate
 	var totalSize int64
+	var probePath string
 	for _, u := range units {
 		if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
 			continue
 		}
 		sz, _ := localfile.GetFileOrDirSize(u.src)
 		totalSize += sz
+		if probePath == "" {
+			// All units for one migration share a single target mount point, so
+			// checking the first real destination's free space is sufficient.
+			probePath = u.dst
+		}
 	}
+
+	// Target-disk space precheck: fail fast before copying starts rather than
+	// rsync-ing partway through a near-full disk. Services were already stopped
+	// above (Images/AppData/UserData/Photos), so a failure here must restart them
+	// before returning — this point runs before failCopy is defined, so restart
+	// explicitly rather than relying on that closure.
+	if probePath != "" {
+		if err := checkTargetFreeSpace(probePath, totalSize); err != nil {
+			restartStoppedServices(migrationType)
+			return "", err
+		}
+	}
+
 	setPhase(jobID, "copying")
 	updateProgress(jobID, 1, 0, totalSize)
 
