@@ -1,6 +1,7 @@
 package file
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,9 +52,17 @@ func TestThumbCacheKey_DiffersByMtimeAndSize(t *testing.T) {
 }
 
 // TestGetOrCreateThumbnailCached_MissThenHit verifies a first call generates
-// and writes a cache entry, and a second call for the same source file
-// returns the same cached path without re-deriving pixels (checked
-// indirectly: the cache file's mtime does not advance on the second call).
+// and writes a cache entry, and a second call for the same source file hits
+// the cache and returns the same path WITHOUT rewriting the cached file's
+// content.
+//
+// 判别信号是内容比较,不是 mtime:命中分支会 Chtimes 刷新 mtime 作为"最近
+// 使用"标记(见 TestCacheHitRefreshesMtime),所以「mtime 不回退」这种断言对
+// 命中与误重新生成都成立,起不到区分作用。这里第一次生成后,故意往缓存文件
+// 里塞一段已知的哨兵字节(不是合法 JPEG),再触发第二次调用;命中分支只应
+// Chtimes,不应重写文件,所以哨兵字节必须原样保留。如果命中分支被误改成会
+// 重新生成/重写缓存文件,这里读到的就会是重新编码出的 JPEG 字节而不是哨兵
+// 字节,从而让本测试真正 FAIL。
 func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	withTempThumbCacheDir(t)
 	srcPath, _ := makeLargeJPEG(t, 800, 600)
@@ -62,9 +71,10 @@ func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	if !ok {
 		t.Fatal("expected cache miss path to succeed (generate + store)")
 	}
-	info1, err := os.Stat(cachedPath1)
-	if err != nil {
-		t.Fatalf("expected cache file to exist: %v", err)
+
+	sentinel := []byte("SENTINEL-CONTENT-NOT-A-REAL-JPEG")
+	if err := os.WriteFile(cachedPath1, sentinel, 0644); err != nil {
+		t.Fatalf("overwrite cache file with sentinel content: %v", err)
 	}
 
 	cachedPath2, ok := GetOrCreateThumbnailCached(srcPath)
@@ -74,15 +84,13 @@ func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	if cachedPath1 != cachedPath2 {
 		t.Errorf("expected same cache path across calls, got %q vs %q", cachedPath1, cachedPath2)
 	}
-	info2, err := os.Stat(cachedPath2)
+
+	got, err := os.ReadFile(cachedPath2)
 	if err != nil {
 		t.Fatalf("expected cache file to still exist: %v", err)
 	}
-	// 命中分支现在会 Chtimes 刷新 mtime 作为"最近使用"标记(供
-	// PruneThumbCache 做近似 LRU),因此不再断言 mtime 不变——只断言内容
-	// 没有被重新生成(mtime 不早于第一次生成时的 mtime)。
-	if info2.ModTime().Before(info1.ModTime()) {
-		t.Error("expected cache hit's mtime to not regress")
+	if !bytes.Equal(got, sentinel) {
+		t.Error("expected cache hit to leave the cached file's content untouched (no regeneration/rewrite on hit)")
 	}
 }
 
