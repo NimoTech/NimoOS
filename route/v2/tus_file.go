@@ -14,6 +14,7 @@ import (
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"github.com/NimoTech/NimoOS/common"
+	"github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/NimoTech/NimoOS/service"
 	"github.com/NimoTech/NimoOS/service/upload"
 	"github.com/tus/tusd/v2/pkg/handler"
@@ -177,6 +178,10 @@ func ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy strin
 		}
 	}
 
+	// dest 若已存在且即将被覆盖(overwrite 策略,或极端情况下 rename 目标恰好
+	// 撞车),必须在这里、变动之前清掉它的缓存条目——事后 dest 的 mtime/size
+	// 已经变成新文件的,再也算不出旧条目的 key 了。dest 不存在时 no-op。
+	file.PurgeThumbCacheEntry(dest)
 	if err := os.Rename(stagedPath, dest); err != nil {
 		if cerr := copyFileV2(stagedPath, dest); cerr != nil {
 			return "", false, fmt.Errorf("rename and copy both failed: %w / %v", err, cerr)

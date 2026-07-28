@@ -234,6 +234,88 @@ func TestPruneThumbCacheRemovesOldEntries(t *testing.T) {
 	}
 }
 
+// TestPurgeThumbCacheEntry_RemovesHitEntry verifies that purging a path whose
+// thumbnail is already cached removes the cached .jpg file, and that a
+// follow-up GetOrCreateThumbnailCached regenerates it from scratch rather
+// than serving a stale/removed path.
+func TestPurgeThumbCacheEntry_RemovesHitEntry(t *testing.T) {
+	withTempThumbCacheDir(t)
+	srcPath, _ := makeLargeJPEG(t, 800, 600)
+
+	cachedPath1, ok := GetOrCreateThumbnailCached(srcPath)
+	if !ok {
+		t.Fatal("expected cache miss path to succeed (generate + store)")
+	}
+	if _, err := os.Stat(cachedPath1); err != nil {
+		t.Fatalf("expected cache file to exist before purge: %v", err)
+	}
+
+	PurgeThumbCacheEntry(srcPath)
+
+	if _, err := os.Stat(cachedPath1); !os.IsNotExist(err) {
+		t.Fatalf("expected cache file to be removed after purge, stat err=%v", err)
+	}
+
+	// Sentinel bytes prove the regeneration actually re-ran rather than the
+	// purge being a no-op that left the old file behind under a new name.
+	cachedPath2, ok := GetOrCreateThumbnailCached(srcPath)
+	if !ok {
+		t.Fatal("expected regeneration after purge to succeed")
+	}
+	if cachedPath2 != cachedPath1 {
+		t.Errorf("expected same key/path to be reused (mtime/size unchanged), got %q vs %q", cachedPath1, cachedPath2)
+	}
+	if _, err := os.Stat(cachedPath2); err != nil {
+		t.Fatalf("expected regenerated cache file to exist: %v", err)
+	}
+}
+
+// TestPurgeThumbCacheEntry_RemovesNegativeEntry verifies purging also clears
+// a negative-cache marker (.neg), not just the positive .jpg entry.
+func TestPurgeThumbCacheEntry_RemovesNegativeEntry(t *testing.T) {
+	dir := withTempThumbCacheDir(t)
+	f, err := os.CreateTemp(t.TempDir(), "bad_*.heic")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	f.Write([]byte("not an image"))
+	f.Close()
+
+	if _, ok := GetOrCreateThumbnailCached(f.Name()); ok {
+		t.Fatal("expected undecodable source to fail thumbnail generation")
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) == 0 {
+		t.Fatal("expected a negative-cache marker file to exist before purge")
+	}
+
+	PurgeThumbCacheEntry(f.Name())
+
+	entries, _ = os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("expected negative-cache marker to be removed after purge, dir has %d entries", len(entries))
+	}
+}
+
+// TestPurgeThumbCacheEntry_DirectoryIsNoop verifies purging a directory path
+// does nothing and does not error/panic — directory deletes intentionally
+// don't recurse into per-file cache purges (cost tradeoff; the 30-day LRU
+// sweep is the backstop for anything left behind).
+func TestPurgeThumbCacheEntry_DirectoryIsNoop(t *testing.T) {
+	withTempThumbCacheDir(t)
+	dir := t.TempDir()
+	// Should not panic and should return normally.
+	PurgeThumbCacheEntry(dir)
+}
+
+// TestPurgeThumbCacheEntry_MissingPathIsNoop verifies purging a path that no
+// longer exists on disk (already removed, or never existed) is a silent
+// no-op rather than an error.
+func TestPurgeThumbCacheEntry_MissingPathIsNoop(t *testing.T) {
+	withTempThumbCacheDir(t)
+	PurgeThumbCacheEntry(filepath.Join(t.TempDir(), "does-not-exist.jpg"))
+}
+
 // TestPruneThumbCache_MissingDirIsNoop verifies pruning a ThumbCacheDir that
 // doesn't exist yet (e.g. before any thumbnail was ever generated) returns
 // (0, nil) rather than an error.
