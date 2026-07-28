@@ -229,33 +229,60 @@ type migrateUnit struct {
 	dst    string
 }
 
+// probeDirForStatfs walks up from path to the nearest existing ancestor
+// directory that is safe to statfs, and returns it.
+//
+// It uses os.Lstat rather than os.Stat, and treats a path that Lstat reports
+// as a symlink as untrustworthy — even if it exists — continuing the climb to
+// its parent instead of stopping there. This matters because migration
+// anchors (e.g. /DATA/AppData) are themselves symlinks, and os.Stat/
+// syscall.Statfs both transparently follow symlinks to whatever they point
+// at. During a system-restore (isSystemRestore), the destination passed in as
+// probePath is exactly such an anchor, still pointing at the *external* disk
+// that data is being restored FROM; the real write target is the sibling
+// path anchor+".migrating" that lives on the system disk. Trusting Stat on
+// the anchor would therefore statfs the source (external) disk and silently
+// check free space on the wrong filesystem — defeating the precheck for the
+// restore direction. Climbing past the symlink to its parent directory
+// (which is a real directory on the system disk) lands on the filesystem
+// that actually receives the write.
+func probeDirForStatfs(path string) string {
+	dir := path
+	for {
+		info, err := os.Lstat(dir)
+		if err == nil && info.Mode()&os.ModeSymlink == 0 {
+			// Exists and is a real directory/file (not a symlink): trust it.
+			break
+		}
+		// Either dir does not exist yet, or it exists but is a symlink we
+		// must not trust — climb to the parent and try again.
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the filesystem root; statfs("/") below will still
+			// succeed and report the root's free space.
+			break
+		}
+		dir = parent
+	}
+	return dir
+}
+
 // checkTargetFreeSpace verifies the filesystem backing probePath has at least
 // need bytes free, plus a 5% + 1GiB safety margin, before a migration starts
 // copying — so a near-full target disk fails fast instead of rsync-ing partway
 // through and leaving data in a half-migrated state.
 //
 // probePath itself does not need to exist yet (migrations often stage into a
-// not-yet-created destination directory): if it is missing, checkTargetFreeSpace
-// walks up to the nearest existing ancestor directory and statfs's that instead,
-// since it lives on the same filesystem/mount point.
+// not-yet-created destination directory), and it may also be an existing
+// symlink (a migration anchor) whose target must not be trusted — see
+// probeDirForStatfs for why both cases climb to the nearest existing,
+// non-symlink ancestor directory before calling statfs.
 func checkTargetFreeSpace(probePath string, need int64) error {
 	if need <= 0 {
 		return nil
 	}
 
-	dir := probePath
-	for {
-		if _, err := os.Stat(dir); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			// Reached the filesystem root without finding an existing directory;
-			// statfs("/") below will still succeed and report the root's free space.
-			break
-		}
-		dir = parent
-	}
+	dir := probeDirForStatfs(probePath)
 
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(dir, &st); err != nil {

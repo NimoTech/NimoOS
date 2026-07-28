@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -65,5 +66,33 @@ func TestCheckTargetFreeSpace_ClimbsToNearestExistingParent(t *testing.T) {
 	// Sanity check: probing tmpDir directly with the same need must agree.
 	if err := checkTargetFreeSpace(tmpDir, need); err != nil {
 		t.Fatalf("expected direct probe on existing dir to succeed, got error: %v", err)
+	}
+}
+
+// When probePath is itself a symlink (as migration anchors like /DATA/AppData
+// are), probeDirForStatfs must not trust it — os.Stat/syscall.Statfs would
+// silently follow the symlink to whatever it points at (e.g. the external
+// source disk during a system-restore), statfs-ing the wrong filesystem.
+// Instead it must climb to the symlink's parent directory, which is the real
+// directory that the sibling "anchor+.migrating" staging path is actually
+// written under.
+func TestProbeDirForStatfs_DoesNotTrustSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	realDir := filepath.Join(tmpDir, "A")
+	if err := os.Mkdir(realDir, 0755); err != nil {
+		t.Fatalf("failed to create real dir: %v", err)
+	}
+
+	link := filepath.Join(tmpDir, "L")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	got := probeDirForStatfs(link)
+	want := tmpDir // link's parent directory
+	if got != want {
+		t.Fatalf("probeDirForStatfs(%s) = %s, want %s (link's parent, not the symlink itself or its target %s)",
+			link, got, want, realDir)
 	}
 }
