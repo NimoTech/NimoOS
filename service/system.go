@@ -2368,12 +2368,17 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 	realAppData := resolveForSize(cfg.AppData)
 	realImages := resolveForSize(cfg.Images)
 	realUserData := resolveForSize(cfg.UserData)
+	realPhotos := resolveForSize(cfg.Photos)
 
-	var appDataSize, imagesSize, userDataSize int64
+	var appDataSize, imagesSize, userDataSize, photosSize int64
 
 	// SAFETY: Prevent full-disk scan if path is "/" or empty
 	if realAppData != "/" && realAppData != "" {
 		appDataSize, _ = file.GetFileOrDirSize(realAppData)
+	}
+
+	if realPhotos != "/" && realPhotos != "" {
+		photosSize, _ = file.GetFileOrDirSize(realPhotos)
 	}
 
 	if realImages != "/" && realImages != "" {
@@ -2405,6 +2410,10 @@ func (c *systemService) GetSystemPaths() map[string]interface{} {
 		"database": map[string]interface{}{
 			"path": realUserData,
 			"size": userDataSize,
+		},
+		"photos_data": map[string]interface{}{
+			"path": realPhotos,
+			"size": photosSize,
 		},
 	}
 }

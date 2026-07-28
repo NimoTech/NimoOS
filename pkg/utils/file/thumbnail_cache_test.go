@@ -1,6 +1,7 @@
 package file
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,9 +52,17 @@ func TestThumbCacheKey_DiffersByMtimeAndSize(t *testing.T) {
 }
 
 // TestGetOrCreateThumbnailCached_MissThenHit verifies a first call generates
-// and writes a cache entry, and a second call for the same source file
-// returns the same cached path without re-deriving pixels (checked
-// indirectly: the cache file's mtime does not advance on the second call).
+// and writes a cache entry, and a second call for the same source file hits
+// the cache and returns the same path WITHOUT rewriting the cached file's
+// content.
+//
+// 判别信号是内容比较,不是 mtime:命中分支会 Chtimes 刷新 mtime 作为"最近
+// 使用"标记(见 TestCacheHitRefreshesMtime),所以「mtime 不回退」这种断言对
+// 命中与误重新生成都成立,起不到区分作用。这里第一次生成后,故意往缓存文件
+// 里塞一段已知的哨兵字节(不是合法 JPEG),再触发第二次调用;命中分支只应
+// Chtimes,不应重写文件,所以哨兵字节必须原样保留。如果命中分支被误改成会
+// 重新生成/重写缓存文件,这里读到的就会是重新编码出的 JPEG 字节而不是哨兵
+// 字节,从而让本测试真正 FAIL。
 func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	withTempThumbCacheDir(t)
 	srcPath, _ := makeLargeJPEG(t, 800, 600)
@@ -62,9 +71,10 @@ func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	if !ok {
 		t.Fatal("expected cache miss path to succeed (generate + store)")
 	}
-	info1, err := os.Stat(cachedPath1)
-	if err != nil {
-		t.Fatalf("expected cache file to exist: %v", err)
+
+	sentinel := []byte("SENTINEL-CONTENT-NOT-A-REAL-JPEG")
+	if err := os.WriteFile(cachedPath1, sentinel, 0644); err != nil {
+		t.Fatalf("overwrite cache file with sentinel content: %v", err)
 	}
 
 	cachedPath2, ok := GetOrCreateThumbnailCached(srcPath)
@@ -74,12 +84,13 @@ func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	if cachedPath1 != cachedPath2 {
 		t.Errorf("expected same cache path across calls, got %q vs %q", cachedPath1, cachedPath2)
 	}
-	info2, err := os.Stat(cachedPath2)
+
+	got, err := os.ReadFile(cachedPath2)
 	if err != nil {
 		t.Fatalf("expected cache file to still exist: %v", err)
 	}
-	if !info1.ModTime().Equal(info2.ModTime()) {
-		t.Error("expected cache hit to reuse the existing file, not regenerate it")
+	if !bytes.Equal(got, sentinel) {
+		t.Error("expected cache hit to leave the cached file's content untouched (no regeneration/rewrite on hit)")
 	}
 }
 
@@ -158,5 +169,83 @@ func TestThumbCachePath_IsUnderThumbCacheDir(t *testing.T) {
 	p := thumbCachePath(key)
 	if filepath.Dir(p) != filepath.Clean(dir) {
 		t.Errorf("expected cache path to live under ThumbCacheDir %q, got %q", dir, p)
+	}
+}
+
+// TestCacheHitRefreshesMtime verifies a cache hit (GetOrCreateThumbnailCached
+// on an already-cached source) refreshes the cached file's mtime to "now",
+// so it reads as recently-used and PruneThumbCache's age-based sweep won't
+// reap a still-in-use entry just because it was generated long ago.
+func TestCacheHitRefreshesMtime(t *testing.T) {
+	withTempThumbCacheDir(t)
+	srcPath, _ := makeLargeJPEG(t, 800, 600)
+
+	cachedPath, ok := GetOrCreateThumbnailCached(srcPath)
+	if !ok {
+		t.Fatal("expected cache miss path to succeed (generate + store)")
+	}
+
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(cachedPath, past, past); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	if _, ok := GetOrCreateThumbnailCached(srcPath); !ok {
+		t.Fatal("expected cache hit to succeed")
+	}
+
+	info, err := os.Stat(cachedPath)
+	if err != nil {
+		t.Fatalf("stat cached file: %v", err)
+	}
+	if time.Since(info.ModTime()) > time.Minute {
+		t.Errorf("expected cache hit to refresh mtime to now, got mtime %v", info.ModTime())
+	}
+}
+
+// TestPruneThumbCacheRemovesOldEntries verifies PruneThumbCache removes
+// entries (both .jpg and .neg) whose mtime is older than maxAge, and leaves
+// fresh entries untouched.
+func TestPruneThumbCacheRemovesOldEntries(t *testing.T) {
+	dir := t.TempDir()
+	old := ThumbCacheDir
+	ThumbCacheDir = dir
+	defer func() { ThumbCacheDir = old }()
+
+	fresh := filepath.Join(dir, "fresh.jpg")
+	stale := filepath.Join(dir, "stale.jpg")
+	staleNeg := filepath.Join(dir, "stale.neg")
+	for _, p := range []string{fresh, stale, staleNeg} {
+		os.WriteFile(p, []byte("x"), 0644)
+	}
+	past := time.Now().Add(-31 * 24 * time.Hour)
+	os.Chtimes(stale, past, past)
+	os.Chtimes(staleNeg, past, past)
+
+	n, err := PruneThumbCache(30 * 24 * time.Hour)
+	if err != nil || n != 2 {
+		t.Fatalf("want removed=2, got %d err=%v", n, err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatal("fresh 不应被删")
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("stale 应被删")
+	}
+}
+
+// TestPruneThumbCache_MissingDirIsNoop verifies pruning a ThumbCacheDir that
+// doesn't exist yet (e.g. before any thumbnail was ever generated) returns
+// (0, nil) rather than an error.
+func TestPruneThumbCache_MissingDirIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+	old := ThumbCacheDir
+	ThumbCacheDir = missing
+	defer func() { ThumbCacheDir = old }()
+
+	n, err := PruneThumbCache(30 * 24 * time.Hour)
+	if err != nil || n != 0 {
+		t.Fatalf("want removed=0, err=nil, got %d err=%v", n, err)
 	}
 }
