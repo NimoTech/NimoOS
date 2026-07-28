@@ -28,8 +28,8 @@ func TestCheckTargetFreeSpace_NeedZeroAlwaysPasses(t *testing.T) {
 	}
 }
 
-// need = free*2 must fail with a "空间不足" error that reports both the free and
-// required byte counts (two numbers).
+// need = free*2 must fail with an "insufficient space" error that reports both the
+// free and required byte counts (two numbers).
 func TestCheckTargetFreeSpace_InsufficientSpace(t *testing.T) {
 	tmpDir := t.TempDir()
 	free := statfsFree(t, tmpDir)
@@ -38,8 +38,8 @@ func TestCheckTargetFreeSpace_InsufficientSpace(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when need (%d) far exceeds free space (%d), got nil", free*2, free)
 	}
-	if !strings.Contains(err.Error(), "空间不足") {
-		t.Fatalf("expected error to mention 空间不足, got: %v", err)
+	if !strings.Contains(err.Error(), "insufficient space") {
+		t.Fatalf("expected error to mention insufficient space, got: %v", err)
 	}
 	numbers := regexp.MustCompile(`[0-9]+`).FindAllString(err.Error(), -1)
 	if len(numbers) < 2 {

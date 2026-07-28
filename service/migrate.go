@@ -293,7 +293,7 @@ func checkTargetFreeSpace(probePath string, need int64) error {
 	required := need + need/20 + oneGiB
 
 	if free < required {
-		return fmt.Errorf("空间不足: 目标盘 %s 剩余可用空间 %d 字节,本次迁移至少需要 %d 字节(含 5%% 余量与 1GiB 保留空间)", dir, free, required)
+		return fmt.Errorf("insufficient space on target %s: %d bytes available, %d bytes required (including safety margin)", dir, free, required)
 	}
 	return nil
 }
@@ -360,7 +360,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		// 防呆:photos.conf 手工把 DataPath 配到非默认位置时,锚点软链迁移
 		// 语义不成立(数据根本不在锚点),拒绝并给出清晰错误。
 		if p, ok := photosConfDataPath("/etc/nimoos/photos.conf"); ok && p != "" && p != anchor {
-			return "", fmt.Errorf("photos DataPath 已被配置为 %s(非默认位置),请先恢复默认或手工迁移", p)
+			return "", fmt.Errorf("photos DataPath is custom-configured to %s (non-default); reset it to default or migrate manually", p)
 		}
 		src, _ := filepath.EvalSymlinks(anchor)
 		if src == "" {
@@ -371,7 +371,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			dst = anchor
 		} else if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 			// dst 的父目录 <目标盘>/.system_data 可能不存在(rsync 不建父目录)
-			return "", fmt.Errorf("无法创建目标目录 %s: %w", filepath.Dir(dst), err)
+			return "", fmt.Errorf("failed to create target directory %s: %w", filepath.Dir(dst), err)
 		}
 		newPath = anchor
 		units = append(units, migrateUnit{anchor, src, dst})
