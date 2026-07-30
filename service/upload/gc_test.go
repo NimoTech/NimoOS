@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NimoTech/NimoOS/common"
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 )
 
@@ -62,5 +63,18 @@ func TestSweepTasksTieredCleanup(t *testing.T) {
 	// keep1 不变
 	if k, _ := s.Get("keep1"); k.Status != commonUpload.UploadStatusPaused {
 		t.Fatal("keep1 must stay paused")
+	}
+}
+
+// TestDefaultGCConfigStagingDirsWiring 锁住 DefaultGCConfig 的多目录接线:
+// StagingDirs 必须已接好(非 nil),且首元素恒为 legacy 目录(见 staging_dirs.go 的枚举约定)。
+func TestDefaultGCConfigStagingDirsWiring(t *testing.T) {
+	cfg := DefaultGCConfig()
+	if cfg.StagingDirs == nil {
+		t.Fatal("DefaultGCConfig().StagingDirs must not be nil")
+	}
+	dirs := cfg.StagingDirs()
+	if len(dirs) == 0 || dirs[0] != common.FileUploadStagingDir {
+		t.Fatalf("StagingDirs()[0] want legacy dir %q, got %+v", common.FileUploadStagingDir, dirs)
 	}
 }

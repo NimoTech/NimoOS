@@ -146,6 +146,163 @@ func TestBrokenChildren(t *testing.T) {
 	}
 }
 
+// TestMarkItemDoneAcrossBatchesClearsOldInterruptedBatch 覆盖普通补传场景:
+// 旧批次 interrupted 缺 2 项,新批次(不同 id)完成同名 2 项后,旧批次应隐式
+// 销账并转 completed(角标随之消失)。
+func TestMarkItemDoneAcrossBatchesClearsOldInterruptedBatch(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "old", "a.jpg", "b.jpg", "c.jpg")
+	_ = s.MarkItemDone("old", "a.jpg", 1000) // 旧批次已传完 1/3
+	_ = s.SetInterrupted("old", 2000)        // 旧批次挂起,缺 b.jpg / c.jpg
+
+	newTestBatch(t, s, "new", "b.jpg", "c.jpg") // 用户不经弹窗直接重传缺失的两个文件
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "b.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "c.jpg", 3001); err != nil {
+		t.Fatal(err)
+	}
+
+	old, _ := s.Get("old")
+	if old.Status != BatchStatusCompleted || old.Done != 3 {
+		t.Fatalf("old batch want completed/done=3, got %s/%d", old.Status, old.Done)
+	}
+	newB, _ := s.Get("new")
+	if newB.Status != BatchStatusCompleted || newB.Done != 2 {
+		t.Fatalf("new batch want completed/done=2, got %s/%d", newB.Status, newB.Done)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesIgnoresOtherTargetPath 不同 targetPath 的同名
+// 批次不应被误销账。
+func TestMarkItemDoneAcrossBatchesIgnoresOtherTargetPath(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "old", "a.jpg")
+	_ = s.SetInterrupted("old", 2000)
+
+	other := &UploadBatch{ID: "other", OwnerUserID: "u1", TargetPath: "/DATA/Other",
+		Status: BatchStatusInterrupted, Total: 1, ExpiresAt: 9999999999}
+	if err := s.Create(other, []UploadBatchItem{{BatchID: "other", RelativePath: "a.jpg", Size: 100}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("other")
+	if got.Status != BatchStatusInterrupted || got.Done != 0 {
+		t.Fatalf("other targetPath batch should be untouched, got %s/%d", got.Status, got.Done)
+	}
+	oldB, _ := s.Get("old")
+	if oldB.Status != BatchStatusCompleted || oldB.Done != 1 {
+		t.Fatalf("matching batch should be cleared, got %s/%d", oldB.Status, oldB.Done)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesIdempotent 旧批次里该项已 done 时重复调用应
+// 保持幂等,不重复计数、不报错。
+func TestMarkItemDoneAcrossBatchesIdempotent(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "old", "a.jpg", "b.jpg")
+	_ = s.MarkItemDone("old", "a.jpg", 1000)
+	_ = s.SetInterrupted("old", 2000)
+
+	for i := 0; i < 3; i++ {
+		if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "a.jpg", int64(3000+i)); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+	got, _ := s.Get("old")
+	if got.Done != 1 || got.Status != BatchStatusInterrupted {
+		t.Fatalf("already-done item should stay idempotent (no-op), got done=%d status=%s", got.Done, got.Status)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesAbsolutePathParentBatchChildUpload 覆盖真机截图
+// 场景:用户原上传整个文件夹(批次 targetPath=/DATA/Media,item=backup/a.jpg),
+// 手动补传时进入子目录直传(完成上传:targetPath=/DATA/Media/backup,
+// relativePath=a.jpg)——绝对路径相同但二元组不同,应按绝对路径等价销账。
+func TestMarkItemDoneAcrossBatchesAbsolutePathParentBatchChildUpload(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "old", "backup/a.jpg", "backup/b.jpg")
+	_ = s.SetInterrupted("old", 2000) // 缺 backup/a.jpg、backup/b.jpg
+
+	// 子目录直传:targetPath=/DATA/Media/backup, relativePath=a.jpg
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media/backup", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("old")
+	if got.Done != 1 || got.Status != BatchStatusActive {
+		t.Fatalf("want done=1/active (interrupted->active on progress), got done=%d status=%s", got.Done, got.Status)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesAbsolutePathChildBatchParentUpload 覆盖反向场景:
+// 批次落在子目录(targetPath=/DATA/Media/backup,item=a.jpg),补传却在父目录
+// 带子路径直传(targetPath=/DATA/Media,relativePath=backup/a.jpg),同样应命中。
+func TestMarkItemDoneAcrossBatchesAbsolutePathChildBatchParentUpload(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	b := &UploadBatch{ID: "old", OwnerUserID: "u1", TargetPath: "/DATA/Media/backup",
+		Status: BatchStatusActive, Total: 1, ExpiresAt: 9999999999}
+	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetInterrupted("old", 2000)
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "backup/a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("old")
+	if got.Done != 1 || got.Status != BatchStatusCompleted {
+		t.Fatalf("want done=1/completed, got done=%d status=%s", got.Done, got.Status)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesUnrelatedDirNotCleared 不相关目录(仅字符串前缀
+// 相似,如 /DATA/Media 与 /DATA/Medias)不应被误销账。
+func TestMarkItemDoneAcrossBatchesUnrelatedDirNotCleared(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	b := &UploadBatch{ID: "sibling", OwnerUserID: "u1", TargetPath: "/DATA/Medias",
+		Status: BatchStatusInterrupted, Total: 1, ExpiresAt: 9999999999}
+	if err := s.Create(b, []UploadBatchItem{{BatchID: "sibling", RelativePath: "a.jpg", Size: 100}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("sibling")
+	if got.Status != BatchStatusInterrupted || got.Done != 0 {
+		t.Fatalf("string-prefix-similar sibling dir should be untouched, got %s/%d", got.Status, got.Done)
+	}
+}
+
+// TestMarkItemDoneAcrossBatchesTrailingSlashNormalized 批次 targetPath 带尾斜杠
+// 应被归一化后仍能正确匹配。
+func TestMarkItemDoneAcrossBatchesTrailingSlashNormalized(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	b := &UploadBatch{ID: "old", OwnerUserID: "u1", TargetPath: "/DATA/Media/backup/",
+		Status: BatchStatusActive, Total: 1, ExpiresAt: 9999999999}
+	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetInterrupted("old", 2000)
+
+	if err := s.MarkItemDoneAcrossBatches("/DATA/Media/backup", "a.jpg", 3000); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Get("old")
+	if got.Done != 1 || got.Status != BatchStatusCompleted {
+		t.Fatalf("want done=1/completed, got done=%d status=%s", got.Done, got.Status)
+	}
+}
+
 func TestDeleteExpired(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "a.jpg")

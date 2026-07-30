@@ -9,9 +9,11 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
+	"github.com/NimoTech/NimoOS-Common/utils/systemctl"
 	localfile "github.com/NimoTech/NimoOS/pkg/utils/file"
 	"github.com/NimoTech/NimoOS/service/pathlock"
 	"go.uber.org/zap"
@@ -24,17 +26,20 @@ const (
 	MigrateTypeAppData  = "app_data"
 	MigrateTypeImages   = "images"
 	MigrateTypeUserData = "database"
+	MigrateTypePhotos   = "photos_data"
 
 	DefaultAppDataPath  = "/DATA/AppData"
 	DefaultImagesPath   = "/DATA/.system_data/.docker"
 	DefaultUserDataPath = "/DATA"
+	DefaultPhotosPath   = "/DATA/.system_data/photos"
 )
 
-// PathConfig stores current configured paths for the three data locations.
+// PathConfig stores current configured paths for the four data locations.
 type PathConfig struct {
 	AppData  string `json:"app_data"`
 	Images   string `json:"images"`
 	UserData string `json:"database"`
+	Photos   string `json:"photos"`
 }
 
 // MigrateStatus describes a running or finished migration job.
@@ -117,6 +122,16 @@ func ResolveActivePaths() PathConfig {
 		cfg.Images = DefaultImagesPath
 	}
 	
+	// Fast track for Photos: anchor is /DATA/.system_data/photos; follow it to find the real location
+	if resolvedPhotos, err := filepath.EvalSymlinks(DefaultPhotosPath); err == nil {
+		if cfg.Photos != resolvedPhotos {
+			cfg.Photos = resolvedPhotos
+			changed = true
+		}
+	} else {
+		cfg.Photos = DefaultPhotosPath
+	}
+
 	// Special handling for UserData which usually contains subfolders
 	if _, err := os.Stat(cfg.UserData); err != nil {
 		if resolved, err := filepath.EvalSymlinks(DefaultUserDataPath); err == nil {
@@ -141,6 +156,7 @@ func LoadPathConfig() PathConfig {
 		AppData:  DefaultAppDataPath,
 		Images:   DefaultImagesPath,
 		UserData: DefaultUserDataPath,
+		Photos:   DefaultPhotosPath,
 	}
 	data, err := os.ReadFile(PathConfigFile)
 	if err != nil {
@@ -158,6 +174,9 @@ func LoadPathConfig() PathConfig {
 	}
 	if stored.UserData != "" {
 		cfg.UserData = stored.UserData
+	}
+	if stored.Photos != "" {
+		cfg.Photos = stored.Photos
 	}
 	return cfg
 }
@@ -208,6 +227,75 @@ type migrateUnit struct {
 	anchor string
 	src    string
 	dst    string
+}
+
+// probeDirForStatfs walks up from path to the nearest existing ancestor
+// directory that is safe to statfs, and returns it.
+//
+// It uses os.Lstat rather than os.Stat, and treats a path that Lstat reports
+// as a symlink as untrustworthy — even if it exists — continuing the climb to
+// its parent instead of stopping there. This matters because migration
+// anchors (e.g. /DATA/AppData) are themselves symlinks, and os.Stat/
+// syscall.Statfs both transparently follow symlinks to whatever they point
+// at. During a system-restore (isSystemRestore), the destination passed in as
+// probePath is exactly such an anchor, still pointing at the *external* disk
+// that data is being restored FROM; the real write target is the sibling
+// path anchor+".migrating" that lives on the system disk. Trusting Stat on
+// the anchor would therefore statfs the source (external) disk and silently
+// check free space on the wrong filesystem — defeating the precheck for the
+// restore direction. Climbing past the symlink to its parent directory
+// (which is a real directory on the system disk) lands on the filesystem
+// that actually receives the write.
+func probeDirForStatfs(path string) string {
+	dir := path
+	for {
+		info, err := os.Lstat(dir)
+		if err == nil && info.Mode()&os.ModeSymlink == 0 {
+			// Exists and is a real directory/file (not a symlink): trust it.
+			break
+		}
+		// Either dir does not exist yet, or it exists but is a symlink we
+		// must not trust — climb to the parent and try again.
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the filesystem root; statfs("/") below will still
+			// succeed and report the root's free space.
+			break
+		}
+		dir = parent
+	}
+	return dir
+}
+
+// checkTargetFreeSpace verifies the filesystem backing probePath has at least
+// need bytes free, plus a 5% + 1GiB safety margin, before a migration starts
+// copying — so a near-full target disk fails fast instead of rsync-ing partway
+// through and leaving data in a half-migrated state.
+//
+// probePath itself does not need to exist yet (migrations often stage into a
+// not-yet-created destination directory), and it may also be an existing
+// symlink (a migration anchor) whose target must not be trusted — see
+// probeDirForStatfs for why both cases climb to the nearest existing,
+// non-symlink ancestor directory before calling statfs.
+func checkTargetFreeSpace(probePath string, need int64) error {
+	if need <= 0 {
+		return nil
+	}
+
+	dir := probeDirForStatfs(probePath)
+
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return fmt.Errorf("failed to check free space at %s: %w", dir, err)
+	}
+	free := int64(st.Bavail) * int64(st.Bsize)
+	const oneGiB = int64(1) << 30
+	required := need + need/20 + oneGiB
+
+	if free < required {
+		return fmt.Errorf("insufficient space on target %s: %d bytes available, %d bytes required (including safety margin)", dir, free, required)
+	}
+	return nil
 }
 
 func executeMigration(jobID, migrationType, targetMountPoint string) (string, error) {
@@ -266,6 +354,27 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 			units = append(units, migrateUnit{anchor, src, dst})
 		}
+
+	case MigrateTypePhotos:
+		anchor := DefaultPhotosPath
+		// 防呆:photos.conf 手工把 DataPath 配到非默认位置时,锚点软链迁移
+		// 语义不成立(数据根本不在锚点),拒绝并给出清晰错误。
+		if p, ok := photosConfDataPath("/etc/nimoos/photos.conf"); ok && p != "" && p != anchor {
+			return "", fmt.Errorf("photos DataPath is custom-configured to %s (non-default); reset it to default or migrate manually", p)
+		}
+		src, _ := filepath.EvalSymlinks(anchor)
+		if src == "" {
+			src = anchor
+		}
+		dst := filepath.Join(targetMountPoint, ".system_data", "photos")
+		if isSystemRestore {
+			dst = anchor
+		} else if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			// dst 的父目录 <目标盘>/.system_data 可能不存在(rsync 不建父目录)
+			return "", fmt.Errorf("failed to create target directory %s: %w", filepath.Dir(dst), err)
+		}
+		newPath = anchor
+		units = append(units, migrateUnit{anchor, src, dst})
 
 	default:
 		return "", fmt.Errorf("unknown migration type: %s", migrationType)
@@ -337,10 +446,12 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		activeMigrationMu.Unlock()
 	}()
 
-	// 1. Stop services before migrating images, app data, or user data.
+	// 1. Stop services before migrating images, app data, user data, or photos data.
 	// Images: overlay mounts must be gone before measuring size.
 	// AppData/UserData: containers may write to these dirs during rsync, causing "vanished source files" (exit 24).
-	if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData {
+	// Photos: the ml container bind-mounts ml-cache under the photos anchor, and nimoos-photos
+	// holds photos.db (SQLite WAL) plus the thumbnail cache — both must be stopped first.
+	if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData || migrationType == MigrateTypePhotos {
 		setPhase(jobID, "stopping_services")
 		logger.Info("stopping containers and docker for migration")
 
@@ -358,6 +469,13 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			}
 		}
 
+		if migrationType == MigrateTypePhotos {
+			// 相册服务持有 photos.db(SQLite WAL)与缩略图目录,必须先停。
+			if err := systemctl.StopService("nimoos-photos"); err != nil {
+				logger.Error("failed to stop nimoos-photos before migration", zap.Error(err))
+			}
+		}
+
 		_ = exec.Command("systemctl", "stop", "docker.socket", "docker", "containerd").Run()
 		setStoppingApps(jobID, 0)
 		// Kill any lingering shim processes that hold overlay mounts after service stop.
@@ -367,13 +485,32 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 	// 2. Size tracking — done after service stop so overlay mounts are gone and size is accurate
 	var totalSize int64
+	var probePath string
 	for _, u := range units {
 		if u.src == u.dst || strings.HasPrefix(u.dst, strings.TrimRight(u.src, "/")+"/") {
 			continue
 		}
 		sz, _ := localfile.GetFileOrDirSize(u.src)
 		totalSize += sz
+		if probePath == "" {
+			// All units for one migration share a single target mount point, so
+			// checking the first real destination's free space is sufficient.
+			probePath = u.dst
+		}
 	}
+
+	// Target-disk space precheck: fail fast before copying starts rather than
+	// rsync-ing partway through a near-full disk. Services were already stopped
+	// above (Images/AppData/UserData/Photos), so a failure here must restart them
+	// before returning — this point runs before failCopy is defined, so restart
+	// explicitly rather than relying on that closure.
+	if probePath != "" {
+		if err := checkTargetFreeSpace(probePath, totalSize); err != nil {
+			restartStoppedServices(migrationType)
+			return "", err
+		}
+	}
+
 	setPhase(jobID, "copying")
 	updateProgress(jobID, 1, 0, totalSize)
 
@@ -426,9 +563,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	failCopy := func(err error) (string, error) {
 		close(done)
 		rollbackCopies()
-		if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData {
-			_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
-		}
+		restartStoppedServices(migrationType)
 		return "", err
 	}
 
@@ -449,8 +584,8 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 			// an error so Phase 5 never updates the path config with a stale value.
 			if isSystemRestore {
 				close(done)
-				if migrationType == MigrateTypeImages {
-					_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+				if migrationType == MigrateTypeImages || migrationType == MigrateTypePhotos {
+					restartStoppedServices(migrationType)
 				}
 				return "", fmt.Errorf("source data at %s is not accessible; external disk may not be mounted", u.src)
 			}
@@ -564,12 +699,11 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 	//   System → External : remove physical data at anchor, create symlink anchor → dst
 	//   External → External: remove old external data, update symlink anchor → new dst
 	//
-	// failAnchor is a local helper for step-4 failures: docker was stopped for images/app_data/user_data
-	// migrations and must be restarted even on partial failure.
+	// failAnchor is a local helper for step-4 failures: docker (and, for photos, nimoos-photos)
+	// was stopped for images/app_data/user_data/photos_data migrations and must be restarted
+	// even on partial failure.
 	failAnchor := func(err error) (string, error) {
-		if migrationType == MigrateTypeImages || migrationType == MigrateTypeAppData || migrationType == MigrateTypeUserData {
-			_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
-		}
+		restartStoppedServices(migrationType)
 		return newPath, err
 	}
 
@@ -737,6 +871,15 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
 		waitForDockerReady(90 * time.Second)
 		startContainersAfterMigration(runningContainerIDs)
+	case MigrateTypePhotos:
+		cfg.Photos = newPath
+		logger.Info("starting docker and nimoos-photos after photos data migration")
+		_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+		waitForDockerReady(90 * time.Second)
+		startContainersAfterMigration(runningContainerIDs)
+		if err := systemctl.StartService("nimoos-photos"); err != nil {
+			logger.Error("failed to start nimoos-photos after migration", zap.Error(err))
+		}
 	}
 
 	if err := SavePathConfig(cfg); err != nil {
@@ -813,6 +956,26 @@ func setStoppingApps(jobID string, count int) {
 		s := v.(MigrateStatus)
 		s.StoppingApps = count
 		MigrateJobs.Store(jobID, s)
+	}
+}
+
+// restartStoppedServices restarts the services that Phase 1 stopped for migrationType, for
+// reuse across every failure path (failCopy, failAnchor, and the isSystemRestore
+// missing-source early return) so a migration failure never leaves docker or nimoos-photos
+// stopped. It only starts the docker daemon itself — container-level restart-after-migration
+// (startContainersAfterMigration) stays Phase-5-only and success-only; on failure Docker's own
+// restart-policy mechanism brings containers back once the daemon is up.
+func restartStoppedServices(migrationType string) {
+	switch migrationType {
+	case MigrateTypeImages, MigrateTypeAppData, MigrateTypeUserData, MigrateTypePhotos:
+	default:
+		return
+	}
+	_ = exec.Command("systemctl", "start", "containerd", "docker.socket", "docker").Run()
+	if migrationType == MigrateTypePhotos {
+		if err := systemctl.StartService("nimoos-photos"); err != nil {
+			logger.Error("failed to start nimoos-photos after migration failure", zap.Error(err))
+		}
 	}
 }
 

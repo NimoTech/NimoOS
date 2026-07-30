@@ -12,6 +12,7 @@ package service
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/NimoTech/NimoOS-Common/utils/command"
 	"github.com/NimoTech/NimoOS/pkg/config"
@@ -30,15 +31,80 @@ type SharesService interface {
 	UpdateConfigFile()
 	InitSambaConfig()
 	DeleteShareByPath(path string)
+	RewriteSharePathPrefix(oldPath, newPath string) int
 }
 
 type sharesStruct struct {
 	db *gorm.DB
 }
 
+// sharePathScope 把「清理某路径上/下所有分享」的匹配范围规范化为
+// (精确路径, 子树 LIKE 模式):尾斜杠归一;LIKE 通配符(\ % _)转义,防止
+// 路径里出现通配符时误匹配;子树模式带 "/" 边界——旧实现裸 `path+"%"` 会在
+// 删 /a/b 时误删 /a/bc 上的分享。
+func sharePathScope(path string) (exact string, subtreePattern string) {
+	exact = strings.TrimRight(path, "/")
+	if exact == "" {
+		exact = "/"
+	}
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(exact)
+	if exact == "/" {
+		return exact, "/%"
+	}
+	return exact, esc + "/%"
+}
+
+// DeleteShareByPath 删除挂在 path 本身及其子树上的全部分享记录并重写 smb
+// 配置。供删除文件夹的链路调用:目录没了,分享再留着就是「已共享」Tab 里
+// 永远打不开的悬挂项。
 func (s *sharesStruct) DeleteShareByPath(path string) {
-	s.db.Where("path LIKE ?", path+"%").Delete(&model.SharesDBModel{})
+	exact, subtree := sharePathScope(path)
+	s.db.Where(`path = ? OR path LIKE ? ESCAPE '\'`, exact, subtree).Delete(&model.SharesDBModel{})
 	s.UpdateConfigFile()
+}
+
+// rewriteSharePath 把 sharePath 从 oldExact 子树映射到 newExact 子树:恰为
+// oldExact 本身 → newExact;在其子树内 → 前缀替换;不在范围内原样返回。
+// oldExact/newExact 须已做尾斜杠归一(调用方经 sharePathScope/TrimRight)。
+func rewriteSharePath(sharePath, oldExact, newExact string) string {
+	if sharePath == oldExact {
+		return newExact
+	}
+	if strings.HasPrefix(sharePath, oldExact+"/") {
+		return newExact + sharePath[len(oldExact):]
+	}
+	return sharePath
+}
+
+// RewriteSharePathPrefix 把挂在 oldPath 自身/子树上的分享记录改写到 newPath
+// 下,并同步更新 Name(smb 配置节名取自 basename)。返回改写条数;仅在确有
+// 改写时才重写 smb 配置(避免普通移动触发无谓的 smbd 重启)。供移动/重命名
+// 含分享(自身或子树)目录的链路调用:分享记录的 path 若仍指旧位置,会在
+// 「已共享」Tab 里成为永远打不开的悬挂项——正确语义是改写路径,不是删除。
+func (s *sharesStruct) RewriteSharePathPrefix(oldPath, newPath string) int {
+	oldExact, subtree := sharePathScope(oldPath)
+	newExact := strings.TrimRight(newPath, "/")
+
+	rows := []model2.SharesDBModel{}
+	s.db.Where(`path = ? OR path LIKE ? ESCAPE '\'`, oldExact, subtree).Find(&rows)
+
+	count := 0
+	for _, row := range rows {
+		newSharePath := rewriteSharePath(row.Path, oldExact, newExact)
+		if newSharePath == row.Path {
+			continue
+		}
+		s.db.Model(&model.SharesDBModel{}).Where("id = ?", row.ID).Updates(map[string]interface{}{
+			"path": newSharePath,
+			"name": filepath.Base(newSharePath),
+		})
+		count++
+	}
+
+	if count > 0 {
+		s.UpdateConfigFile()
+	}
+	return count
 }
 
 func (s *sharesStruct) GetSharesByName(name string) (shares []model2.SharesDBModel) {

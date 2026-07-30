@@ -1,0 +1,175 @@
+package file
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"golang.org/x/sync/singleflight"
+)
+
+// ThumbCacheDir is the on-disk root for cached thumbnails, keyed by a hash
+// of (path, mtime, size) so a changed/replaced source file naturally misses
+// the old entry instead of serving stale pixels. It mirrors the existing
+// "<卷根或 /DATA>/.system_data/<name>" convention already used for tus
+// staging (see common.FileUploadStagingDir) — a fixed /DATA root, not a
+// true per-mount-point root; see task report for the tradeoff. It is a var
+// (not a const) so tests can redirect it to a temp dir.
+var ThumbCacheDir = "/DATA/.system_data/thumb-cache"
+
+// negativeCacheTTL bounds how long a failed generation (unsupported format,
+// decode error, etc.) is remembered so a client hammering the same broken
+// file doesn't re-attempt an expensive decode on every request.
+const negativeCacheTTL = 30 * time.Second
+
+const (
+	thumbCacheExt    = ".jpg"
+	thumbNegativeExt = ".neg"
+)
+
+// thumbGroup de-dupes concurrent cache-miss generations for the same key
+// (thundering-herd protection when many requests race in for the same
+// not-yet-cached photo).
+var thumbGroup singleflight.Group
+
+// ThumbCacheKey derives a deterministic cache key from a file's path,
+// modification time and size. Any change to the underlying file (new
+// content -> new mtime and/or size) yields a different key, so stale
+// entries are simply orphaned rather than served.
+func ThumbCacheKey(path string, modTime time.Time, size int64) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s|%d|%d", path, modTime.UnixNano(), size)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func thumbCachePath(key string) string {
+	return filepath.Join(ThumbCacheDir, key+thumbCacheExt)
+}
+
+func thumbNegativePath(key string) string {
+	return filepath.Join(ThumbCacheDir, key+thumbNegativeExt)
+}
+
+// GetOrCreateThumbnailCached returns the on-disk path of a cached thumbnail
+// JPEG for the image at path, generating and persisting it on a cache miss.
+// ok is false when the thumbnail could not be produced (unsupported/corrupt
+// image, or a recent failed attempt still within the negative-cache TTL);
+// callers should fall back to serving the original file or a generic icon
+// in that case.
+func GetOrCreateThumbnailCached(path string) (cachedPath string, ok bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	key := ThumbCacheKey(path, fi.ModTime(), fi.Size())
+	cp := thumbCachePath(key)
+
+	if _, err := os.Stat(cp); err == nil {
+		// 刷新 mtime 作为"最近使用"标记,PruneThumbCache 据此做近似 LRU;
+		// 缓存 key 取的是源文件 mtime,与这里无关,刷新不影响命中判定。
+		// Chtimes 失败被忽略是有意的降级路径:最坏后果只是这条目在下一轮
+		// PruneThumbCache 里被误判为长期未用而被提前回收,进而触发一次重新
+		// 生成,不是正确性问题(不会返回错误结果或损坏缓存)。
+		now := time.Now()
+		_ = os.Chtimes(cp, now, now)
+		return cp, true
+	}
+
+	if negInfo, err := os.Stat(thumbNegativePath(key)); err == nil {
+		if time.Since(negInfo.ModTime()) < negativeCacheTTL {
+			return "", false
+		}
+	}
+
+	// singleflight collapses concurrent misses for the same key into one
+	// generation; everyone else waits for that result.
+	_, _, _ = thumbGroup.Do(key, func() (interface{}, error) {
+		generateAndCacheThumbnail(path, key, cp)
+		return nil, nil
+	})
+
+	if _, err := os.Stat(cp); err == nil {
+		return cp, true
+	}
+	return "", false
+}
+
+// generateAndCacheThumbnail does the actual decode/resize/encode and writes
+// either the resulting JPEG or a negative marker to ThumbCacheDir. Errors
+// are swallowed here by design: the negative-cache marker (or the absence
+// of a positive cache file) is itself the error signal to the caller.
+func generateAndCacheThumbnail(path, key, cachePath string) {
+	if err := os.MkdirAll(ThumbCacheDir, 0o755); err != nil {
+		return
+	}
+
+	data, err := GenerateThumbnail(path)
+	if err != nil {
+		// Negative-cache the failure so repeated requests for a
+		// known-unsupported file don't re-attempt a full decode each time.
+		_ = os.WriteFile(thumbNegativePath(key), []byte{}, 0o644)
+		return
+	}
+
+	// Write-then-rename for atomicity: a concurrent reader never observes a
+	// partially-written cache file.
+	tmp := cachePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, cachePath); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+// PurgeThumbCacheEntry 在源文件即将被删除/移动前调用:按当前 stat 计算 key
+// 并删除对应缓存条目(.jpg 与 .neg)。best-effort、静默——找不到条目、删除失
+// 败等都不返回错误,最坏后果只是留给 30 天 LRU 清扫(PruneThumbCache)兜底,
+// 不影响正确性。path 不是普通文件(目录、不存在、stat 失败等)时不做任何
+// 事:目录删除不会递归给每个子文件都算一次 key 去清缓存(成本考虑),留给
+// LRU 兜底即可。
+//
+// 调用时机是本函数正确性的前提:必须在源文件真正被删除/重命名/覆盖之前调
+// 用——缓存 key 里包含 mtime 和 size,一旦源文件已经不存在或已被改写,就再
+// 也无法算出当初生成缓存时用的那个 key 了。
+func PurgeThumbCacheEntry(path string) {
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() || !fi.Mode().IsRegular() {
+		return
+	}
+	key := ThumbCacheKey(path, fi.ModTime(), fi.Size())
+	_ = os.Remove(thumbCachePath(key))
+	_ = os.Remove(thumbNegativePath(key))
+}
+
+// PruneThumbCache 清扫 ThumbCacheDir 目录下所有 mtime 早于 maxAge 的普通
+// 文件(.jpg/.neg 及孤儿 .tmp 等),不做扩展名过滤。源文件被删/改/移后旧条目
+// 只会孤儿化(key 含 path+mtime+size),没有任何联动清理,本函数是唯一回收
+// 路径;配合命中刷 mtime,效果≈按最近使用淘汰。目录不存在返回 (0, nil)。
+func PruneThumbCache(maxAge time.Duration) (int, error) {
+	entries, err := os.ReadDir(ThumbCacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fi, ierr := e.Info()
+		if ierr != nil || !fi.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(ThumbCacheDir, e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}

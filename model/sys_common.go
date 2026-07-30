@@ -66,8 +66,9 @@ type SystemConfig struct {
 }
 
 type FileSetting struct {
-	ShareDir    []string `json:"share_dir" delim:"|"`
-	DownloadDir string   `json:"download_dir"`
+	ShareDir      []string `json:"share_dir" delim:"|"`
+	DownloadDir   string   `json:"download_dir"`
+	ThumbCacheDir string   `json:"thumb_cache_dir"`
 }
 type BaseInfo struct {
 	Hash       string `json:"i"`

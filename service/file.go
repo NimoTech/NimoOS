@@ -465,6 +465,12 @@ func isCrossDevice(err error) bool {
 // the no-rename case and would silently land a rename-style copy at the
 // wrong (conflicting) path.
 func moveItem(ctx context.Context, from, dst, style string) (usedRename bool, err error) {
+	// 必须在 from 真正消失之前调用:无论走哪条分支(下面的原子 rename,还是
+	// 跨设备时的 copy->校验->删源),from 最终都会不再存在于原路径上,缓存
+	// key 含 mtime/size,事后无法再算出。moveItem 只在 move 类型任务里调用
+	// (copy 分支源文件保留,不在这里),所以在函数入口统一 purge 一次就够。
+	file.PurgeThumbCacheEntry(from)
+
 	if rErr := renameFn(from, dst); rErr == nil {
 		return true, nil
 	} else if !isCrossDevice(rErr) {
@@ -633,6 +639,16 @@ func FileOperate(k string) {
 
 	createdPaths := make([]string, 0, len(temp.Item))
 
+	// movedPairs records (from, actual-landed-path) for every move item that
+	// truly landed on disk this run — used after the loop to keep any Samba
+	// share hanging off that item's old path from becoming a dead entry in
+	// the "Shared" tab. This deliberately mirrors createdPaths' append sites
+	// for the move branches (NOT copy: the source still exists there, so no
+	// share is left dangling) rather than reusing createdPaths itself,
+	// because the two diverge on the "rename" (keep-both) conflict style:
+	// the landed path there is renameDst, not dst.
+	var movedPairs [][2]string
+
 	// cancelled records whether cancellation actually prevented or
 	// interrupted work — set only at the specific break sites below, all
 	// of which are themselves gated on ctx.Err() != nil. It is
@@ -698,6 +714,7 @@ itemsLoop:
 						temp.Item[i].ProcessedSize = v.Size
 					}
 					createdPaths = append(createdPaths, dst)
+					movedPairs = append(movedPairs, [2]string{v.From, dst})
 					continue
 				case "rename":
 					// Keep-both: land at a de-conflicted sibling name instead
@@ -727,6 +744,7 @@ itemsLoop:
 						temp.Item[i].ProcessedSize = v.Size
 					}
 					createdPaths = append(createdPaths, renameDst)
+					movedPairs = append(movedPairs, [2]string{v.From, renameDst})
 					logger.Info("move: conflict resolved via rename (keep-both)",
 						zap.String("from", v.From), zap.String("original_dst", dst), zap.String("final_dst", renameDst))
 					continue
@@ -759,6 +777,7 @@ itemsLoop:
 				temp.Item[i].ProcessedSize = v.Size
 			}
 			createdPaths = append(createdPaths, dst)
+			movedPairs = append(movedPairs, [2]string{v.From, dst})
 
 		} else if temp.Type == "copy" {
 			dst := opDestPath(v.From, temp.To)
@@ -865,6 +884,21 @@ itemsLoop:
 
 	if len(createdPaths) > 0 {
 		go PublishMediaCreated(createdPaths)
+	}
+
+	// Keep any Samba share hanging off a moved item's OLD path from becoming
+	// a dead "Shared" tab entry: rewrite it to follow the item to its actual
+	// landed path. Done synchronously (unlike the PublishMediaCreated
+	// fire-and-forget above) and still before the deferred unlocks release —
+	// the data has already landed on disk by this point, so there is nothing
+	// left to race against.
+	for _, p := range movedPairs {
+		if MyService == nil {
+			continue
+		}
+		if shares := MyService.Shares(); shares != nil {
+			shares.RewriteSharePathPrefix(p[0], p[1])
+		}
 	}
 }
 

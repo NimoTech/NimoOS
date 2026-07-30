@@ -77,6 +77,10 @@ func init() {
 
 	config.InitSetup(*configFlag, _confSample)
 
+	if config.FileSettingInfo.ThumbCacheDir != "" {
+		file.ThumbCacheDir = config.FileSettingInfo.ThumbCacheDir
+	}
+
 	logger.LogInit(config.AppInfo.LogPath, config.AppInfo.LogSaveName, config.AppInfo.LogFileExt)
 	if len(*dbFlag) == 0 {
 		*dbFlag = config.AppInfo.DBPath + "/db"
@@ -88,6 +92,13 @@ func init() {
 	// user.db lives alongside nimoOS.db; open it read-only for folder-permission lookups.
 	userDBPath := config.AppInfo.DBPath + "/db/user.db"
 	service.MyService = service.NewServiceWithUserDB(sqliteDB, config.CommonInfo.RuntimePath, userDBPath)
+
+	// 启动 seed:登记 "photos" 为虚拟检索根(幂等),供 search-roots 读端点返回。
+	// 失败仅告警不 panic——下次启动会重试补上。logger 包目前只暴露 Info/Error,
+	// 这里用 zap.L()(logger.LogInit 时已 ReplaceGlobals)直接打 Warn 级别。
+	if err := service.MyService.RootGrants().SeedVirtual("photos"); err != nil {
+		zap.L().Warn("failed to seed virtual root grant for photos", zap.Error(err))
+	}
 
 	service.Cache = cache.Init()
 
@@ -141,6 +152,16 @@ func main() {
 		logger.Error("add crontab error", zap.Error(err))
 	}
 
+	if _, err := crontab.AddFunc("@every 24h", func() {
+		if n, err := file.PruneThumbCache(30 * 24 * time.Hour); err != nil {
+			logger.Error("thumb-cache prune failed", zap.Error(err))
+		} else if n > 0 {
+			logger.Info("thumb-cache prune", zap.Int("removed", n))
+		}
+	}); err != nil {
+		logger.Error("add thumb-cache prune crontab error", zap.Error(err))
+	}
+
 	crontab.Start()
 	defer crontab.Stop()
 
@@ -162,6 +183,7 @@ func main() {
 		"/v1/recover",
 		"/v1/other",
 		"/v1/zt",
+		"/v1/nimoos",
 		"/v1/test",
 		route.V2APIPath,
 		route.V2DocPath,

@@ -60,6 +60,48 @@ func TestValidateFileUploadMetadata(t *testing.T) {
 	}
 }
 
+func TestStatfsPath(t *testing.T) {
+	avail, err := statfsPath(t.TempDir())
+	if err != nil {
+		t.Fatalf("statfsPath: %v", err)
+	}
+	if avail == 0 {
+		t.Fatal("expected non-zero available bytes for a real filesystem")
+	}
+	if _, err := statfsPath("/no/such/path/really-should-not-exist"); err == nil {
+		t.Fatal("expected error for nonexistent path")
+	}
+}
+
+// validateFileUploadMetadataForRoot must statfs the *resolved staging root*
+// for targetPath, not a hardcoded /DATA — this is the actual fix for the
+// cross-volume 413 bug (quota was always checked against /DATA regardless of
+// which volume the upload was actually headed to).
+func TestValidateFileUploadMetadataForRootUsesResolvedRoot(t *testing.T) {
+	volRoot := t.TempDir()
+	mounts := []MountEntry{{Mountpoint: volRoot, FSType: "ext4"}}
+	mountsFn := func() []MountEntry { return mounts }
+
+	meta := map[string]string{
+		"filename":   "a.bin",
+		"targetPath": filepath.Join(volRoot, "sub"),
+	}
+	hook := hookWith(meta, 10)
+	_, _, err := validateFileUploadMetadataForRoot(hook, mountsFn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A target path that falls back (no matching mount) must be checked
+	// against /DATA — same as the pre-existing statfsDATA behavior. This is a
+	// read-only statfs syscall, safe to run for real in tests.
+	hookFallback := hookWith(map[string]string{"filename": "a.bin", "targetPath": "/opt/nowhere"}, 10)
+	_, _, err = validateFileUploadMetadataForRoot(hookFallback, func() []MountEntry { return nil })
+	if err != nil {
+		t.Fatalf("unexpected error on fallback path: %v", err)
+	}
+}
+
 func TestUniqueDestPath(t *testing.T) {
 	dir := t.TempDir()
 	p := uniqueDestPath(filepath.Join(dir, "a.txt"))

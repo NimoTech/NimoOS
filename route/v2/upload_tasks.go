@@ -16,8 +16,12 @@ import (
 // taskStore 由 route/v2.go 在 InitV2Router 时注入。
 var taskStore *upload.TaskStore
 
-// cancelStagingDir 是取消时清理 staging 的目录(测试可改写)。
-var cancelStagingDir = common.FileUploadStagingDir
+// cancelStagingDirsFn 返回取消时应尝试清理 staging 的所有目录(测试可改写)。
+// 任务 ID 现在可能带卷前缀、落在不同卷的暂存目录里(见 tus_routing_store.go),
+// 不能再假设单一 /DATA 目录——每次取消都重新枚举,与批次清扫器用同一规则。
+var cancelStagingDirsFn = func() []string {
+	return upload.StagingDirs(common.FileUploadStagingDir, "/media")
+}
 
 func SetTaskStore(s *upload.TaskStore) { taskStore = s }
 
@@ -61,8 +65,10 @@ func CancelUpload(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 	if canceled {
-		os.Remove(filepath.Join(cancelStagingDir, id))         //nolint:errcheck
-		os.Remove(filepath.Join(cancelStagingDir, id+".info")) //nolint:errcheck
+		for _, dir := range cancelStagingDirsFn() {
+			os.Remove(filepath.Join(dir, id))         //nolint:errcheck
+			os.Remove(filepath.Join(dir, id+".info")) //nolint:errcheck
+		}
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"canceled": canceled})
 }
