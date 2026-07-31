@@ -37,6 +37,15 @@
     </a> -->
     <br/>
     <!-- NimoOS Community -->
+    <a href="https://discord.com/servers/nimo-pc-1461244017105703069" target="_blank">
+        <img alt="NimoOS Discord" src="https://img.shields.io/badge/Discord-162453?style=flat-square&logo=discord&logoColor=fff&label=Discord" />
+    </a>
+    <a href="https://www.reddit.com/r/Nimo" target="_blank">
+        <img alt="NimoOS Reddit" src="https://img.shields.io/badge/r%2FNimo-162453?style=flat-square&logo=reddit&logoColor=fff&label=Reddit" />
+    </a>
+    <a href="https://x.com/Nimo_PC" target="_blank">
+        <img alt="NimoOS on X" src="https://img.shields.io/badge/%40Nimo__PC-162453?style=flat-square&logo=x&logoColor=fff&label=X" />
+    </a>
     <a href="https://github.com/NimoTech/NimoOS/discussions" target="_blank">
         <img alt="NimoOS GitHub Discussions" src="https://img.shields.io/github/discussions/NimoTech/NimoOS?color=162453&style=flat-square&label=Discussions&logo=github" />
     </a>
@@ -46,6 +55,7 @@
     </a>
     <br/>
     <!-- NimoOS Links -->
+    <a href="https://nimopc.com" target="_blank">Website</a> |
     <a href="https://github.com/NimoTech/NimoOS" target="_blank">GitHub</a>
     <br/>
     <br/>
@@ -174,11 +184,17 @@ affiliated with, endorsed by, or sponsored by IceWhale.
 NimoOS extends that foundation with an AI agent, RAG-based retrieval, a knowledge
 layer, and a built-in web terminal.
 
-Questions, ideas and bug reports belong in
-[GitHub Discussions](https://github.com/NimoTech/NimoOS/discussions) and
-[Issues](https://github.com/NimoTech/NimoOS/issues). We do not run a Discord;
-CasaOS's community channels belong to CasaOS, and sending our users there would
-put our support load on somebody else's volunteers.
+Bug reports and technical discussion belong in
+[Issues](https://github.com/NimoTech/NimoOS/issues) and
+[GitHub Discussions](https://github.com/NimoTech/NimoOS/discussions) — that keeps
+them searchable and linkable to the code.
+
+For everything else:
+
+- [Discord](https://discord.com/servers/nimo-pc-1461244017105703069)
+- [Reddit — r/Nimo](https://www.reddit.com/r/Nimo)
+- [X — @Nimo_PC](https://x.com/Nimo_PC)
+- [nimopc.com](https://nimopc.com)
 
 ## Contributing
 

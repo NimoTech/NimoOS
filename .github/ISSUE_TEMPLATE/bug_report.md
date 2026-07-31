@@ -61,4 +61,4 @@ sudo journalctl -xef -u nimoos.service
 
 > Add any other context about the problem here.
 > 
-> If you are a Zimaboard user, make it explicit with when you got your Zimaboard.
+> Include the hardware you are running on, and when you installed NimoOS.
