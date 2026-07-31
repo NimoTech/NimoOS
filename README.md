@@ -37,7 +37,7 @@
     </a> -->
     <br/>
     <!-- NimoOS Community -->
-    <a href="https://discord.com/servers/nimo-pc-1461244017105703069" target="_blank">
+    <a href="https://discord.com/invite/8NStGMweZh" target="_blank">
         <img alt="NimoOS Discord" src="https://img.shields.io/badge/Discord-162453?style=flat-square&logo=discord&logoColor=fff&label=Discord" />
     </a>
     <a href="https://www.reddit.com/r/Nimo" target="_blank">
@@ -191,7 +191,7 @@ them searchable and linkable to the code.
 
 For everything else:
 
-- [Discord](https://discord.com/servers/nimo-pc-1461244017105703069)
+- [Discord](https://discord.com/invite/8NStGMweZh)
 - [Reddit — r/Nimo](https://www.reddit.com/r/Nimo)
 - [X — @Nimo_PC](https://x.com/Nimo_PC)
 - [nimopc.com](https://nimopc.com)
