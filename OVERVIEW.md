@@ -142,7 +142,7 @@ NimoOS/
 ### 云存储挂载
 
 - 通过 rclone HTTP API 挂载/卸载远程存储（`service/storage.go`），配置存 rclone 自己的 config，开机 `InitNetworkMount` 末尾 `CheckAndMountAll` 重放。
-- 所有云盘 OAuth 回调统一走中转域名 `https://cloudoauth.nimopc.com`（`drivers/base/oauth.go`），由中转页跳回本机 `/v1/recover/:type`。
+- 所有云盘 OAuth 回调统一走中转域名 `https://cloudoauth.nimotech.ai`（`drivers/base/oauth.go`），由中转页跳回本机 `/v1/recover/:type`。
 - **Google Drive BYO**：`POST /v1/driver/google_drive/auth`（`route/v1/driver.go`）接收用户自建的 client_id/client_secret，凭据只存服务器内存短期缓存（10 分钟 TTL，随机 sid 为键），返回拼好的 Google 授权 URL；回调 `GetRecoverStorage` 按 state 中的 sid 取回凭据换 token，client_secret 绝不进入 URL/中转页。
 
 ### Samba 管理
