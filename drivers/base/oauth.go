@@ -5,4 +5,4 @@ package base
 // 默认值为生产中转地址;如需在构建时切换,可用:
 //
 //	-ldflags "-X github.com/NimoTech/NimoOS/drivers/base.RedirectURI=https://<host>"
-var RedirectURI = "https://cloudoauth.nimopc.com"
+var RedirectURI = "https://cloudoauth.nimotech.ai"
