@@ -37,9 +37,6 @@
     </a> -->
     <br/>
     <!-- NimoOS Community -->
-    <a href="https://discord.gg/8T8hd5GPZU" target="_blank">
-        <img alt="IceWhale Discord" src="https://img.shields.io/discord/884667213326463016?color=162453&style=flat-square&label=Discord&logo=discord&logoColor=fff" />
-    </a>
     <a href="https://github.com/NimoTech/NimoOS/discussions" target="_blank">
         <img alt="NimoOS GitHub Discussions" src="https://img.shields.io/github/discussions/NimoTech/NimoOS?color=162453&style=flat-square&label=Discussions&logo=github" />
     </a>
@@ -47,21 +44,8 @@
     <a href="#credits">
         <img alt="All Contributors" src="https://img.shields.io/static/v1?label=All%20Contributors&message=15&color=162453&style=flat-square&logo=Handshake&logoColor=fff" />
     </a>
-    <!-- NimoOS YouTube -->
-    <a href="https://www.youtube.com/channel/UC2zMrUYT17AJhIl9XWZzT8g" target="_blank">
-        <img alt="YouTube Tutorial Views" src="https://img.shields.io/youtube/channel/views/UC2zMrUYT17AJhIl9XWZzT8g?style=flat-square&logo=youtube&logoColor=red&label=YouTube%20Tutorial%20Views" />
-    </a>
-    <br/>    
-    <a href="http://bit.ly/45JQIiL" target="_blank">
-        <img alt="twitter ZimaSpace" src="https://img.shields.io/twitter/follow/ZimaSpace?style=flat-square&logo=X&label=Contact%20Us%20%40%20ZimaSpace&labelColor=555&color=555" />
-    </a>
-    <a href="http://bit.ly/4lgHj7V" target="_blank">
-        <img alt="facebook ZimaSpace" src="https://img.shields.io/badge/ZimaSpace-1877F2?style=flat-square&logo=Facebook&logoColor=fff&label=Contact%20Us&labelColor=555&color=162453" />
-    </a>
     <br/>
     <!-- NimoOS Links -->
-    <a href="https://www.nimoos.io" target="_blank">Website</a> |
-    <a href="http://demo.nimoos.io" target="_blank">Demo</a> |
     <a href="https://github.com/NimoTech/NimoOS" target="_blank">GitHub</a>
     <br/>
     <br/>
@@ -132,13 +116,13 @@ Community Support
 Freshly install a system from the list above and run this command:
 
 ```sh
-wget -qO- https://get.nimoos.io | sudo bash
+wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 ```
 
 or
 
 ```sh
-curl -fsSL https://get.nimoos.io | sudo bash
+curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 ```
 
 ### Update NimoOS
@@ -148,13 +132,13 @@ NimoOS can be updated from the User Interface (UI), via `Settings ... Update`.
 Alternatively it can be updated from a terminal session.  To update from a terminal session, it must be done either from a secure shell (ssh) session to the device or from a directly attached terminal and keyboard to the device running NimoOS, this cannot be done from the terminal via the NimoOS User Interface (UI).  To update to the latest release of NimoOS from a terminal session run this command:
 
 ```sh
-wget -qO- https://get.nimoos.io/update | sudo bash
+wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
 ```
 
 or
 
 ```sh
-curl -fsSL https://get.nimoos.io/update | sudo bash
+curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
 ```
 
 To determine version of NimoOS from a terminal session run this command:
@@ -177,29 +161,31 @@ nimoos-uninstall
 Before v0.3.3
 
 ```sh
-curl -fsSL https://get.icewhale.io/nimoos-uninstall.sh | sudo bash
+curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-uninstall-v0.4.17.sh | sudo bash
 ```
 
 ## Community 
 
-The word Casa comes from the Spanish word for "home". Project NimoOS originated as a pre-installed system for the crowdfunded product [ZimaBoard](https://www.zimaboard.com) on Kickstarter.
+NimoOS is a fork of [CasaOS](https://github.com/IceWhaleTech/CasaOS), which IceWhale
+Technology Co., Ltd. began as a pre-installed system for the ZimaBoard. We build on
+that work and are grateful for it; NimoOS is an independent project and is not
+affiliated with, endorsed by, or sponsored by IceWhale.
 
-After looking at many systems and software on the market, the team found no server system designed for home scenarios, sadly true.
+NimoOS extends that foundation with an AI agent, RAG-based retrieval, a knowledge
+layer, and a built-in web terminal.
 
-So, we set out to build this open-source project to develop NimoOS with our own hands, everyone in the community, and you.
-
-We believe that through community-driven collaborative innovation and open communication with global developers, we can reshape the digital home experience like never before.
-
-**A warm welcome for you to get help or share great ideas in the [Discord](https://discord.gg/8T8hd5GPZU)!**
-
-[![Discord Card](https://discordapp.com/api/guilds/884667213326463016/widget.png?style=banner2)](https://discord.gg/8T8hd5GPZU)
+Questions, ideas and bug reports belong in
+[GitHub Discussions](https://github.com/NimoTech/NimoOS/discussions) and
+[Issues](https://github.com/NimoTech/NimoOS/issues). We do not run a Discord;
+CasaOS's community channels belong to CasaOS, and sending our users there would
+put our support load on somebody else's volunteers.
 
 ## Contributing
 
 NimoOS is a community-driven open source project and the people involved are NimoOS users. That means NimoOS will always need contributions from community members just like you!
 
-- See <https://wiki.nimoos.io/en/contribute> for ways of contributing to NimoOS
-- See <https://wiki.nimoos.io/en/contribute/development> if you want to be involved in code contribution specifically
+- Open an issue or a pull request on <https://github.com/NimoTech/NimoOS>
+- See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for how to build the project and what a good change looks like
 
 
 ## Credits

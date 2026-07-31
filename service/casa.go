@@ -33,6 +33,12 @@ func (o *casaService) GetNimoosVersion() model.Version {
 		}
 	}
 
+	// No remote version service configured: report the zero value rather than
+	// building a request against an empty base URL. See OasisGet.
+	if config.ServerInfo.ServerApi == "" {
+		return version
+	}
+
 	v := httper.OasisGet(config.ServerInfo.ServerApi + "/v1/sys/version")
 	data := gjson.Get(v, "data")
 	json2.Unmarshal([]byte(data.String()), &version)

@@ -140,6 +140,15 @@ func ZeroTierGet(url string, head map[string]string) (content string, code int) 
 // url:请求地址
 // response:请求返回的内容
 func OasisGet(url string) (response string) {
+	// An unset ServerApi means no remote service is configured, so make no
+	// outbound request. Without this the token fetch below would build a URL with
+	// no scheme or host and rely on the HTTP client failing fast — which it does,
+	// but "unconfigured means offline" should be a contract in the code rather
+	// than a property of whichever client happens to be in use.
+	if config.ServerInfo.ServerApi == "" {
+		return ""
+	}
+
 	head := make(map[string]string)
 
 	t := make(chan string)

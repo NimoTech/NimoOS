@@ -14,8 +14,18 @@ UserDataPath = /var/lib/nimoos/conf
 
 [server]
 RunMode = release
-ServerApi = https://api.nimoos.io/nimoos-api
-Handshake = socket.nimoos.io
+# ServerApi and Handshake point at a vendor-hosted version-check and handshake
+# service. NimoOS runs no such service, so both are left empty — empty means no
+# outbound request is made at all. If you run a compatible endpoint of your own,
+# fill them in.
+#
+# They previously defaulted to api.nimoos.io and socket.nimoos.io, domains derived
+# from casaos.io by the rename and never registered by anyone. A self-hosted panel
+# reporting in to an unowned domain on every version check is a hijacking risk, and
+# reporting in to a vendor at all is a fair thing for a self-hosting community to
+# object to.
+ServerApi =
+Handshake =
 Token = 
 USBAutoMount =
 
