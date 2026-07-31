@@ -8,7 +8,6 @@
  * @LastEditTime: 2022-09-05 16:28:46
  * @FilePath: /NimoOS/route/periodical.go
  * @Description:
- * @Website: https://www.nimoos.io
  * Copyright (c) 2021-2025 IceWhale Technology Co., Ltd.
  * Copyright (c) 2026 NimoTech
  * Licensed under the Apache License, Version 2.0.

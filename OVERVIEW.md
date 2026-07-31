@@ -174,7 +174,7 @@ ShellPath = /usr/share/nimoos/shell
 UserDataPath = /var/lib/nimoos/conf
 
 [server]
-ServerApi = https://api.nimoos.io/nimoos-api   # 版本检查/升级/日志上报服务器
+ServerApi =                                 # 版本检查/握手服务；NimoOS 不运行此服务，默认留空即不外联
 USBAutoMount =
 
 [common]
