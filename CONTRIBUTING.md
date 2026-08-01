@@ -41,7 +41,7 @@ That means a full build needs a workspace that looks like:
 nimoos/
 ├── NimoOS/                # this repository
 ├── NimoOS-Common/         # shared library — every Go service replaces to it
-├── NimoOS-MessageBus/     # generate this one first, see below
+├── NimoOS-MessageBus/     # other services' `go generate` reads its openapi.yaml
 ├── NimoOS-Gateway/  NimoOS-UserService/  NimoOS-AppManagement/  ...
 └── NimoOS-UI/
 ```
@@ -67,12 +67,17 @@ in each affected repository — there is no mechanism to land one PR across
 repositories. Coordinate the merge order in the PR descriptions and link
 them to each other.
 
-One ordering rule matters more than the rest: **`NimoOS-MessageBus` must be
-regenerated (`go generate ./...`) first** when anything in a cross-service
-change touches it. Its OpenAPI-generated code is not committed, and other
-services' own `go generate` steps consume its generated spec/client. If you
-change `NimoOS-MessageBus` and forget this, downstream services will
-generate against a stale contract.
+One dependency matters more than the rest: several other services' own
+`go generate` steps (this repo included) read
+`../NimoOS-MessageBus/api/message_bus/openapi.yaml` directly — that file is
+hand-authored and git-tracked in `NimoOS-MessageBus`, not something its own
+`go generate` produces. There's no ordering requirement and no need to run
+`NimoOS-MessageBus`'s own code generation first; you just need the
+`NimoOS-MessageBus` checkout present as a sibling with an up-to-date
+`api/message_bus/openapi.yaml`. If you're changing that OpenAPI spec itself
+as part of a cross-service feature, land the `NimoOS-MessageBus` PR (or at
+least get the spec change reviewed) before relying on it from another
+service's generated client.
 
 ### Which repository should a bug or idea go to?
 
