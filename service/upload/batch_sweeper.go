@@ -3,6 +3,7 @@ package upload
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
@@ -21,12 +22,73 @@ const (
 	BatchSweepIntervalSeconds = int64(30)
 )
 
+// listMountPoints 枚举当前挂载点(读 /proc/self/mounts);包级变量便于测试注入。
+var listMountPoints = func() []string {
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 {
+			// mounts 里空格转义为 \040(如带空格的卷标)。
+			out = append(out, strings.ReplaceAll(f[1], `\040`, " "))
+		}
+	}
+	return out
+}
+
+// targetOrphaned 判定批次目标目录是否「确定性缺失」:目标 stat 不到,且被某个
+// 非根挂载点覆盖(即所在卷确实处于挂载状态)。卷未挂载时(USB 拔了/RAID 未装配/
+// 冷启动枚举慢)目标同样 stat 不到,但覆盖它的挂载点也不在——不判死,卷回来
+// 角标就回来。根 "/" 不算覆盖:卷缺席时路径落回根文件系统视角(如 /media/X
+// 残留空目录),凭根挂载无法区分「删了」和「没挂」。代价是数据直接放根文件系统
+// 的形态享受不到孤儿兜底(NimoOS 数据卷均为独立挂载,实际不受影响)。
+func targetOrphaned(target string, mountPoints []string) bool {
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		return false // 存在,或权限等其它错误:都不判孤儿
+	}
+	clean := filepath.Clean(target)
+	for _, m := range mountPoints {
+		mm := filepath.Clean(m)
+		if mm == "/" {
+			continue
+		}
+		if clean == mm || strings.HasPrefix(clean, mm+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// cancelUnfinished 终止批次未完成的 tus 任务并清各暂存目录残件。
+func cancelUnfinished(tasks *TaskStore, batchID string, stagingDirs []string, now int64) error {
+	list, err := tasks.ListUnfinishedByBatch(batchID)
+	if err != nil {
+		return err
+	}
+	expires := now + common.UploadCanceledTTLSeconds
+	for _, t := range list {
+		_, _ = commonUpload.Cancel(tasks, t.ID, expires)
+		for _, dir := range stagingDirs {
+			os.Remove(filepath.Join(dir, t.ID))         //nolint:errcheck
+			os.Remove(filepath.Join(dir, t.ID+".info")) //nolint:errcheck
+		}
+	}
+	return nil
+}
+
 // SweepBatches 执行一轮批次扫描:
 //  1. active 且 (now - last_progress_at) > 120s → interrupted(角标出现)
 //  2. interrupted 且未清 staging 且 (now - interrupted_at) > 600s → 终止任务 + 清 staging
-//  3. 终态(completed/abandoned)→ 删除批次与 items
+//  3. 孤儿兜底:目标目录已被删除(targetOrphaned)的 interrupted 批次 → 自动放弃
+//  4. 终态(completed/abandoned)→ 删除批次与 items
 //
 // interrupted 批次不自动过期:角标一直挂着,直到用户手动放弃或补传完成。
+// 唯一例外是第 3 步的孤儿——角标只挂在列表里实际存在的条目上,目标目录没了,
+// 角标永不显示、用户没有手动入口,不清会永久滞留(真机事故:/media/RAID_0/homer
+// 删除后 4 条批次 7k+ items 无人可清)。
 //
 // stagingDirs 是当前所有在用的暂存目录(见 StagingDirs):任务 ID 现在可能带卷前缀、
 // 落在不同卷的暂存目录里,不能再假设单一目录,清理时逐个尝试(不存在则 os.Remove
@@ -55,19 +117,22 @@ func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDirs []string, n
 		if b.StagingCleaned || now-b.InterruptedAt <= BatchStagingGraceSeconds {
 			continue
 		}
-		list, lerr := tasks.ListUnfinishedByBatch(b.ID)
-		if lerr != nil {
-			return lerr
-		}
-		expires := now + common.UploadCanceledTTLSeconds
-		for _, t := range list {
-			_, _ = commonUpload.Cancel(tasks, t.ID, expires)
-			for _, dir := range stagingDirs {
-				os.Remove(filepath.Join(dir, t.ID))         //nolint:errcheck
-				os.Remove(filepath.Join(dir, t.ID+".info")) //nolint:errcheck
-			}
+		if err := cancelUnfinished(tasks, b.ID, stagingDirs, now); err != nil {
+			return err
 		}
 		if err := batches.MarkStagingCleaned(b.ID); err != nil {
+			return err
+		}
+	}
+	mounts := listMountPoints()
+	for _, b := range interrupted {
+		if !targetOrphaned(b.TargetPath, mounts) {
+			continue
+		}
+		if err := cancelUnfinished(tasks, b.ID, stagingDirs, now); err != nil {
+			return err
+		}
+		if err := batches.SetStatus(b.ID, BatchStatusAbandoned); err != nil {
 			return err
 		}
 	}
