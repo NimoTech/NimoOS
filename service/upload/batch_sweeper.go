@@ -24,7 +24,9 @@ const (
 // SweepBatches 执行一轮批次扫描:
 //  1. active 且 (now - last_progress_at) > 120s → interrupted(角标出现)
 //  2. interrupted 且未清 staging 且 (now - interrupted_at) > 600s → 终止任务 + 清 staging
-//  3. expires_at 到期 → 删除批次与 items
+//  3. 终态(completed/abandoned)→ 删除批次与 items
+//
+// interrupted 批次不自动过期:角标一直挂着,直到用户手动放弃或补传完成。
 //
 // stagingDirs 是当前所有在用的暂存目录(见 StagingDirs):任务 ID 现在可能带卷前缀、
 // 落在不同卷的暂存目录里,不能再假设单一目录,清理时逐个尝试(不存在则 os.Remove
@@ -69,7 +71,7 @@ func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDirs []string, n
 			return err
 		}
 	}
-	if _, err := batches.DeleteExpired(now); err != nil {
+	if _, err := batches.DeleteTerminal(); err != nil {
 		return err
 	}
 	return nil

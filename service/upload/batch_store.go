@@ -201,11 +201,14 @@ func (s *BatchStore) BrokenChildren(dir, owner string) (map[string]string, error
 	return out, nil
 }
 
-// DeleteExpired 删除过期批次及其 items,返回删除的批次数。
-func (s *BatchStore) DeleteExpired(now int64) (int, error) {
+// DeleteTerminal 删除终态(completed/abandoned)批次及其 items,返回删除的批次数。
+// 终态批次不产生角标、也不再参与销账,留着只会让 items 无限累积(单批可达数千行)。
+// active/interrupted 永不自动清除——感叹号角标只能由用户手动放弃或补传完成来解决。
+func (s *BatchStore) DeleteTerminal() (int, error) {
 	var ids []string
 	if err := s.db.Model(&UploadBatch{}).
-		Where("expires_at > 0 AND expires_at <= ?", now).Pluck("id", &ids).Error; err != nil {
+		Where("status IN ?", []string{BatchStatusCompleted, BatchStatusAbandoned}).
+		Pluck("id", &ids).Error; err != nil {
 		return 0, err
 	}
 	for _, id := range ids {

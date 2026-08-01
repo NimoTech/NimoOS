@@ -27,7 +27,7 @@ func newTestBatch(t *testing.T, s *BatchStore, id string, rels ...string) {
 		items = append(items, UploadBatchItem{BatchID: id, RelativePath: r, Size: 100})
 	}
 	b := &UploadBatch{ID: id, OwnerUserID: "u1", TargetPath: "/DATA/Media",
-		Status: BatchStatusActive, Total: len(rels), ExpiresAt: 9999999999}
+		Status: BatchStatusActive, Total: len(rels)}
 	if err := s.Create(b, items); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestBatchCreateIdempotent(t *testing.T) {
 	newTestBatch(t, s, "b1", "a.jpg", "sub/b.jpg")
 	// 同 id 再建:不报错、不重复插 items
 	b := &UploadBatch{ID: "b1", OwnerUserID: "u1", TargetPath: "/DATA/Media",
-		Status: BatchStatusActive, Total: 2, ExpiresAt: 9999999999}
+		Status: BatchStatusActive, Total: 2}
 	if err := s.Create(b, []UploadBatchItem{{BatchID: "b1", RelativePath: "a.jpg", Size: 100}}); err != nil {
 		t.Fatalf("second create should be idempotent: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestMarkItemDoneAcrossBatchesIgnoresOtherTargetPath(t *testing.T) {
 	_ = s.SetInterrupted("old", 2000)
 
 	other := &UploadBatch{ID: "other", OwnerUserID: "u1", TargetPath: "/DATA/Other",
-		Status: BatchStatusInterrupted, Total: 1, ExpiresAt: 9999999999}
+		Status: BatchStatusInterrupted, Total: 1}
 	if err := s.Create(other, []UploadBatchItem{{BatchID: "other", RelativePath: "a.jpg", Size: 100}}); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestMarkItemDoneAcrossBatchesAbsolutePathParentBatchChildUpload(t *testing.
 func TestMarkItemDoneAcrossBatchesAbsolutePathChildBatchParentUpload(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	b := &UploadBatch{ID: "old", OwnerUserID: "u1", TargetPath: "/DATA/Media/backup",
-		Status: BatchStatusActive, Total: 1, ExpiresAt: 9999999999}
+		Status: BatchStatusActive, Total: 1}
 	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestMarkItemDoneAcrossBatchesAbsolutePathChildBatchParentUpload(t *testing.
 func TestMarkItemDoneAcrossBatchesUnrelatedDirNotCleared(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	b := &UploadBatch{ID: "sibling", OwnerUserID: "u1", TargetPath: "/DATA/Medias",
-		Status: BatchStatusInterrupted, Total: 1, ExpiresAt: 9999999999}
+		Status: BatchStatusInterrupted, Total: 1}
 	if err := s.Create(b, []UploadBatchItem{{BatchID: "sibling", RelativePath: "a.jpg", Size: 100}}); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestMarkItemDoneAcrossBatchesUnrelatedDirNotCleared(t *testing.T) {
 func TestMarkItemDoneAcrossBatchesTrailingSlashNormalized(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	b := &UploadBatch{ID: "old", OwnerUserID: "u1", TargetPath: "/DATA/Media/backup/",
-		Status: BatchStatusActive, Total: 1, ExpiresAt: 9999999999}
+		Status: BatchStatusActive, Total: 1}
 	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
 		t.Fatal(err)
 	}
@@ -332,20 +332,36 @@ func TestMarkItemDoneAcrossBatchesTrailingSlashNormalized(t *testing.T) {
 	}
 }
 
-func TestDeleteExpired(t *testing.T) {
+// TestDeleteTerminal 终态(completed/abandoned)批次连同 items 删除;
+// active/interrupted 永不自动清除——感叹号角标只能由用户手动放弃/补传解决。
+func TestDeleteTerminal(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
-	newTestBatch(t, s, "b1", "a.jpg")
-	s.db.Model(&UploadBatch{}).Where("id = ?", "b1").Update("expires_at", 100)
-	n, err := s.DeleteExpired(200)
-	if err != nil || n != 1 {
+	newTestBatch(t, s, "done", "a.jpg")
+	_ = s.MarkItemDone("done", "a.jpg", 1000) // → completed
+	newTestBatch(t, s, "quit", "a.jpg")
+	_ = s.SetStatus("quit", BatchStatusAbandoned)
+	newTestBatch(t, s, "stuck", "a.jpg")
+	_ = s.SetInterrupted("stuck", 2000)
+	newTestBatch(t, s, "live", "a.jpg") // active
+
+	n, err := s.DeleteTerminal()
+	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
-	if _, err := s.Get("b1"); err == nil {
-		t.Fatal("batch should be gone")
+	for _, id := range []string{"done", "quit"} {
+		if _, err := s.Get(id); err == nil {
+			t.Fatalf("terminal batch %s should be gone", id)
+		}
+		var cnt int64
+		s.db.Model(&UploadBatchItem{}).Where("batch_id = ?", id).Count(&cnt)
+		if cnt != 0 {
+			t.Fatalf("items of %s should be gone", id)
+		}
 	}
-	var cnt int64
-	s.db.Model(&UploadBatchItem{}).Where("batch_id = ?", "b1").Count(&cnt)
-	if cnt != 0 {
-		t.Fatal("items should be gone")
+	if b, err := s.Get("stuck"); err != nil || b.Status != BatchStatusInterrupted {
+		t.Fatalf("interrupted batch must survive forever: %v", err)
+	}
+	if b, err := s.Get("live"); err != nil || b.Status != BatchStatusActive {
+		t.Fatalf("active batch must survive: %v", err)
 	}
 }
