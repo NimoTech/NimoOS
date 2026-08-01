@@ -1,0 +1,89 @@
+name: CI
+
+# Build, vet and test on every pull request, and on main so a bad merge shows up
+# immediately rather than surprising the next person to open a PR.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only: nothing here publishes anything. A token that cannot write is one
+# that cannot be misused by a compromised dependency.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out NimoOS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: NimoOS
+
+      # go.mod redirects github.com/NimoTech/NimoOS-Common to
+      # ../NimoOS-Common and nothing is vendored, so a lone checkout of
+      # this repository cannot build. CI has to reproduce the sibling
+      # layout that a developer checkout has.
+      #
+      # NimoOS-MessageBus is here for api/message_bus/openapi.yaml, which this
+      # repository's go:generate reads to build its message-bus client.
+      - name: Check out NimoOS-Common
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: NimoTech/NimoOS-Common
+          path: NimoOS-Common
+          # Only needed while these repositories are private. Once they are
+          # public the default job token suffices and this secret can go.
+          token: ${{ secrets.CI_SIBLING_TOKEN || github.token }}
+      - name: Check out NimoOS-MessageBus
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: NimoTech/NimoOS-MessageBus
+          path: NimoOS-MessageBus
+          # Only needed while these repositories are private. Once they are
+          # public the default job token suffices and this secret can go.
+          token: ${{ secrets.CI_SIBLING_TOKEN || github.token }}
+
+      # Take the toolchain from go.mod so this workflow cannot drift from what
+      # the module actually declares.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: NimoOS/go.mod
+          cache-dependency-path: NimoOS/go.sum
+
+      # codegen/ is gitignored, so a fresh clone has no generated API code
+      # and does not compile until this runs. Regenerating here also means a
+      # spec change that breaks codegen is caught in CI rather than on
+      # someone's machine a week later.
+      - name: Generate API code
+        working-directory: NimoOS
+        run: go generate ./...
+
+      # CGO_ENABLED=1 matches NimoOS-Build/scripts/deploy.sh, which is what
+      # builds the shipped binary. This service also compiles with
+      # CGO_ENABLED=0 — go-sqlite3 has a no-cgo stub — but that binary panics
+      # the moment it touches the database, so building any other way would
+      # make a green run meaningless.
+      - name: Build
+        working-directory: NimoOS
+        env:
+          CGO_ENABLED: "1"
+        run: go build ./...
+
+      - name: Vet
+        working-directory: NimoOS
+        env:
+          CGO_ENABLED: "1"
+        run: go vet ./...
+
+      - name: Test
+        working-directory: NimoOS
+        env:
+          CGO_ENABLED: "1"
+        run: go test ./...
