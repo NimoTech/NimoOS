@@ -9,11 +9,10 @@ const (
 	BatchStatusAbandoned   = "abandoned"
 )
 
-// BatchExpireSeconds: 批次(含 items)保留 30 天后由扫描器删除。
-const BatchExpireSeconds = int64(30 * 24 * 60 * 60)
-
 // UploadBatch 是一次「用户选择并开始上传」的对账单头:总数/完成数/状态。
 // 前端在开传前用完整清单 POST 创建;tus 完成事件逐条回填 done。
+// interrupted 批次没有自动过期:感叹号角标一直挂着,直到用户手动放弃或补传完成;
+// 进入终态(completed/abandoned)后由扫描器删除行(见 DeleteTerminal)。
 type UploadBatch struct {
 	ID             string `gorm:"column:id;primaryKey" json:"id"`
 	OwnerUserID    string `gorm:"column:owner_user_id;index" json:"owner_user_id"`
@@ -26,7 +25,6 @@ type UploadBatch struct {
 	StagingCleaned bool   `gorm:"column:staging_cleaned" json:"-"`
 	CreatedAt      int64  `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 	UpdatedAt      int64  `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
-	ExpiresAt      int64  `gorm:"column:expires_at;index" json:"expires_at"`
 }
 
 func (UploadBatch) TableName() string { return "o_upload_batches" }

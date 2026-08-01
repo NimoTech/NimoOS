@@ -54,12 +54,11 @@ func CreateUploadBatch(c echo.Context) error {
 			BatchID: req.ID, RelativePath: it.RelativePath, Size: it.Size,
 		})
 	}
-	now := time.Now().Unix()
 	b := &upload.UploadBatch{
 		ID: req.ID, OwnerUserID: c.Request().Header.Get("user_id"),
 		TargetPath: filepath.Clean(req.TargetPath),
 		Status:     upload.BatchStatusActive, Total: len(items),
-		LastProgressAt: now, ExpiresAt: now + upload.BatchExpireSeconds,
+		LastProgressAt: time.Now().Unix(),
 	}
 	if err := batchStore.Create(b, items); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
