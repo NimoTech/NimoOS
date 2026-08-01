@@ -155,13 +155,16 @@ func (s *BatchStore) ListByStatus(status string) ([]UploadBatch, error) {
 	return bs, err
 }
 
-// BrokenChildren 返回 dir 的直接子条目名 → batchID:凡存在 interrupted 批次的缺失文件
-// 落在该子条目路径下,即命中。列目录接口据此给文件夹注入「裂开」角标;天然递归——
-// 用户钻到任何一层,缺内容的祖先/子文件夹都会被各自层级的调用命中。
-func (s *BatchStore) BrokenChildren(dir string) (map[string]string, error) {
+// BrokenChildren 返回 dir 的直接子条目名 → batchID:凡 owner 自己的 interrupted 批次
+// 的缺失文件落在该子条目路径下,即命中。列目录接口据此给文件夹注入「裂开」角标;
+// 天然递归——用户钻到任何一层,缺内容的祖先/子文件夹都会被各自层级的调用命中。
+// 只看 owner 自己的批次:与批次详情/放弃接口的 owner 校验(getOwnedBatch)同口径,
+// 否则别人的批次角标看得见、点不开(GET/abandon 404),且永远清不掉。
+func (s *BatchStore) BrokenChildren(dir, owner string) (map[string]string, error) {
 	out := map[string]string{}
-	batches, err := s.ListByStatus(BatchStatusInterrupted)
-	if err != nil {
+	var batches []UploadBatch
+	if err := s.db.Where("status = ? AND owner_user_id = ?",
+		BatchStatusInterrupted, owner).Find(&batches).Error; err != nil {
 		return nil, err
 	}
 	if len(batches) == 0 {
