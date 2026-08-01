@@ -12,7 +12,7 @@ import (
 // dataAllowedPrefixes are the mount-point families where non-admin users may
 // browse.  Every other path — including the root filesystem and its partitions —
 // is implicitly denied.
-var dataAllowedPrefixes = []string{}
+var dataAllowedPrefixes = []string{"/DATA", "/mnt", "/media"}
 
 // systemDiskCache caches the set of system-disk mount points so we only pay
 // the /proc/mounts parse cost once per minute instead of on every API call.
