@@ -2,8 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Entries below `1.9.4-alpha1` predate the fork from CasaOS and are kept for
+history; the `1.9.x-alpha` line is where NimoOS as its own project begins.
 
 ## [Unreleased]
 
@@ -15,6 +18,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Security
+
+## [1.9.4-alpha1] - 2026-08
+
+This is the changelog's starting point for NimoOS as an independent project
+(see [`NOTICE`](./NOTICE) for the CasaOS fork attribution). It summarizes
+capability, not a diff against the entries below — see
+[ROADMAP.md](./ROADMAP.md) for the full, maintained capability list.
+
+### Added
+
+- AI agent with local and cloud inference routing, cross-session memory,
+  progressive skill disclosure, and MCP client/server support
+- Retrieval-augmented search: a document parsing/embedding pipeline plus
+  vector recall, aggregated with the filename index in global search
+- Knowledge layer: a wiki navigation map maintained alongside your files,
+  plus manually captured and auto-distilled knowledge notes
+- Built-in web terminal with persistent sessions, a step-up password
+  prompt, and idle auto-lock
+- Snapshots and a Time Machine view for file recovery
+- RAID management alongside existing disk and USB auto-mount support
+- Photo library with local vector search and image captioning
+- Third-party app store compatibility (`x-casaos` compose extension) on
+  top of the existing built-in app store
+
+### Known limitations
+
+- Multi-user isolation is incomplete: Photos and Search are not yet
+  per-user scoped — see [SECURITY.md](./SECURITY.md#known-limitations).
 
 ## [0.4.3]
 
