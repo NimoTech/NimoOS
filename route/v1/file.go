@@ -418,10 +418,10 @@ func DirPath(ctx echo.Context) error {
 			info[i].Extensions = ex
 		}
 	}
-	// 上传中断角标:凡有 interrupted 批次的缺失文件落在某子条目路径下,该条目
-	// 注入 extensions.upload,前端据此叠加「裂开」角标。查询失败只降级不报错——
+	// 上传中断角标:凡当前用户自己的 interrupted 批次的缺失文件落在某子条目路径下,
+	// 该条目注入 extensions.upload,前端据此叠加「裂开」角标。查询失败只降级不报错——
 	// 角标是提示性信息,不能拖垮列目录主流程。
-	if broken, berr := getUploadBatchStore().BrokenChildren(req.Path); berr == nil && len(broken) > 0 {
+	if broken, berr := getUploadBatchStore().BrokenChildren(req.Path, ctx.Request().Header.Get("user_id")); berr == nil && len(broken) > 0 {
 		for i := (req.Index - 1) * req.Size; i < forEnd; i++ {
 			bid, ok := broken[info[i].Name]
 			if !ok {

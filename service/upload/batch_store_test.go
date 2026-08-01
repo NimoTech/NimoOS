@@ -126,7 +126,7 @@ func TestBrokenChildren(t *testing.T) {
 	_ = s.SetInterrupted("b1", 2000)
 
 	// /DATA/Media 下:子条目「备份」(缺 2025/y.jpg)与「loose.jpg」命中
-	m, err := s.BrokenChildren("/DATA/Media")
+	m, err := s.BrokenChildren("/DATA/Media", "u1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,15 +134,44 @@ func TestBrokenChildren(t *testing.T) {
 		t.Fatalf("unexpected map: %#v", m)
 	}
 	// 钻进一层:/DATA/Media/备份 下只有「2025」命中,2024 不命中
-	m, _ = s.BrokenChildren("/DATA/Media/备份")
+	m, _ = s.BrokenChildren("/DATA/Media/备份", "u1")
 	if m["2025"] != "b1" || len(m) != 1 {
 		t.Fatalf("unexpected map: %#v", m)
 	}
 	// active(未中断)批次不产生角标
 	_ = s.TouchProgress("b1", 3000)
-	m, _ = s.BrokenChildren("/DATA/Media")
+	m, _ = s.BrokenChildren("/DATA/Media", "u1")
 	if len(m) != 0 {
 		t.Fatalf("active batch should not badge: %#v", m)
+	}
+}
+
+// TestBrokenChildrenOwnerScoped 防回归(真机事故):角标可见性必须与批次详情/
+// 放弃接口的 owner 校验同口径。别人(或 owner 为空的遗留测试批次)的 interrupted
+// 批次不能给当前用户注入角标——否则看得见、点不开,GET/abandon 全 404,
+// 前端误报 Server error 且角标永远清不掉。
+func TestBrokenChildrenOwnerScoped(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "b1", "loose.jpg") // owner=u1
+	_ = s.SetInterrupted("b1", 2000)
+
+	// 别的用户看不到 u1 的角标
+	m, err := s.BrokenChildren("/DATA/Media", "u2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 0 {
+		t.Fatalf("other owner should see no badge: %#v", m)
+	}
+	// 空 owner(localhost 免 JWT)同样看不到 u1 的角标
+	m, _ = s.BrokenChildren("/DATA/Media", "")
+	if len(m) != 0 {
+		t.Fatalf("empty owner should see no badge: %#v", m)
+	}
+	// 自己仍能看到
+	m, _ = s.BrokenChildren("/DATA/Media", "u1")
+	if m["loose.jpg"] != "b1" || len(m) != 1 {
+		t.Fatalf("owner should see own badge: %#v", m)
 	}
 }
 
