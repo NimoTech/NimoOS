@@ -142,10 +142,9 @@ nimoos-uninstall
 
 ## Community
 
-NimoOS is a fork of [CasaOS](https://github.com/IceWhaleTech/CasaOS), which IceWhale
-Technology Co., Ltd. began as a pre-installed system for the ZimaBoard. We build on
-that work and are grateful for it; NimoOS is an independent project and is not
-affiliated with, endorsed by, or sponsored by IceWhale.
+NimoOS is a fork of [CasaOS](https://github.com/IceWhaleTech/CasaOS), originally
+developed by IceWhale Technology Co., Ltd. NimoOS is an independent project and is
+not affiliated with, endorsed by, or sponsored by IceWhale.
 
 NimoOS extends that foundation with an AI agent, RAG-based retrieval, a knowledge
 layer, and a built-in web terminal.
