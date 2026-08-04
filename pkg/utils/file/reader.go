@@ -45,7 +45,7 @@ func NewReadLineFromEnd(name string) (rd *ReadLineFromEnd, err error) {
 	return rd, nil
 }
 
-// ReadLine 结尾包含'\n'
+// ReadLine returns a line including the trailing '\n'
 func (c *ReadLineFromEnd) ReadLine() (line []byte, err error) {
 	var ok bool
 	for {

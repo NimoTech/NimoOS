@@ -45,14 +45,14 @@ func TestNewInteruptReader(t *testing.T) {
 	ctx, cancel = context.WithCancel(context.Background())
 
 	go func() {
-		// 在初始上下文的基础上创建一个有取消功能的上下文
+		// create a cancellable context based on the initial context
 		//	ctx, cancel := context.WithCancel(ctx)
-		fmt.Println("开始")
+		fmt.Println("start")
 		fIn, err := os.Open("/Users/liangjianli/Downloads/demo_data.tar.gz")
 		if err != nil {
 		}
 		defer fIn.Close()
-		fmt.Println("创建新文件")
+		fmt.Println("creating new file")
 		fOut, err := os.Create("/Users/liangjianli/Downloads/demo_data1.tar.gz")
 		if err != nil {
 			fmt.Println(err)
@@ -60,7 +60,7 @@ func TestNewInteruptReader(t *testing.T) {
 
 		defer fOut.Close()
 
-		fmt.Println("准备复制")
+		fmt.Println("about to copy")
 		//	_, err = io.Copy(out, NewReader(ctx, f))
 		//	time.Sleep(time.Second * 2)
 		// ctx.Done()
@@ -97,7 +97,7 @@ func TestNewInteruptReader(t *testing.T) {
 	go func() {
 		//<-sigs
 		time.Sleep(time.Second)
-		fmt.Println("退出")
+		fmt.Println("exiting")
 		ddd()
 	}()
 	time.Sleep(time.Second * 10)
@@ -109,7 +109,7 @@ func ddd() {
 
 func TestOpDestPath(t *testing.T) {
 	require.Equal(t, "/dst/pics", opDestPath("/src/pics", "/dst"))
-	require.Equal(t, "/dst/pics", opDestPath("/src/pics/", "/dst")) // 尾斜杠不再退化
+	require.Equal(t, "/dst/pics", opDestPath("/src/pics/", "/dst")) // trailing slash no longer degenerates
 	require.Equal(t, "/dst/a.jpg", opDestPath("/src/a.jpg", "/dst/"))
 }
 
@@ -1212,9 +1212,10 @@ func TestFileOperateMove_CancelMidCopy_CleansHalfWrittenDestSourceIntact(t *test
 // cancellation at all (CancelOp is deliberately not called). Since nothing
 // tells the in-flight FileOperate goroutine to stop, the cp subprocess runs
 // to completion and the file lands at the destination regardless of the
-// "cancel" — the exact user-observed failure ("传输停止、目的地不留东西"
-// did not happen; the file landed anyway) — proving DequeueOp alone was
-// never enough and CancelOp's ctx cancellation is the operative fix.
+// "cancel" — the exact user-observed failure ("transfer stopped, nothing
+// landed at the destination") did not happen; the file landed anyway, proving
+// DequeueOp alone was never enough and CancelOp's ctx cancellation is the
+// operative fix.
 func TestFileOperate_QueueRemovalAloneDoesNotStopInFlightCopy(t *testing.T) {
 	logger.LogInitConsoleOnly()
 	ClearOps()

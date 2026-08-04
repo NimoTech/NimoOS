@@ -55,16 +55,17 @@ func TestReconcileGrants_CallsRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rec.Code != http.StatusOK || len(spy.got) != 1 || spy.got[0].RootID != "r1" {
-		t.Fatalf("reconcile 未正确转调: code=%d got=%v", rec.Code, spy.got)
+		t.Fatalf("reconcile not delegated correctly: code=%d got=%v", rec.Code, spy.got)
 	}
-	// 补充断言 Path/Enabled 也被正确逐字段转调,不止 RootID。
+	// Also assert Path/Enabled are delegated field-by-field correctly, not just RootID.
 	if spy.got[0].Path != "/a" || !spy.got[0].Enabled {
-		t.Fatalf("reconcile 未正确转调 path/enabled: %+v", spy.got[0])
+		t.Fatalf("reconcile did not delegate path/enabled correctly: %+v", spy.got[0])
 	}
 }
 
-// TestReconcileGrants_PreservesEnabledFalse 专门覆盖 enabled:false 的情形,
-// 防止未来某层(bind/转换)把 bool 零值和"未传"混淆、把 false 丢成 true。
+// TestReconcileGrants_PreservesEnabledFalse specifically covers the enabled:false
+// case, guarding against some future layer (bind/conversion) confusing the bool
+// zero value with "not passed" and dropping false into true.
 func TestReconcileGrants_PreservesEnabledFalse(t *testing.T) {
 	e := echo.New()
 	spy := &reconcileSpy{}
@@ -79,17 +80,17 @@ func TestReconcileGrants_PreservesEnabledFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rec.Code != http.StatusOK || len(spy.got) != 2 {
-		t.Fatalf("reconcile 未正确转调: code=%d got=%v", rec.Code, spy.got)
+		t.Fatalf("reconcile not delegated correctly: code=%d got=%v", rec.Code, spy.got)
 	}
 	if spy.got[0].RootID != "r1" || spy.got[0].Path != "/a" || !spy.got[0].Enabled {
-		t.Fatalf("第一条(enabled:true)转调错误: %+v", spy.got[0])
+		t.Fatalf("first entry (enabled:true) delegated incorrectly: %+v", spy.got[0])
 	}
 	if spy.got[1].RootID != "r2" || spy.got[1].Path != "/b" || spy.got[1].Enabled {
-		t.Fatalf("第二条(enabled:false)转调错误,bool 被丢/被误传成 true: %+v", spy.got[1])
+		t.Fatalf("second entry (enabled:false) delegated incorrectly, bool was dropped/coerced to true: %+v", spy.got[1])
 	}
 }
 
-// reconcileSpy 实现 service.RootGrantRepo,只记录 ReconcileWiki 入参。
+// reconcileSpy implements service.RootGrantRepo, recording only the ReconcileWiki args.
 type reconcileSpy struct{ got []model.RootGrant }
 
 func (s *reconcileSpy) EnabledRootIDs() ([]string, error)              { return nil, nil }
@@ -98,7 +99,7 @@ func (s *reconcileSpy) DeleteGrant(string) error                       { return 
 func (s *reconcileSpy) SeedVirtual(string) error                       { return nil }
 func (s *reconcileSpy) ReconcileWiki(g []model.RootGrant) error        { s.got = g; return nil }
 
-// upsertDeleteSpy 记录 UpsertGrant / DeleteGrant 的入参,供下面两条写端点测试复用。
+// upsertDeleteSpy records the args of UpsertGrant / DeleteGrant, reused by the two write-endpoint tests below.
 type upsertDeleteSpy struct {
 	upsertRootID  string
 	upsertPath    string
@@ -138,7 +139,7 @@ func TestUpsertGrant_CallsRepoWithWikiSource(t *testing.T) {
 		t.Fatalf("code=%d", rec.Code)
 	}
 	if spy.upsertRootID != "aabbcc" || spy.upsertPath != "/DATA/docs" || !spy.upsertEnabled || spy.upsertSource != "wiki" {
-		t.Fatalf("upsert 未正确转调: %+v", spy)
+		t.Fatalf("upsert not delegated correctly: %+v", spy)
 	}
 	if !strings.Contains(rec.Body.String(), `"ok":true`) {
 		t.Fatalf("body=%s", rec.Body.String())
@@ -158,6 +159,6 @@ func TestDeleteGrant_CallsRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rec.Code != http.StatusOK || spy.deleteRootID != "aabbcc" {
-		t.Fatalf("delete 未正确转调: code=%d rootID=%s", rec.Code, spy.deleteRootID)
+		t.Fatalf("delete not delegated correctly: code=%d rootID=%s", rec.Code, spy.deleteRootID)
 	}
 }

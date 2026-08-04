@@ -14,7 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// batchStore 由 route/v2.go 在 InitV2Router 时注入(与 taskStore 同法)。
+// batchStore is injected by route/v2.go in InitV2Router (same way as taskStore).
 var batchStore *upload.BatchStore
 
 func SetBatchStore(s *upload.BatchStore) { batchStore = s }
@@ -30,8 +30,9 @@ type createBatchReq struct {
 	Items      []createBatchItem `json:"items"`
 }
 
-// CreateUploadBatch: POST /v2/nimoos/file/upload-batches —— 上传开始前登记对账单。
-// 幂等:同 id 重复提交返回 201 不重复建。
+// CreateUploadBatch: POST /v2/nimoos/file/upload-batches — registers a
+// reconciliation manifest before the upload starts.
+// Idempotent: resubmitting the same id returns 201 without creating a duplicate.
 func CreateUploadBatch(c echo.Context) error {
 	var req createBatchReq
 	if err := c.Bind(&req); err != nil {
@@ -45,7 +46,8 @@ func CreateUploadBatch(c echo.Context) error {
 	}
 	items := make([]upload.UploadBatchItem, 0, len(req.Items))
 	for _, it := range req.Items {
-		// 与 tus 元数据校验同口径:相对路径不得穿越/绝对。
+		// Same criteria as tus metadata validation: relativePath must not be a
+		// traversal or absolute path.
 		if it.RelativePath == "" || strings.Contains(it.RelativePath, "..") ||
 			strings.HasPrefix(it.RelativePath, "/") {
 			return echo.NewHTTPError(http.StatusBadRequest, "invalid relativePath")
@@ -66,7 +68,8 @@ func CreateUploadBatch(c echo.Context) error {
 	return c.JSON(http.StatusCreated, map[string]interface{}{"id": b.ID})
 }
 
-// getOwnedBatch 按 id 取批次并做 owner 校验;错误已包装为 echo.HTTPError。
+// getOwnedBatch fetches the batch by id and checks ownership; errors are
+// already wrapped as echo.HTTPError.
 func getOwnedBatch(c echo.Context) (*upload.UploadBatch, error) {
 	owner := c.Request().Header.Get("user_id")
 	b, err := batchStore.Get(c.Param("id"))
@@ -79,7 +82,8 @@ func getOwnedBatch(c echo.Context) (*upload.UploadBatch, error) {
 	return b, nil
 }
 
-// GetUploadBatch: GET /v2/nimoos/file/upload-batches/:id —— 对账清单(缺失项)。
+// GetUploadBatch: GET /v2/nimoos/file/upload-batches/:id — reconciliation
+// manifest (missing items).
 func GetUploadBatch(c echo.Context) error {
 	b, err := getOwnedBatch(c)
 	if err != nil {
@@ -92,8 +96,9 @@ func GetUploadBatch(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{"batch": b, "missing": missing})
 }
 
-// cancelBatchTasks 终止批次未完成 tus 任务并清 staging(信号中断/放弃时立即执行;
-// 超时中断由扫描器延迟 grace 后执行)。B3 的扫描器复用。
+// cancelBatchTasks terminates a batch's unfinished tus tasks and clears staging
+// (executed immediately on a signal interrupt/abandon; a timeout interrupt is
+// executed by the sweeper after a grace delay). Reused by B3's sweeper.
 func cancelBatchTasks(tasks *upload.TaskStore, batchID string) {
 	list, err := tasks.ListUnfinishedByBatch(batchID)
 	if err != nil {
@@ -109,8 +114,10 @@ func cancelBatchTasks(tasks *upload.TaskStore, batchID string) {
 	}
 }
 
-// InterruptUploadBatch: POST .../:id/interrupt —— 关窗信号。幂等:仅 active 会迁移。
-// 信号中断意味着页面确定已关,立即终止任务并清 staging(无续传窗口)。
+// InterruptUploadBatch: POST .../:id/interrupt — window-close signal.
+// Idempotent: only an active batch transitions.
+// A signal interrupt means the page is confirmed closed, so tasks are
+// terminated and staging cleared immediately (no resume window).
 func InterruptUploadBatch(c echo.Context) error {
 	b, err := getOwnedBatch(c)
 	if err != nil {
@@ -127,7 +134,8 @@ func InterruptUploadBatch(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{"interrupted": true})
 }
 
-// AbandonUploadBatch: POST .../:id/abandon —— 用户放弃批次,角标立即消失。幂等。
+// AbandonUploadBatch: POST .../:id/abandon — user abandons the batch, the
+// badge disappears immediately. Idempotent.
 func AbandonUploadBatch(c echo.Context) error {
 	b, err := getOwnedBatch(c)
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 // ThumbCacheDir is the on-disk root for cached thumbnails, keyed by a hash
 // of (path, mtime, size) so a changed/replaced source file naturally misses
 // the old entry instead of serving stale pixels. It mirrors the existing
-// "<卷根或 /DATA>/.system_data/<name>" convention already used for tus
+// "<volume root or /DATA>/.system_data/<name>" convention already used for tus
 // staging (see common.FileUploadStagingDir) — a fixed /DATA root, not a
 // true per-mount-point root; see task report for the tradeoff. It is a var
 // (not a const) so tests can redirect it to a temp dir.
@@ -68,11 +68,14 @@ func GetOrCreateThumbnailCached(path string) (cachedPath string, ok bool) {
 	cp := thumbCachePath(key)
 
 	if _, err := os.Stat(cp); err == nil {
-		// 刷新 mtime 作为"最近使用"标记,PruneThumbCache 据此做近似 LRU;
-		// 缓存 key 取的是源文件 mtime,与这里无关,刷新不影响命中判定。
-		// Chtimes 失败被忽略是有意的降级路径:最坏后果只是这条目在下一轮
-		// PruneThumbCache 里被误判为长期未用而被提前回收,进而触发一次重新
-		// 生成,不是正确性问题(不会返回错误结果或损坏缓存)。
+		// Refresh mtime as a "recently used" marker; PruneThumbCache uses this
+		// for an approximate LRU. The cache key is derived from the source
+		// file's mtime, which is unrelated to this refresh, so it doesn't
+		// affect hit detection. Ignoring a Chtimes failure is an intentional
+		// degraded path: the worst case is this entry gets mistaken for
+		// long-unused and reaped early on the next PruneThumbCache pass,
+		// triggering a regeneration — not a correctness issue (never returns
+		// an error result or corrupts the cache).
 		now := time.Now()
 		_ = os.Chtimes(cp, now, now)
 		return cp, true
@@ -125,16 +128,21 @@ func generateAndCacheThumbnail(path, key, cachePath string) {
 	}
 }
 
-// PurgeThumbCacheEntry 在源文件即将被删除/移动前调用:按当前 stat 计算 key
-// 并删除对应缓存条目(.jpg 与 .neg)。best-effort、静默——找不到条目、删除失
-// 败等都不返回错误,最坏后果只是留给 30 天 LRU 清扫(PruneThumbCache)兜底,
-// 不影响正确性。path 不是普通文件(目录、不存在、stat 失败等)时不做任何
-// 事:目录删除不会递归给每个子文件都算一次 key 去清缓存(成本考虑),留给
-// LRU 兜底即可。
+// PurgeThumbCacheEntry should be called right before a source file is
+// deleted/moved: it computes the key from the current stat and removes the
+// corresponding cache entries (.jpg and .neg). Best-effort and silent — a
+// missing entry, a failed removal, etc. never return an error; the worst
+// case is just falling back to the 30-day LRU sweep (PruneThumbCache),
+// which doesn't affect correctness. When path is not a regular file
+// (directory, doesn't exist, stat failed, etc.) it does nothing: deleting a
+// directory does not recurse into computing and purging a key for every
+// child file (cost tradeoff) — that's left to the LRU backstop.
 //
-// 调用时机是本函数正确性的前提:必须在源文件真正被删除/重命名/覆盖之前调
-// 用——缓存 key 里包含 mtime 和 size,一旦源文件已经不存在或已被改写,就再
-// 也无法算出当初生成缓存时用的那个 key 了。
+// Call timing is a precondition for this function's correctness: it must be
+// called before the source file is actually deleted/renamed/overwritten —
+// the cache key includes mtime and size, and once the source file no longer
+// exists or has already been rewritten, there's no way to recompute the key
+// that was used when the cache entry was originally generated.
 func PurgeThumbCacheEntry(path string) {
 	fi, err := os.Stat(path)
 	if err != nil || fi.IsDir() || !fi.Mode().IsRegular() {
@@ -145,10 +153,13 @@ func PurgeThumbCacheEntry(path string) {
 	_ = os.Remove(thumbNegativePath(key))
 }
 
-// PruneThumbCache 清扫 ThumbCacheDir 目录下所有 mtime 早于 maxAge 的普通
-// 文件(.jpg/.neg 及孤儿 .tmp 等),不做扩展名过滤。源文件被删/改/移后旧条目
-// 只会孤儿化(key 含 path+mtime+size),没有任何联动清理,本函数是唯一回收
-// 路径;配合命中刷 mtime,效果≈按最近使用淘汰。目录不存在返回 (0, nil)。
+// PruneThumbCache sweeps ThumbCacheDir for all regular files (.jpg/.neg and
+// orphaned .tmp, etc.) with mtime older than maxAge, with no extension
+// filtering. When a source file is deleted/changed/moved, the old entry
+// just becomes orphaned (the key embeds path+mtime+size) with no linked
+// cleanup — this function is the only reclamation path; combined with the
+// mtime refresh on hit, the effect is approximately recency-based eviction.
+// Returns (0, nil) if the directory doesn't exist.
 func PruneThumbCache(maxAge time.Duration) (int, error) {
 	entries, err := os.ReadDir(ThumbCacheDir)
 	if err != nil {

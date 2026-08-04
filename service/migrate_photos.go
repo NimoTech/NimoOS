@@ -5,9 +5,11 @@ import (
 	"strings"
 )
 
-// photosConfDataPath 从 photos.conf 读取 DataPath。key 大小写不敏感——
-// photos.conf 被 NimoOS-Photos 的 Settings.Save()(viper)回写后 key 会变成
-// 全小写 datapath。返回 (值, 是否存在);文件不存在/无该 key 返回 ("", false)。
+// photosConfDataPath reads DataPath from photos.conf. The key is
+// case-insensitive — once photos.conf is rewritten by NimoOS-Photos'
+// Settings.Save() (viper), the key becomes all-lowercase datapath. Returns
+// (value, whether it exists); if the file doesn't exist or has no such key,
+// returns ("", false).
 func photosConfDataPath(confPath string) (string, bool) {
 	data, err := os.ReadFile(confPath)
 	if err != nil {

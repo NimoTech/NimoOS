@@ -16,9 +16,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeMoveSharesRecorder 只记录 RewriteSharePathPrefix 的调用参数,供
-// FileOperate 的 move 分支「成功落地才跟着改写分享路径」断言使用;其余
-// SharesService 方法为满足接口的空实现。
+// fakeMoveSharesRecorder only records the call arguments to
+// RewriteSharePathPrefix, for use by the assertion in FileOperate's move
+// branch that "share paths are only rewritten once the move has actually
+// landed"; the remaining SharesService methods are no-op implementations
+// that just satisfy the interface.
 type fakeMoveSharesRecorder struct {
 	mu    sync.Mutex
 	calls [][2]string

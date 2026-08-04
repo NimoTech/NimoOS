@@ -2,8 +2,10 @@ package service
 
 import "testing"
 
-// sharePathScope 决定「删除目录时清理哪些分享」的 SQL 匹配范围——边界必须
-// 精确:删 /a/b 要覆盖 /a/b 自身与 /a/b/c,绝不能波及 /a/bc。
+// sharePathScope determines the SQL matching range for "which shares to
+// clean up when deleting a directory" — the boundary must be exact:
+// deleting /a/b must cover /a/b itself and /a/b/c, and must never touch
+// /a/bc.
 func TestSharePathScope(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -11,11 +13,11 @@ func TestSharePathScope(t *testing.T) {
 		exact   string
 		subtree string
 	}{
-		{"普通路径", "/a/b", "/a/b", "/a/b/%"},
-		{"尾斜杠归一", "/a/b/", "/a/b", "/a/b/%"},
-		{"LIKE 通配符转义", "/a/100%_done", "/a/100%_done", `/a/100\%\_done/%`},
-		{"根路径", "/", "/", "/%"},
-		{"空串按根处理", "", "/", "/%"},
+		{"ordinary path", "/a/b", "/a/b", "/a/b/%"},
+		{"trailing slash normalized", "/a/b/", "/a/b", "/a/b/%"},
+		{"LIKE wildcard escaping", "/a/100%_done", "/a/100%_done", `/a/100\%\_done/%`},
+		{"root path", "/", "/", "/%"},
+		{"empty string treated as root", "", "/", "/%"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -27,9 +29,12 @@ func TestSharePathScope(t *testing.T) {
 	}
 }
 
-// TestRewriteSharePath 锁定「移动/重命名含分享目录时改写分享路径」的纯函数
-// 语义:恰为 oldExact 本身整体替换为 newExact;在其子树内做前缀替换;不在
-// 范围内(含同前缀兄弟目录、祖先路径)原样返回。
+// TestRewriteSharePath locks down the pure-function semantics of "rewriting
+// share paths when moving/renaming a directory that contains shares":
+// exactly oldExact itself is replaced wholesale with newExact; inside its
+// subtree, a prefix replacement is done; outside the range (including
+// same-prefix sibling directories and ancestor paths) it's returned
+// unchanged.
 func TestRewriteSharePath(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -38,12 +43,12 @@ func TestRewriteSharePath(t *testing.T) {
 		newExact  string
 		want      string
 	}{
-		{"恰为本身", "/a/b", "/a/b", "/x", "/x"},
-		{"子树内一级", "/a/b/c", "/a/b", "/x", "/x/c"},
-		{"子树内多级", "/a/b/c/d/e", "/a/b", "/x/y", "/x/y/c/d/e"},
-		{"范围外:同前缀兄弟", "/a/bc", "/a/b", "/x", "/a/bc"},
-		{"范围外:祖先", "/a", "/a/b", "/x", "/a"},
-		{"范围外:完全无关", "/z/q", "/a/b", "/x", "/z/q"},
+		{"exactly itself", "/a/b", "/a/b", "/x", "/x"},
+		{"one level inside subtree", "/a/b/c", "/a/b", "/x", "/x/c"},
+		{"multiple levels inside subtree", "/a/b/c/d/e", "/a/b", "/x/y", "/x/y/c/d/e"},
+		{"out of range: same-prefix sibling", "/a/bc", "/a/b", "/x", "/a/bc"},
+		{"out of range: ancestor", "/a", "/a/b", "/x", "/a"},
+		{"out of range: completely unrelated", "/z/q", "/a/b", "/x", "/z/q"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -55,16 +60,18 @@ func TestRewriteSharePath(t *testing.T) {
 	}
 }
 
-// 语义自证:子树模式 + "/" 边界的组合下,/a/bc 不应命中 /a/b 的清理范围。
-// (用 Go 侧等价前缀判断模拟 LIKE 语义;真实 SQL 由 DeleteShareByPath 拼接,
-// 模式串本身已在上面的用例中锁定。)
+// Self-evident semantics: under the subtree-pattern + "/" boundary
+// combination, /a/bc must not match /a/b's cleanup scope. (Simulates LIKE
+// semantics via an equivalent Go-side prefix check; the real SQL is
+// assembled by DeleteShareByPath, and the pattern string itself is already
+// locked down by the cases above.)
 func TestSharePathScopeBoundary(t *testing.T) {
 	exact, _ := sharePathScope("/a/b")
 	for path, want := range map[string]bool{
-		"/a/b":    true,  // 分享就挂在被删目录上
-		"/a/b/c":  true,  // 子树内
-		"/a/bc":   false, // 同前缀兄弟目录,绝不能删
-		"/a":      false, // 祖先
+		"/a/b":    true,  // the share is mounted right on the directory being deleted
+		"/a/b/c":  true,  // inside the subtree
+		"/a/bc":   false, // same-prefix sibling directory, must never be deleted
+		"/a":      false, // ancestor
 		"/a/b2/c": false,
 	} {
 		got := path == exact || (len(path) > len(exact)+1 && path[:len(exact)+1] == exact+"/")

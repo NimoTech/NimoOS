@@ -30,8 +30,8 @@ func TestCreateGetAndListActive(t *testing.T) {
 	}
 	mustCreate("a", "1", upload.UploadStatusUploading)
 	mustCreate("b", "1", upload.UploadStatusPaused)
-	mustCreate("c", "1", upload.UploadStatusCompleted) // 不算 active
-	mustCreate("d", "2", upload.UploadStatusFailed)    // 别的 owner
+	mustCreate("c", "1", upload.UploadStatusCompleted) // doesn't count as active
+	mustCreate("d", "2", upload.UploadStatusFailed)    // different owner
 
 	got, err := s.Get("a")
 	if err != nil || got.OwnerUserID != "1" {
@@ -63,17 +63,17 @@ func TestCancelIdempotent(t *testing.T) {
 	if got.Status != upload.UploadStatusCanceled || got.ExpiresAt != 100 {
 		t.Fatalf("after cancel: %+v", got)
 	}
-	// 再次取消同一个:幂等,返回 false,nil
+	// Canceling the same one again: idempotent, returns false, nil
 	ok, err = upload.Cancel(s, "u", 200)
 	if err != nil || ok {
 		t.Fatalf("second cancel should be no-op: ok=%v err=%v", ok, err)
 	}
-	// 取消不存在的:幂等
+	// Canceling one that doesn't exist: idempotent
 	ok, err = upload.Cancel(s, "nope", 0)
 	if err != nil || ok {
 		t.Fatalf("cancel missing should be no-op: ok=%v err=%v", ok, err)
 	}
-	// 取消已完成的:不动它
+	// Canceling one that's already completed: leave it alone
 	ok, err = upload.Cancel(s, "done", 0)
 	if err != nil || ok {
 		t.Fatalf("cancel completed should be no-op: ok=%v err=%v", ok, err)

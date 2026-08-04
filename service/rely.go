@@ -33,12 +33,12 @@ func (r *relyService) Create(rely model2.RelyDBModel) {
 
 }
 
-// 获取我的应用列表
+// Get my app list
 func (r *relyService) GetInfo(id string) model2.RelyDBModel {
 	var m model2.RelyDBModel
 	r.db.Where("custom_id = ?", id).First(&m)
 
-	// @tiger - 作为出参不应该直接返回数据库内的格式（见类似问题的注释）
+	// @tiger - as an output param this shouldn't directly return the DB's internal format (see comment on similar issue)
 	return m
 }
 

@@ -1,7 +1,8 @@
 package upload
 
-// 上传批次状态机:active → interrupted(关窗信号/超时)→ active(收到新进度,可逆)
-// active/interrupted → completed(done==total)/ abandoned(用户放弃)。
+// Upload batch state machine: active → interrupted (window-close signal/timeout)
+// → active (new progress received, reversible); active/interrupted →
+// completed (done==total) / abandoned (user gave up).
 const (
 	BatchStatusActive      = "active"
 	BatchStatusInterrupted = "interrupted"
@@ -9,10 +10,13 @@ const (
 	BatchStatusAbandoned   = "abandoned"
 )
 
-// UploadBatch 是一次「用户选择并开始上传」的对账单头:总数/完成数/状态。
-// 前端在开传前用完整清单 POST 创建;tus 完成事件逐条回填 done。
-// interrupted 批次没有自动过期:感叹号角标一直挂着,直到用户手动放弃或补传完成;
-// 进入终态(completed/abandoned)后由扫描器删除行(见 DeleteTerminal)。
+// UploadBatch is the header row for one "user selected and started an upload"
+// reconciliation: total/done counts and status. The frontend creates it with a
+// POST of the full manifest before starting the transfer; tus completion events
+// fill in done one item at a time. Interrupted batches don't auto-expire: the
+// warning badge stays up until the user manually abandons it or the upload is
+// resumed to completion; once it reaches a terminal state (completed/abandoned)
+// the sweeper deletes the row (see DeleteTerminal).
 type UploadBatch struct {
 	ID             string `gorm:"column:id;primaryKey" json:"id"`
 	OwnerUserID    string `gorm:"column:owner_user_id;index" json:"owner_user_id"`
@@ -29,8 +33,9 @@ type UploadBatch struct {
 
 func (UploadBatch) TableName() string { return "o_upload_batches" }
 
-// UploadBatchItem 是清单里的一个文件(相对 target_path 的路径 + 大小)。
-// 用行表而非 JSON blob:大批次逐条置 done 可控,且 (batch_id, done) 可走索引。
+// UploadBatchItem is one file in the manifest (path relative to target_path + size).
+// A row table rather than a JSON blob: for large batches, marking done item-by-item
+// is controllable, and (batch_id, done) can use an index.
 type UploadBatchItem struct {
 	ID           uint   `gorm:"column:id;primaryKey;autoIncrement" json:"-"`
 	BatchID      string `gorm:"column:batch_id;uniqueIndex:uq_batch_rel;index:idx_batch_done" json:"batch_id"`

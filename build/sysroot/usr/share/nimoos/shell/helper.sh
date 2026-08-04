@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 获取系统信息
+# Get system info
 GetSysInfo() {
   if [ -s "/etc/redhat-release" ]; then
     SYS_VERSION=$(cat /etc/redhat-release)
@@ -17,7 +17,7 @@ GetSysInfo() {
   echo -e ${SYS_INFO}
 }
 
-#获取网卡信息
+#Get network interface info
 GetNetCard() {
   if [ "$1" == "1" ]; then
     if [ -d "/sys/devices/virtual/net" ]; then
@@ -35,15 +35,15 @@ GetTimeZone(){
   timedatectl | grep "Time zone" | awk '{printf $3}'
 }
 
-#查看网卡状态
-#param 网卡名称
+#Check network interface state
+#param interface name
 CatNetCardState() {
   if [ -e "/sys/class/net/$1/operstate" ]; then
     cat /sys/class/net/$1/operstate
   fi
 }
 
-#获取docker根目录
+#Get docker root dir
 GetDockerRootDir() {
   if hash docker 2>/dev/null; then
     docker info | grep 'Docker Root Dir' | awk -F ':' '{print $2}'
@@ -52,23 +52,23 @@ GetDockerRootDir() {
   fi
 }
 
-#删除安装应用文件夹
-#param 需要删除的文件夹路径
+#Delete installed app folder
+#param folder path to delete
 DelAppConfigDir() {
   if [ -d $1 ]; then
     rm -fr $1
   fi
 }
 
-#zerotier本机已加入的网络
+#Networks this host has joined via zerotier
 #result start,end,sectors
 GetLocalJoinNetworks() {
   zerotier-cli listnetworks -j
 }
 
-#格式化fat32磁盘
-#param 需要格式化的目录 /dev/sda1
-#param 格式
+#Format fat32 disk
+#param directory to format /dev/sda1
+#param filesystem format
 FormatDisk() {
   if [ "$2" == "fat32" ]; then
     mkfs.vfat -F 32 $1
@@ -83,9 +83,9 @@ FormatDisk() {
   fi
 }
 
-#删除分区
-#param 路径   /dev/sdb
-#param 删除分区的区号
+#Delete partition
+#param path   /dev/sdb
+#param partition number to delete
 DelPartition() {
   fdisk $1 <<EOF
   d
@@ -94,9 +94,9 @@ DelPartition() {
 EOF
 }
 
-#添加分区只有一个分区
-#param 路径   /dev/sdb
-#param 要挂载的目录
+#Add partition, single partition only
+#param path   /dev/sdb
+#param directory to mount
 AddPartition() {
 
   DelPartition $1
@@ -110,35 +110,35 @@ AddPartition() {
 
 }
 
-#磁盘类型
+#Disk type
 GetDiskType() {
   fdisk $1 -l | grep Disklabel | awk -F: '{print $2}'
 }
 
-#获磁盘的插入路径
-#param 路径 /dev/sda
+#Get the plugged-in disk path
+#param path /dev/sda
 GetPlugInDisk() {
   fdisk -l | grep 'Disk' | grep 'sd' | awk -F , '{print substr($1,11,3)}'
 }
 
 
 
-#获取磁盘字节数量和扇区数量
-#param 磁盘路径  /dev/sda
+#Get disk byte count and sector count
+#param disk path  /dev/sda
 #result bytes
 #result sectors
 GetDiskSizeAndSectors() {
   fdisk $1 -l | grep "$1:" | awk -F, 'BEGIN {OFS="\n"}{print $2,$3}' | awk '{print $1}'
 }
 
-#获取磁盘分区数据扇区
-#param 磁盘路径  /dev/sda
+#Get disk partition data sectors
+#param disk path  /dev/sda
 #result start,end,sectors
 GetPartitionSectors() {
   fdisk $1 -l | grep "$1[1-9]" | awk 'BEGIN{OFS=","}{print $1,$2,$3,$4}'
 }
 
-#检查没有使用的挂载点删除文件夹
+#Check for unused mountpoints and remove their folders
 AutoRemoveUnuseDir() {
   DIRECTORY="/DATA/"
   dir=$(ls -l $DIRECTORY | grep "USB_Storage_sd[a-z][0-9]" | awk '/^d/ {print $NF}')
@@ -157,7 +157,7 @@ AutoRemoveUnuseDir() {
   done
 }
 
-#重载samba服务
+#Reload samba service
 ReloadSamba() {
   /etc/init.d/smbd reload
 }
@@ -245,7 +245,7 @@ do_umount() {
 PackageDocker() {
   image=$1
   docker="/mnt/casa_docker"
-  #判断目录docker存在不存在则创建,存在检查是否为空
+  #Create the docker dir if it doesn't exist; if it does, check whether it's empty
 
   if [ ! -d "$docker" ]; then
     mkdir ${docker}
@@ -259,22 +259,22 @@ PackageDocker() {
   fi
 
   daemon="/etc/docker/daemon.json"
-  #1创建img文件在挂载的目录
+  #1 create the img file in the mounted directory
   fallocate -l $2 $image
-  #2初始化img文件
+  #2 initialize the img file
   mkfs -t ext4 $image
-  #3挂载img文件
+  #3 mount the img file
   sudo mount -o loop $image $docker
-  #4给移动/var/lib/docker数据到img挂载的目录
+  #4 move /var/lib/docker data into the img-mounted directory
   systemctl stop docker.socket
   systemctl stop docker
   cp -r /var/lib/docker/* ${docker}/
-  #5在/etc/docker写入daemon.json(需要检查)
+  #5 write daemon.json into /etc/docker (needs checking)
   if [ -d "$daemon" ]; then
     mv -r $daemon ${daemon}.bak
   fi
   echo "{\"data-root\": \"$docker\"}" >$daemon
-  #删除老数据腾出空间
+  #Delete old data to free up space
   #rm -fr /var/lib/docker
   systemctl start docker.socket
   systemctl start docker
@@ -293,24 +293,24 @@ GetDockerDataRoot() {
 
 SetLink() {
   ln -s /mnt/casa_sda1/AppData /DATA/AppData
-  #删除所有软链
+  #Delete all symlinks
   find /DATA -type l -delete
 }
 
-#压缩文件夹
+#Compress folder
 
 TarFolder() {
-  #压缩
+  #Compress
   tar -zcvf data.tar.gz -C/DATA/ AppDataBak/
 
-  #解压
-  tar zxvf data.tar.gz 
+  #Extract
+  tar zxvf data.tar.gz
 
-  #查看某文件夹下的所有包括子文件夹文件
+  #List all files under a folder, including subfolders
   ls /DATA/Media -lR | grep "^-" | wc -l
-  # ls -lR|grep "^d"| wc -l 查看某个文件夹下文件夹的个数，包括子文件夹下的文件夹个数。
+  # ls -lR|grep "^d"| wc -l lists the number of subfolders under a folder, including nested ones.
 
-  #查看固定文件夹大小
+  #Check the size of a given folder
   du -sh /DATA
 }
 

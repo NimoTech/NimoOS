@@ -58,9 +58,11 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 	targetPath := meta["targetPath"]
 	relativePath := meta["relativePath"]
 
-	// 客户端/校验类错误必须返回 4xx。关键:要用 tusd 的 handler.Error(携带 StatusCode),
-	// 否则 tusd 对普通 error 一律按 500 处理,前端 tus-js-client 会把 5xx 当可重试错误
-	// 无限重试,导致上传卡在 0%。HTTPResponse 里也带上 StatusCode 供单测直接读取。
+	// Client/validation errors must return 4xx. Key point: use tusd's handler.Error
+	// (which carries a StatusCode) — otherwise tusd treats a plain error as 500,
+	// and the tus-js-client frontend treats 5xx as retryable and retries forever,
+	// stalling the upload at 0%. HTTPResponse also carries StatusCode for tests
+	// to read directly.
 	reject := func(sc int, code, msg string) (handler.HTTPResponse, handler.FileInfoChanges, error) {
 		return handler.HTTPResponse{StatusCode: sc}, handler.FileInfoChanges{}, handler.NewError(code, msg, sc)
 	}
@@ -73,11 +75,13 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 	if targetPath == "" {
 		return reject(400, "ERR_TARGETPATH_REQUIRED", "targetPath metadata required")
 	}
-	// 受保护文件夹检查只针对 relativePath:防止「文件夹上传」在用户根部重建出同名的
-	// 系统特殊文件夹(Documents/Downloads/Gallery/Media/AppData)。
-	// 注意:不检查 targetPath——上传文件「进入」这些用户数据文件夹本就是正常用途
-	//（Gallery 还会被 Photos 索引)。c6eaced 误加的 targetPath 检查会把正常上传判为
-	// 受保护并返回 500,导致前端卡死,已移除。
+	// The protected-folder check only applies to relativePath: it prevents a
+	// "folder upload" from recreating a same-named system special folder
+	// (Documents/Downloads/Gallery/Media/AppData) at the user's root.
+	// Note: targetPath is NOT checked — uploading files "into" these user data
+	// folders is normal usage (Gallery even gets indexed by Photos). A targetPath
+	// check mistakenly added in c6eaced flagged normal uploads as protected and
+	// returned 500, stalling the frontend; it has been removed.
 	if protected, n := containsProtectedName(relativePath); protected {
 		return reject(403, "ERR_PROTECTED_FOLDER", "protected folder: "+n)
 	}
@@ -94,7 +98,8 @@ func validateFileUploadMetadataWithQuota(hook handler.HookEvent, available freeB
 	if hook.Upload.Size <= 0 {
 		return reject(400, "ERR_EMPTY_FILE", "empty file rejected")
 	}
-	// 单文件不设人为大小上限:只要 staging 盘空间足够(×1.05 余量)就放行。
+	// No artificial per-file size cap: allowed as long as the staging disk has
+	// enough space (×1.05 margin).
 	if err := checkFileUploadQuota(hook.Upload.Size, available); err != nil {
 		return reject(413, "ERR_INSUFFICIENT_STORAGE", err.Error())
 	}
@@ -153,8 +158,10 @@ func ingestToTarget(stagedPath, targetPath, relativePath string, resumed bool) (
 	return dest, err
 }
 
-// ingestToTargetWithPolicy 按冲突策略把 staging 文件落到 join(targetPath, relativePath)。
-// policy: "overwrite" 覆盖 / "rename" 加(n) / "skip" 已存在则跳过 / ""=rename。
+// ingestToTargetWithPolicy moves a staging file to join(targetPath, relativePath)
+// according to a conflict policy.
+// policy: "overwrite" replaces / "rename" appends (n) / "skip" skips if it
+// already exists / "" defaults to rename.
 func ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy string) (string, bool, error) {
 	dest := filepath.Join(targetPath, relativePath)
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
@@ -171,16 +178,18 @@ func ingestToTargetWithPolicy(stagedPath, targetPath, relativePath, policy strin
 			return dest, true, nil
 		}
 	case "overwrite":
-		// 直接落到 dest,覆盖。
+		// Land directly on dest, overwriting it.
 	default: // "rename" / ""
 		if exists {
 			dest = uniqueDestPath(dest)
 		}
 	}
 
-	// dest 若已存在且即将被覆盖(overwrite 策略,或极端情况下 rename 目标恰好
-	// 撞车),必须在这里、变动之前清掉它的缓存条目——事后 dest 的 mtime/size
-	// 已经变成新文件的,再也算不出旧条目的 key 了。dest 不存在时 no-op。
+	// If dest already exists and is about to be overwritten (overwrite policy, or
+	// the rare case where a rename target happens to collide), its cache entry
+	// must be purged here, before the change — afterward dest's mtime/size will
+	// belong to the new file and the old entry's key can no longer be computed.
+	// No-op if dest doesn't exist.
 	file.PurgeThumbCacheEntry(dest)
 	if err := os.Rename(stagedPath, dest); err != nil {
 		if cerr := copyFileV2(stagedPath, dest); cerr != nil {
@@ -204,11 +213,11 @@ func copyFileV2(src, dst string) error {
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
-		os.Remove(dst) // 清理半写损坏文件
+		os.Remove(dst) // clean up the partially-written, corrupt file
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(dst) // Close 失败同样视为写入失败，清理
+		os.Remove(dst) // a Close failure also counts as a write failure; clean up
 		return err
 	}
 	return nil
@@ -216,8 +225,9 @@ func copyFileV2(src, dst string) error {
 
 const fileTusBasePath = "/v2/nimoos/file/upload-tus"
 
-// relativeLocationWriter 把 tusd 生成的绝对 Location header 改写成 path-only，
-// 与 Photos 同理(Gateway 代理后 Host 为内部地址)。
+// relativeLocationWriter rewrites the absolute Location header tusd generates
+// into a path-only one, same reasoning as Photos (behind the Gateway proxy,
+// Host would be an internal address).
 type relativeLocationWriter struct {
 	http.ResponseWriter
 	wrote bool
@@ -250,15 +260,19 @@ func withRelativeLocation(h http.Handler) http.Handler {
 	})
 }
 
-// NewFileTUSHandler 创建 Files 用 tusd handler：staging 存储 + 创建校验 +
-// 完成后移动到用户目标路径。返回 http.Handler 供 echo.WrapHandler 使用。
+// NewFileTUSHandler creates the tusd handler for Files: staging storage +
+// creation validation + moving to the user's target path on completion.
+// Returns an http.Handler for use with echo.WrapHandler.
 func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (http.Handler, error) {
 	if err := os.MkdirAll(common.FileUploadStagingDir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir staging: %w", err)
 	}
-	// routingStore 按目标卷把暂存分片就地放在 <卷挂载根>/.system_data/file-tus-staging,
-	// 而不是写死 /DATA:配额检查/落盘都跟目标卷走,完成后 ingest 变成同盘 rename。
-	// 无法就地放置(FUSE/网络挂载、解析失败)时回退现有 /DATA 目录,行为不变。
+	// routingStore stages fragments in-place under <volume mount root>/.system_data/file-tus-staging
+	// based on the target volume, instead of hardcoding /DATA: quota checks and
+	// disk writes follow the target volume, so ingest on completion becomes a
+	// same-disk rename. When in-place staging isn't possible (FUSE/network mounts,
+	// resolution failure), it falls back to the existing /DATA directory, behavior
+	// unchanged.
 	rs := newRoutingStore(common.FileUploadStagingDir, liveMounts)
 	composer := handler.NewStoreComposer()
 	composer.UseCore(rs)
@@ -280,7 +294,7 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 		return nil, err
 	}
 
-	// 创建:写任务行。
+	// Create: write the task row.
 	go func() {
 		for ev := range tusH.CreatedUploads {
 			task := upload.NewTaskFromHook(ev, time.Now())
@@ -290,10 +304,15 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 		}
 	}()
 
-	// 进度:双节流写库,避免 7000 文件汇总后数万次小 UPDATE 拖慢上传。
-	// 节流间隔均为 5s,与两个下游超时阈值相比都留有充分裕量,不影响判定:
-	//   - UpdateOffset 同时续 expires_at(空闲超时阈值 6h = 21600s),5s 节流对它几乎无感知。
-	//   - TouchProgress 供批次超时判定用(阈值 120s),5s 节流仍远小于该阈值,不会误判 interrupted。
+	// Progress: dual-throttled DB writes, to avoid tens of thousands of tiny
+	// UPDATEs piling up across 7000 files and slowing the upload down. Both
+	// throttle intervals are 5s, which leaves ample margin against both
+	// downstream timeout thresholds and doesn't affect their outcome:
+	//   - UpdateOffset also renews expires_at (idle timeout threshold 6h =
+	//     21600s); the 5s throttle is essentially imperceptible to it.
+	//   - TouchProgress feeds the batch timeout check (threshold 120s); the 5s
+	//     throttle is still far smaller than that threshold, so it won't be
+	//     misjudged as interrupted.
 	go func() {
 		offsetThrottle := upload.NewTouchThrottle(5)
 		progressThrottle := upload.NewTouchThrottle(5)
@@ -311,7 +330,7 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 		}
 	}()
 
-	// 终止(协议 DELETE):标记 canceled。
+	// Terminate (protocol DELETE): mark canceled.
 	go func() {
 		for ev := range tusH.TerminatedUploads {
 			_ = store.SetStatus(ev.Upload.ID, commonUpload.UploadStatusCanceled,
@@ -319,12 +338,15 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 		}
 	}()
 
-	// 完成:ingest + 置 completed / failed。
+	// Complete: ingest + set completed / failed.
 	go func() {
 		for event := range tusH.CompleteUploads {
-			// stagedPath 从 tusd filestore 写回的 Storage["Path"] 取——这是分片实际落盘的
-			// 绝对路径,routingStore 下可能在 /DATA 也可能在某个卷内,不能再假设固定拼
-			// common.FileUploadStagingDir/id。缺失时(理论上不会发生)兜底按旧规则拼。
+			// stagedPath is taken from Storage["Path"] as written back by the tusd
+			// filestore — this is the actual absolute path the fragments landed on,
+			// which under routingStore may be on /DATA or on some other volume; it
+			// can no longer be assumed to always be
+			// common.FileUploadStagingDir/id. If missing (shouldn't happen in
+			// theory), fall back to constructing it the old way.
 			stagedPath := event.Upload.Storage["Path"]
 			if stagedPath == "" {
 				stagedPath = filepath.Join(common.FileUploadStagingDir, event.Upload.ID)
@@ -351,9 +373,11 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 			if bid := event.Upload.MetaData["batch_id"]; bid != "" {
 				_ = batches.MarkItemDone(bid, relativePath, now)
 			}
-			// 普通重传(无论有无 batch_id)隐式对账:同 targetPath 下其它
-			// active/interrupted 批次里同名未完成项一并销账,旧的裂开角标
-			// 因此自动消失,失败仅 log 不阻断主流程。
+			// A plain re-upload (with or without batch_id) implicitly reconciles:
+			// any other unfinished item with the same name in an
+			// active/interrupted batch under the same targetPath is also
+			// settled, so the old broken badge disappears automatically;
+			// failures here are only logged, they don't block the main flow.
 			if err := batches.MarkItemDoneAcrossBatches(targetPath, relativePath, now); err != nil {
 				logger.Error("Files tus MarkItemDoneAcrossBatches failed",
 					zap.String("targetPath", targetPath), zap.String("relativePath", relativePath), zap.Error(err))
@@ -366,8 +390,10 @@ func NewFileTUSHandler(store *upload.TaskStore, batches *upload.BatchStore) (htt
 	}()
 
 	commonUpload.StartGC(store, upload.DefaultGCConfig())
-	// 任务 ID 现在可能带卷前缀、落在不同卷的暂存目录里,清扫不能再假设单一目录:
-	// 每轮重新枚举 /DATA 旧目录 + 所有已存在的 /media/*/.system_data/file-tus-staging。
+	// Task IDs may now carry a volume prefix and land in different volumes'
+	// staging directories; the sweeper can no longer assume a single directory:
+	// each round re-enumerates the legacy /DATA directory plus every existing
+	// /media/*/.system_data/file-tus-staging.
 	upload.StartBatchSweeper(batches, store, func() []string {
 		return upload.StagingDirs(common.FileUploadStagingDir, "/media")
 	})

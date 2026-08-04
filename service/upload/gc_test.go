@@ -26,16 +26,16 @@ func TestSweepTasksTieredCleanup(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	cfg := commonUpload.GCConfig{StagingDir: dir, PausedTTL: 1000}
 
-	// canceled 已过期 → 删 staging + 删行
+	// canceled, already expired → delete staging + delete row
 	_ = s.Create(&commonUpload.UploadTask{ID: "cancel1", Status: commonUpload.UploadStatusCanceled, ExpiresAt: 9_000})
 	writeStagingFile(t, dir, "cancel1")
-	// uploading 已过期(僵死)→ 降级 paused,不删 staging
+	// uploading, already expired (stalled) → downgrade to paused, don't delete staging
 	_ = s.Create(&commonUpload.UploadTask{ID: "idle1", Status: commonUpload.UploadStatusUploading, ExpiresAt: 9_000})
 	writeStagingFile(t, dir, "idle1")
-	// paused 未过期 → 不动
+	// paused, not expired → leave alone
 	_ = s.Create(&commonUpload.UploadTask{ID: "keep1", Status: commonUpload.UploadStatusPaused, ExpiresAt: 99_999})
 	writeStagingFile(t, dir, "keep1")
-	// completed expires=0 → 永不入集合
+	// completed, expires=0 → never enters the candidate set
 	_ = s.Create(&commonUpload.UploadTask{ID: "done1", Status: commonUpload.UploadStatusCompleted, ExpiresAt: 0})
 
 	transitioned, deleted, err := commonUpload.SweepTasks(s, cfg, now)
@@ -45,14 +45,14 @@ func TestSweepTasksTieredCleanup(t *testing.T) {
 	if transitioned != 1 || deleted != 1 {
 		t.Fatalf("want transitioned=1 deleted=1, got %d/%d", transitioned, deleted)
 	}
-	// cancel1 行已删、staging 已清
+	// cancel1 row deleted, staging cleared
 	if _, err := s.Get("cancel1"); err == nil {
 		t.Fatal("cancel1 row should be deleted")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "cancel1")); !os.IsNotExist(err) {
 		t.Fatal("cancel1 staging should be gone")
 	}
-	// idle1 降级 paused,staging 还在,expires 重设
+	// idle1 downgraded to paused, staging still there, expires reset
 	idle, _ := s.Get("idle1")
 	if idle.Status != commonUpload.UploadStatusPaused || idle.ExpiresAt != now.Unix()+cfg.PausedTTL {
 		t.Fatalf("idle1 should become paused with refreshed expires: %+v", idle)
@@ -60,14 +60,15 @@ func TestSweepTasksTieredCleanup(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "idle1")); err != nil {
 		t.Fatal("idle1 staging must remain")
 	}
-	// keep1 不变
+	// keep1 unchanged
 	if k, _ := s.Get("keep1"); k.Status != commonUpload.UploadStatusPaused {
 		t.Fatal("keep1 must stay paused")
 	}
 }
 
-// TestDefaultGCConfigStagingDirsWiring 锁住 DefaultGCConfig 的多目录接线:
-// StagingDirs 必须已接好(非 nil),且首元素恒为 legacy 目录(见 staging_dirs.go 的枚举约定)。
+// TestDefaultGCConfigStagingDirsWiring pins down DefaultGCConfig's multi-directory
+// wiring: StagingDirs must already be wired up (non-nil), and the first element
+// must always be the legacy directory (per the enumeration convention in staging_dirs.go).
 func TestDefaultGCConfigStagingDirsWiring(t *testing.T) {
 	cfg := DefaultGCConfig()
 	if cfg.StagingDirs == nil {

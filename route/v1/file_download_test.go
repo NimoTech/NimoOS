@@ -118,7 +118,7 @@ func TestDownloadArchiveNameFollowsFormatExtension(t *testing.T) {
 	if got := downloadArchiveName([]string{"/DATA/photos"}, ".tar.gz"); got != "photos.tar.gz" {
 		t.Fatalf("got %q, want photos.tar.gz", got)
 	}
-	// 空扩展名兜底 .zip(GetCompressionAlgorithm 对 "" 也返回 .zip,双保险)
+	// Empty extension falls back to .zip (GetCompressionAlgorithm also returns .zip for "", belt and suspenders)
 	if got := downloadArchiveName([]string{"/DATA/photos"}, ""); got != "photos.zip" {
 		t.Fatalf("got %q, want photos.zip", got)
 	}

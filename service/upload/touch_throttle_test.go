@@ -31,9 +31,11 @@ func TestTouchThrottlePerKeyIndependent(t *testing.T) {
 	}
 }
 
-// TestTouchThrottleCapResetsOnOverflow 防长期运行内存无上限增长:常驻 systemd 进程里
-// offsetThrottle 按 tus 任务 id 记 key、只增不减,塞满 maxEntries 后必须整体重置,
-// 而不是无限增长。重置后新 key 仍可放行,且 map 大小变小。
+// TestTouchThrottleCapResetsOnOverflow guards against unbounded memory growth
+// over a long uptime: in a long-running systemd process, offsetThrottle keys
+// entries by tus task id and only ever adds them, so once maxEntries fills up
+// it must reset entirely rather than growing without bound. After the reset,
+// new keys can still be let through, and the map size shrinks.
 func TestTouchThrottleCapResetsOnOverflow(t *testing.T) {
 	th := NewTouchThrottle(5)
 	for i := 0; i < maxThrottleEntries; i++ {

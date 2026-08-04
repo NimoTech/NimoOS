@@ -34,13 +34,17 @@ type precheckResponse struct {
 	Results []precheckResultItem `json:"results"`
 }
 
-// statPrecheck 返回 join(targetPath, relativePath) 的存在性信息:
+// statPrecheck returns existence info for join(targetPath, relativePath):
 //
-//	exists: 路径存在(常规文件或目录)—— 同名即视为冲突,由前端弹窗让用户决策;
-//	sizeMatch: 是常规文件且大小与 size 相等(供前端提示「内容可能相同」);
-//	isDir: 存在且是目录(同名目录无法被文件覆盖,前端应按 keep-both/skip 处理)。
+//	exists: the path exists (regular file or directory) — same name is treated
+//	  as a conflict, letting the frontend dialog decide with the user;
+//	sizeMatch: it's a regular file and its size equals size (used by the
+//	  frontend to hint that "the content may be the same");
+//	isDir: it exists and is a directory (a same-name directory can't be
+//	  overwritten by a file, the frontend should handle it as keep-both/skip).
 //
-// 路径穿越/受保护名/越界时一律按不存在返回(与原实现一致)。
+// Path traversal / protected names / escaping the target are all reported as
+// not-existing (consistent with the original implementation).
 func statPrecheck(targetPath, relativePath string, size int64) (exists, sizeMatch, isDir bool) {
 	// Reject traversal indicators.
 	if strings.Contains(relativePath, "..") || strings.HasPrefix(relativePath, "/") {
@@ -86,9 +90,11 @@ func FileUploadPrecheck(c echo.Context) error {
 	if req.TargetPath == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "targetPath is required")
 	}
-	// 不再检查 targetPath 是否为受保护文件夹:上传文件进入 Documents/Downloads/
-	// Gallery/Media 等用户数据文件夹是正常用途。受保护语义只用于防止删/改/重建这些
-	// 文件夹本身(见 file.go 的 rename/mkdir/create),不适用于「上传进入」。
+	// No longer checks whether targetPath is a protected folder: uploading files
+	// into user data folders like Documents/Downloads/Gallery/Media is normal
+	// usage. The protected-folder semantics only exist to prevent
+	// deleting/renaming/recreating these folders themselves (see the
+	// rename/mkdir/create handlers in file.go), and don't apply to "uploading into".
 
 	results := make([]precheckResultItem, 0, len(req.Files))
 	for _, f := range req.Files {
