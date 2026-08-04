@@ -431,9 +431,11 @@ func (w *writer) Write(p []byte) (n int, err error) {
 }
 
 // opDestPath returns the destination CopyDir/move will actually create.
-// filepath.Base 会剥离尾部斜杠;此前手写的 strings.LastIndex 切分在 from 以
-// "/" 结尾时得到空文件名,dst 退化为 to 本身(必然存在),skip 判断永真,
-// 整个复制会被静默跳过(CopyDir 都不会被调用)。
+// filepath.Base strips the trailing slash; the old hand-rolled
+// strings.LastIndex split would yield an empty filename when from ended in
+// "/", so dst degenerated to to itself (which always exists), the skip
+// check always came out true, and the whole copy was silently skipped
+// (CopyDir would never even be called).
 func opDestPath(from, to string) string {
 	return filepath.Join(to, filepath.Base(from))
 }
@@ -467,10 +469,13 @@ func isCrossDevice(err error) bool {
 // the no-rename case and would silently land a rename-style copy at the
 // wrong (conflicting) path.
 func moveItem(ctx context.Context, from, dst, style string) (usedRename bool, err error) {
-	// 必须在 from 真正消失之前调用:无论走哪条分支(下面的原子 rename,还是
-	// 跨设备时的 copy->校验->删源),from 最终都会不再存在于原路径上,缓存
-	// key 含 mtime/size,事后无法再算出。moveItem 只在 move 类型任务里调用
-	// (copy 分支源文件保留,不在这里),所以在函数入口统一 purge 一次就够。
+	// Must be called before from actually disappears: whichever branch runs
+	// (the atomic rename below, or copy->verify->delete-source for
+	// cross-device), from will end up no longer existing at its original
+	// path, and the cache key includes mtime/size which can't be recomputed
+	// afterward. moveItem is only called for move-type tasks (the copy
+	// branch keeps the source file and isn't handled here), so purging once
+	// at function entry is enough.
 	file.PurgeThumbCacheEntry(from)
 
 	if rErr := renameFn(from, dst); rErr == nil {
@@ -787,7 +792,8 @@ itemsLoop:
 			if !file.CheckNotExist(dst) {
 				switch temp.Style {
 				case "skip":
-					// 目的地已存在且策略为 skip:没有真正落盘,不发 media:created
+					// Destination already exists and style is skip: nothing
+					// actually lands on disk, so don't emit media:created.
 					continue
 				case "replace", "overwrite":
 					parkedPath, replaceErr := replaceConflict(dst, func() error {

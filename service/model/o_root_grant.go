@@ -1,14 +1,17 @@
 /*
- * @Description: 根目录检索授权表——记录哪些 root_id 被授权参与检索(RAG/文件名/图片检索),
- * 以及它们各自的来源(wiki 对账产生 or 虚拟根手动 seed)。
+ * @Description: Root-directory search authorization table — records which
+ * root_id are authorized to participate in search (RAG/filename/image
+ * search), along with each one's source (produced by wiki reconciliation
+ * or manually seeded as a virtual root).
  */
 package model
 
-// RootGrant 对应表 o_root_grants,一行代表一个 root 的授权状态。
-// RootID 为主键:
-//   - source="wiki" 的行由 Wiki 侧节点树对账(ReconcileWiki)全量同步产生;
-//   - source="virtual" 的行由虚拟根(如 photos)通过 SeedVirtual 手动登记,
-//     ReconcileWiki 绝不触碰这些行。
+// RootGrant corresponds to table o_root_grants; one row represents one
+// root's authorization state. RootID is the primary key:
+//   - source="wiki" rows are produced by full sync from the Wiki-side node
+//     tree reconciliation (ReconcileWiki);
+//   - source="virtual" rows are manually registered by a virtual root
+//     (e.g. photos) via SeedVirtual; ReconcileWiki never touches these rows.
 type RootGrant struct {
 	RootID    string `gorm:"column:root_id;primaryKey" json:"root_id"`
 	Path      string `gorm:"column:path" json:"path"`

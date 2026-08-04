@@ -13,12 +13,15 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// taskStore 由 route/v2.go 在 InitV2Router 时注入。
+// taskStore is injected by route/v2.go in InitV2Router.
 var taskStore *upload.TaskStore
 
-// cancelStagingDirsFn 返回取消时应尝试清理 staging 的所有目录(测试可改写)。
-// 任务 ID 现在可能带卷前缀、落在不同卷的暂存目录里(见 tus_routing_store.go),
-// 不能再假设单一 /DATA 目录——每次取消都重新枚举,与批次清扫器用同一规则。
+// cancelStagingDirsFn returns every directory that a cancel should try to
+// clean staging from (overridable in tests). Task IDs may now carry a volume
+// prefix and land in different volumes' staging directories (see
+// tus_routing_store.go), so a single /DATA directory can no longer be
+// assumed — every cancel re-enumerates, following the same rule as the batch
+// sweeper.
 var cancelStagingDirsFn = func() []string {
 	return upload.StagingDirs(common.FileUploadStagingDir, "/media")
 }
@@ -48,7 +51,7 @@ func GetUpload(c echo.Context) error {
 	return c.JSON(http.StatusOK, t)
 }
 
-// CancelUpload: POST /v2/nimoos/file/uploads/:id/cancel —— 幂等,始终 200。
+// CancelUpload: POST /v2/nimoos/file/uploads/:id/cancel — idempotent, always 200.
 func CancelUpload(c echo.Context) error {
 	id := c.Param("id")
 	owner := c.Request().Header.Get("user_id")

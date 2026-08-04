@@ -49,7 +49,7 @@ type SystemService interface {
 	CheckUpdate() *UpgradeCheckResult
 	DownloadUpdate() error
 	CancelDownload()
-	GetDownloadStatus() (string, float64) // 返回 (status, progress)
+	GetDownloadStatus() (string, float64) // returns (status, progress)
 	StartDailyDownloadChecker()
 	GetSystemConfigDebug() []string
 	GetNimoOSLogs(lineNumber int) string
@@ -103,14 +103,14 @@ type SystemService interface {
 	SyncStartupUpgradeStatus()
 }
 
-// downloaderState 管理系统升级包下载协程的生命周期
+// downloaderState manages the lifecycle of the system upgrade bundle download goroutine
 type downloaderState struct {
 	mu          sync.RWMutex
 	status      string // "idle" | "running" | "paused" | "completed" | "failed"
 	version     string
 	progress    float64 // 0.00-100.00
 	cancel      context.CancelFunc
-	downloadDir string // 当前下载目录，用于取消时清理 .tmp
+	downloadDir string // current download directory, used to clean up .tmp on cancel
 }
 
 type systemService struct {
@@ -514,7 +514,7 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 		return fmt.Errorf("no downloaded upgrade bundle found")
 	}
 
-	// 从目录名提取目标版本号：/var/lib/nimoos_data/upgrade/v1.0.1/ → 1.0.1
+	// extract the target version from the directory name: /var/lib/nimoos_data/upgrade/v1.0.1/ → 1.0.1
 	bundleDir := filepath.Dir(latestBundle)
 	targetVersion := strings.TrimPrefix(filepath.Base(bundleDir), "v")
 
@@ -525,7 +525,7 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 		logger.Info("starting system upgrade", zap.String("bundle", latestBundle),
 			zap.String("target", targetVersion))
 
-		// 上报 installing 状态
+		// report installing status
 		if local != nil {
 			reportUpgradeResult(local.UpdateServer, local.DeviceID, "os", currentVersion, targetVersion, "installing", "", "")
 		}
@@ -566,7 +566,7 @@ func (s *systemService) UpdateSystemVersion(version string) error {
 		}
 		Cache.Delete("check_update_result")
 
-		// 记录系统升级状态文件，供重启后同步
+		// record the system upgrade status file, for syncing after reboot
 		systemStatusFilePath := "/var/lib/nimoos_data/upgrade/system_status.json"
 		statusData := map[string]string{
 			"update_type":  "os",
@@ -627,7 +627,7 @@ func readLocalVersionInfo() (*localVersionJSON, error) {
 		return nil, fmt.Errorf("version field is empty")
 	}
 
-	// 如果没有 device_id，从 /etc/machine-id 读取
+	// if device_id is missing, read it from /etc/machine-id
 	if local.DeviceID == "" {
 		if mid, err := os.ReadFile("/etc/machine-id"); err == nil {
 			local.DeviceID = strings.TrimSpace(string(mid))
@@ -637,15 +637,15 @@ func readLocalVersionInfo() (*localVersionJSON, error) {
 	return &local, nil
 }
 
-// generateCookie 生成 NimoOS-Cookie 头：SHA256(device_id + ":" + secret)[:16]
+// generateCookie generates the NimoOS-Cookie header: SHA256(device_id + ":" + secret)[:16]
 func generateCookie(deviceID string) string {
 	data := deviceID + ":" + common.CookieSecret
 	h := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(h[:16])
 }
 
-// readRAUCBootStatus 读取 A/B 两个分区的 boot_status 和当前启动分区
-// 返回格式："{A的状态},{B的状态},booted:{启动分区}"，如 "good,bad,booted:A"
+// readRAUCBootStatus reads boot_status for the A/B partitions and the currently booted partition
+// return format: "{A's status},{B's status},booted:{booted partition}", e.g. "good,bad,booted:A"
 func readRAUCBootStatus() string {
 	output, err := command.OnlyExec("rauc status --output-format=json 2>/dev/null")
 	if err != nil {
@@ -698,14 +698,14 @@ type upgradeCheckResponse struct {
 	} `json:"data"`
 }
 
-// checkCloudUpdate 调用云端 OTA 服务检查更新。
-// 云端 API: GET {update_server}/v1/sys/version?current_version=X
-// 使用 NimoOS-Cookie 鉴权：deviceID + timestamp + CookieSecret 的 SHA256[:16]
-// 返回: (hasUpdate, versionInfo, error)
-//   - 401 表示鉴权失败 → hasUpdate=false, error=nil（静默降级，可能是密钥过期）
-//   - 404 表示无可用更新 → hasUpdate=false, error=nil
-//   - 503 表示服务不可用 → hasUpdate=false, error=nil（静默降级）
-//   - 其他错误 → hasUpdate=false, error=err（调用方决定是否重试）
+// checkCloudUpdate calls the cloud OTA service to check for updates.
+// Cloud API: GET {update_server}/v1/sys/version?current_version=X
+// Auth uses the NimoOS-Cookie: SHA256[:16] of deviceID + timestamp + CookieSecret
+// Returns: (hasUpdate, versionInfo, error)
+//   - 401 means auth failed → hasUpdate=false, error=nil (silent degrade, may be an expired key)
+//   - 404 means no update available → hasUpdate=false, error=nil
+//   - 503 means the service is unavailable → hasUpdate=false, error=nil (silent degrade)
+//   - other errors → hasUpdate=false, error=err (caller decides whether to retry)
 func checkCloudUpdate(server, currentVersion, platform, hardwareID, deviceID string) (bool, *versionInfo, error) {
 	url := fmt.Sprintf("%s/v1/sys/version?current_version=%s", server, currentVersion)
 	req, err := http.NewRequest("GET", url, nil)
@@ -713,7 +713,7 @@ func checkCloudUpdate(server, currentVersion, platform, hardwareID, deviceID str
 		return false, nil, fmt.Errorf("create request: %w", err)
 	}
 
-	// NimoOS-Cookie 鉴权头
+	// NimoOS-Cookie auth headers
 	req.Header.Set("X-Nimo-Device-ID", deviceID)
 	req.Header.Set("X-Nimo-Cookie", generateCookie(deviceID))
 	req.Header.Set("X-Nimo-Platform", platform)
@@ -727,16 +727,16 @@ func checkCloudUpdate(server, currentVersion, platform, hardwareID, deviceID str
 	}
 	defer resp.Body.Close()
 
-	// 401: 鉴权失败（静默降级）
+	// 401: auth failed (silent degrade)
 	if resp.StatusCode == http.StatusUnauthorized {
 		logger.Info("checkCloudUpdate: authentication failed (401)")
 		return false, nil, nil
 	}
-	// 404: 无可用更新（静默处理）
+	// 404: no update available (silent handling)
 	if resp.StatusCode == http.StatusNotFound {
 		return false, nil, nil
 	}
-	// 503: 服务不可用（静默降级）
+	// 503: service unavailable (silent degrade)
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		logger.Info("checkCloudUpdate: cloud service unavailable (503)")
 		return false, nil, nil
@@ -771,9 +771,9 @@ func checkCloudUpdate(server, currentVersion, platform, hardwareID, deviceID str
 	return true, vi, nil
 }
 
-// reportUpgradeResult 上报升级结果到云端
+// reportUpgradeResult reports the upgrade result to the cloud
 // status: "downloading" / "installing" / "completed" / "failed"
-// Cookie 算法与 checkCloudUpdate 一致：SHA256(device_id + ":" + secret)[:16]
+// Cookie algorithm matches checkCloudUpdate: SHA256(device_id + ":" + secret)[:16]
 func reportUpgradeResult(server, deviceID, updateType, fromVersion, toVersion, status, errorMsg, logURL string) {
 	url := fmt.Sprintf("%s/v1/sys/report", server)
 
@@ -799,7 +799,7 @@ func reportUpgradeResult(server, deviceID, updateType, fromVersion, toVersion, s
 		return
 	}
 
-	// NimoOS-Cookie 鉴权头
+	// NimoOS-Cookie auth headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Nimo-Device-ID", deviceID)
 	req.Header.Set("X-Nimo-Cookie", generateCookie(deviceID))
@@ -833,7 +833,7 @@ type versionInfo struct {
 	Compatible  *compatibleRule `json:"compatible,omitempty"`
 }
 
-// reportFailed 上传升级日志并上报失败结果到云端
+// reportFailed uploads the upgrade log and reports the failure result to the cloud
 func (s *systemService) reportFailed(server, deviceID, updateType, fromVersion, toVersion, errorMsg string) {
 	logPath := "/var/log/nimoos_app_upgrade.log"
 	if updateType == "os" {
@@ -917,8 +917,8 @@ type UpgradeCheckResult struct {
 	CurrentVersion   string  `json:"current_version"`
 	LatestVersion    string  `json:"latest_version"`
 	IsDownloaded     bool    `json:"is_downloaded"`
-	IsDownloading    bool    `json:"is_downloading"`              // 协程 running，有下载进程在跑
-	IsPaused         bool    `json:"is_paused"`                   // .tmp 残留但协程 idle，可断点续传
+	IsDownloading    bool    `json:"is_downloading"`              // downloader goroutine is running, a download is in progress
+	IsPaused         bool    `json:"is_paused"`                   // .tmp leftover but goroutine idle, can resume
 	DownloadProgress float64 `json:"download_progress,omitempty"` // 0.00-100.00
 	Changelog        string  `json:"changelog"`
 	Size             int     `json:"size"`
@@ -929,7 +929,7 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 	const cacheKey = "check_update_result"
 	if cached, ok := Cache.Get(cacheKey); ok {
 		if r, ok := cached.(*UpgradeCheckResult); ok {
-			// 下载中/已完成：缓存不含实时进度和磁盘状态，需重新检查
+			// downloading/completed: the cache doesn't hold live progress or disk state, needs rechecking
 			s.downloader.mu.RLock()
 			status := s.downloader.status
 			isRunning := status == "running"
@@ -1004,7 +1004,7 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 		}
 	}
 
-	// 如果 downloader 协程正在跑，覆盖为 downloading（优先级高于 paused）
+	// if the downloader goroutine is running, override to downloading (higher priority than paused)
 	s.downloader.mu.RLock()
 	if s.downloader.status == "running" {
 		result.IsDownloading = true
@@ -1024,14 +1024,14 @@ func (s *systemService) CheckUpdate() *UpgradeCheckResult {
 func (s *systemService) DownloadUpdate() error {
 	logger.Info("DownloadUpdate: starting")
 
-	// 检查协程状态
+	// check goroutine status
 	s.downloader.mu.Lock()
 	if s.downloader.status == "running" {
 		s.downloader.mu.Unlock()
 		logger.Info("DownloadUpdate: downloader goroutine already running")
 		return nil
 	}
-	// 重置状态
+	// reset state
 	s.downloader.status = "running"
 	s.downloader.progress = 0
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1051,7 +1051,7 @@ func (s *systemService) CancelDownload() {
 		cancel()
 	}
 	s.setDownloaderStatus("idle")
-	// 清除缓存，让前端下次请求拿到正确的 idle 状态
+	// clear the cache so the next frontend request gets the correct idle status
 	Cache.Delete("check_update_result")
 }
 
@@ -1061,7 +1061,7 @@ func (s *systemService) GetDownloadStatus() (string, float64) {
 	return s.downloader.status, s.downloader.progress
 }
 
-// --- APP 下载器 ---
+// --- APP downloader ---
 
 func (s *systemService) DownloadAppUpdate() error {
 	logger.Info("DownloadAppUpdate: starting")
@@ -1091,7 +1091,7 @@ func (s *systemService) CancelAppDownload() {
 		cancel()
 	}
 	s.setAppDownloaderStatus("idle")
-	// 清除缓存，让前端下次请求拿到正确的 idle 状态
+	// clear the cache so the next frontend request gets the correct idle status
 	Cache.Delete("check_app_update_result")
 }
 
@@ -1142,17 +1142,17 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 	bundlePath := filepath.Join(appUpgradeDir, "bundle.tar.gz")
 	tmpFile := bundlePath + ".tmp"
 
-	// 清理上次中断残留的 .tmp
+	// clean up leftover .tmp from a previous interruption
 	os.Remove(tmpFile)
 
-	// 已下载则直接完成
+	// already downloaded, complete directly
 	if _, err := os.Stat(bundlePath); err == nil {
 		logger.Info("runAppDownload: bundle already downloaded")
 		s.setAppDownloaderStatus("completed")
 		return
 	}
 
-	// 上报 downloading 状态
+	// report downloading status
 	reportUpgradeResult(local.UpdateServer, local.DeviceID, "app", currentAppVersion, bestVersion.Version, "downloading", "", "")
 
 	fullURL := local.UpdateServer + bestVersion.DownloadURL
@@ -1219,7 +1219,7 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 	var totalWritten int64
 	buf := make([]byte, 256*1024)
 	lastPublishedProgress := -1.0
-	reportedAny := false // 标记是否在 totalSize=0 时至少发送过一次进度
+	reportedAny := false // marks whether at least one progress update was sent while totalSize=0
 
 	for {
 		select {
@@ -1246,7 +1246,7 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 				if progress > 100 {
 					progress = 100
 				}
-				progress = math.Round(progress*100) / 100 // 保留两位小数
+				progress = math.Round(progress*100) / 100 // keep two decimal places
 			}
 			s.appDownloader.mu.Lock()
 			s.appDownloader.progress = progress
@@ -1288,14 +1288,14 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 
 	out.Close()
 
-	// 如果下载时不知道总大小（Content-Length 为 -1），下载完成后用实际大小
+	// if the total size was unknown during download (Content-Length was -1), use the actual size after completion
 	if totalSize == 0 {
 		totalSize = int(totalWritten)
 	}
 
 	logger.Info("runAppDownload: download complete", zap.Int64("total_bytes", totalWritten), zap.Int64("expected_size", int64(totalSize)))
 
-	// 校验下载是否完整
+	// verify the download is complete
 	if totalSize > 0 && totalWritten != int64(totalSize) {
 		logger.Error("runAppDownload: incomplete download", zap.Int64("expected", int64(totalSize)), zap.Int64("actual", totalWritten))
 		os.Remove(tmpFile)
@@ -1303,7 +1303,7 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 		return
 	}
 
-	// SHA256 校验
+	// SHA256 verification
 	if bestVersion.SHA256 == "" {
 		logger.Error("runAppDownload: SHA256 not provided by cloud, rejecting download")
 		s.reportFailed(local.UpdateServer, local.DeviceID, "app", currentAppVersion, bestVersion.Version, "sha256_missing")
@@ -1335,7 +1335,7 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 
 	logger.Info("runAppDownload: download completed successfully")
 
-	// 清理旧版本 APP 目录
+	// clean up old version APP directories
 	upgradeDir := "/var/lib/nimoos_data/upgrade"
 	entries, _ := os.ReadDir(upgradeDir)
 	for _, entry := range entries {
@@ -1355,7 +1355,7 @@ func (s *systemService) runAppDownload(ctx context.Context) {
 	s.setAppDownloaderStatus("completed")
 }
 
-// runDownload 是实际下载逻辑，在独立协程中运行
+// runDownload is the actual download logic, run in its own goroutine
 func (s *systemService) runDownload(ctx context.Context) {
 	logger.Info("runDownload: goroutine started")
 
@@ -1378,7 +1378,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 		return
 	}
 
-	// 重新查云端获取 downloadURL
+	// re-query the cloud to get the downloadURL
 	hasUpdate, bestVersion, err := checkCloudUpdate(local.UpdateServer, local.Version, local.Platform, local.HardwareID, local.DeviceID)
 	if err != nil {
 		logger.Error("runDownload: cloud check failed", zap.Error(err))
@@ -1391,7 +1391,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 		return
 	}
 
-	// 保存版本号
+	// save the version
 	s.downloader.mu.Lock()
 	s.downloader.version = bestVersion.Version
 	s.downloader.mu.Unlock()
@@ -1405,7 +1405,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 	s.downloader.downloadDir = downloadDir
 	s.downloader.mu.Unlock()
 
-	// 上报 downloading 状态
+	// report downloading status
 	reportUpgradeResult(local.UpdateServer, local.DeviceID, "os", local.Version, bestVersion.Version, "downloading", "", "")
 
 	tmpFile := filepath.Join(downloadDir, "nimo_update_"+bestVersion.Version+".raucb.tmp")
@@ -1419,7 +1419,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 		return
 	}
 
-	// 断点续传：检查已有 .tmp 文件大小
+	// resumable download: check the size of any existing .tmp file
 	var resumeOffset int64
 	if fi, err := os.Stat(tmpFile); err == nil {
 		resumeOffset = fi.Size()
@@ -1453,7 +1453,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 	}
 	defer dlResp.Body.Close()
 
-	// 非 200/206 刷新 URL 重试一次
+	// non 200/206: refresh the URL and retry once
 	if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
 		logger.Info("runDownload: download failed with status, refreshing URL", zap.Int("status", dlResp.StatusCode))
 		dlResp.Body.Close()
@@ -1482,7 +1482,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 		}
 	}
 
-	// 根据响应码决定文件打开模式
+	// decide the file open mode based on the response code
 	openFlags := os.O_CREATE | os.O_WRONLY
 	if dlResp.StatusCode == http.StatusPartialContent {
 		openFlags |= os.O_APPEND
@@ -1501,7 +1501,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 	}
 	defer out.Close()
 
-	// 分段写入 + 进度推送
+	// chunked write + progress push
 	buf := make([]byte, 256*1024) // 256KB buffer
 	var totalWritten int64
 	totalSize := int64(bestVersion.Size)
@@ -1536,7 +1536,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 				return
 			}
 			totalWritten += int64(n)
-			// 计算进度百分比（保留两位小数）
+			// compute progress percentage (keep two decimal places)
 			progress := 0.0
 			if totalSize > 0 {
 				progress = float64(resumeOffset+totalWritten) * 100.0 / float64(totalSize)
@@ -1549,7 +1549,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 			s.downloader.progress = progress
 			s.downloader.mu.Unlock()
 
-			// 每次进度变化 ≥ 0.01 才推送事件
+			// only push an event when progress changes by ≥ 0.01
 			if progress-lastPublishedProgress >= 0.01 || progress == 100 {
 				lastPublishedProgress = progress
 				props := map[string]string{
@@ -1574,7 +1574,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 				return
 			}
 			logger.Error("runDownload: read interrupted", zap.Error(readErr), zap.Int64("progress_bytes", resumeOffset+totalWritten))
-			s.setDownloaderStatus("paused") // 网络中断 = 保留 .tmp 供续传
+			s.setDownloaderStatus("paused") // network interrupted = keep the .tmp for resuming
 			return
 		}
 	}
@@ -1582,7 +1582,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 	out.Close()
 	logger.Info("runDownload: downloaded bytes", zap.Int64("total_bytes", resumeOffset+totalWritten))
 
-	// SHA256 校验
+	// SHA256 verification
 	hasher := sha256.New()
 	f, err := os.Open(tmpFile)
 	if err != nil {
@@ -1612,7 +1612,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 
 	logger.Info("runDownload: download complete", zap.String("file", finalFile))
 
-	// 清理旧版本目录
+	// clean up old version directories
 	upgradeDir := "/var/lib/nimoos_data/upgrade"
 	entries, _ := os.ReadDir(upgradeDir)
 	for _, entry := range entries {
@@ -1630,7 +1630,7 @@ func (s *systemService) runDownload(ctx context.Context) {
 	s.setDownloaderStatus("completed")
 }
 
-// setDownloaderStatus 线程安全地设置 downloader 状态
+// setDownloaderStatus thread-safely sets the downloader status
 func (s *systemService) setDownloaderStatus(status string) {
 	s.downloader.mu.Lock()
 	defer s.downloader.mu.Unlock()
@@ -2432,9 +2432,9 @@ func NewSystemService() SystemService {
 	return s
 }
 
-// uploadUpgradeLog 从设备端获取 S3 上传预签名 URL 并上传日志文件，返回公开下载链接
+// uploadUpgradeLog gets a presigned S3 upload URL from the device endpoint and uploads the log file, returning a public download link
 func uploadUpgradeLog(server, deviceID, logPath string) (string, error) {
-	// 1. 获取预签名上传 URL
+	// 1. get the presigned upload URL
 	url := fmt.Sprintf("%s/v1/sys/log-upload-url", server)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -2463,7 +2463,7 @@ func uploadUpgradeLog(server, deviceID, logPath string) (string, error) {
 		return "", err
 	}
 
-	// 2. 打开日志文件
+	// 2. open the log file
 	file, err := os.Open(logPath)
 	if err != nil {
 		return "", err
@@ -2475,7 +2475,7 @@ func uploadUpgradeLog(server, deviceID, logPath string) (string, error) {
 		return "", err
 	}
 
-	// 3. 执行 PUT 上传
+	// 3. perform the PUT upload
 	putReq, err := http.NewRequest("PUT", res.UploadURL, file)
 	if err != nil {
 		return "", err
@@ -2497,7 +2497,7 @@ func uploadUpgradeLog(server, deviceID, logPath string) (string, error) {
 	return res.LogURL, nil
 }
 
-// checkAppCloudUpdate 调用云端 OTA 服务检查应用包更新，结果缓存 3 分钟
+// checkAppCloudUpdate calls the cloud OTA service to check for app bundle updates, caching the result for 3 minutes
 func checkAppCloudUpdate(server, currentAppVersion, currentOsVersion, platform, hardwareID, deviceID string) (bool, *versionInfo, error) {
 	cacheKey := "cloud_update_app_" + currentAppVersion
 	if cached, ok := Cache.Get(cacheKey); ok {
@@ -2516,7 +2516,7 @@ func checkAppCloudUpdate(server, currentAppVersion, currentOsVersion, platform, 
 		return false, nil, fmt.Errorf("create request: %w", err)
 	}
 
-	// NimoOS-Cookie 鉴权
+	// NimoOS-Cookie auth
 	req.Header.Set("X-Nimo-Device-ID", deviceID)
 	req.Header.Set("X-Nimo-Cookie", generateCookie(deviceID))
 	req.Header.Set("X-Nimo-Platform", platform)
@@ -2590,7 +2590,7 @@ func (s *systemService) CheckAppUpdate() *UpgradeCheckResult {
 	const cacheKey = "check_app_update_result"
 	if cached, ok := Cache.Get(cacheKey); ok {
 		if r, ok := cached.(*UpgradeCheckResult); ok {
-			// 下载中/已完成：缓存不含实时进度和磁盘状态，需重新检查
+			// downloading/completed: the cache doesn't hold live progress or disk state, needs rechecking
 			s.appDownloader.mu.RLock()
 			status := s.appDownloader.status
 			isRunning := status == "running"
@@ -2598,7 +2598,7 @@ func (s *systemService) CheckAppUpdate() *UpgradeCheckResult {
 			if isRunning || status == "completed" {
 				Cache.Delete(cacheKey)
 			} else if r.IsDownloaded {
-				// 如果缓存说已下载，校验磁盘文件是否还在
+				// if the cache says it's downloaded, verify the file is still on disk
 				appUpgradeDir := fmt.Sprintf("/var/lib/nimoos_data/upgrade/app_v%s", r.LatestVersion)
 				bundlePath := filepath.Join(appUpgradeDir, "bundle.tar.gz")
 				if fi, err := os.Stat(bundlePath); os.IsNotExist(err) {
@@ -2648,7 +2648,7 @@ func (s *systemService) CheckAppUpdate() *UpgradeCheckResult {
 		return result
 	}
 
-	// 检查下载状态
+	// check download status
 	appUpgradeDir := fmt.Sprintf("/var/lib/nimoos_data/upgrade/app_v%s", bestVersion.Version)
 	bundlePath := filepath.Join(appUpgradeDir, "bundle.tar.gz")
 	if _, err := os.Stat(bundlePath); err == nil {
@@ -2687,7 +2687,7 @@ func (s *systemService) UpdateAppVersion(version string) error {
 		currentAppVersion = local.AppVersion
 	}
 
-	// 强制从云端获取最新版本，不依赖缓存
+	// force-fetch the latest version from the cloud, bypassing the cache
 	Cache.Delete("cloud_update_app_" + currentAppVersion)
 
 	hasUpdate, bestVersion, err := checkAppCloudUpdate(local.UpdateServer, currentAppVersion, local.Version, local.Platform, local.HardwareID, local.DeviceID)
@@ -2705,10 +2705,10 @@ func (s *systemService) UpdateAppVersion(version string) error {
 
 	bundlePath := filepath.Join(appUpgradeDir, "bundle.tar.gz")
 
-	// 如果未预先下载，则在此下载
+	// if it wasn't pre-downloaded, download it here
 	if _, err := os.Stat(bundlePath); os.IsNotExist(err) {
 		logger.Info("UpdateAppVersion: downloading bundle", zap.String("url", local.UpdateServer+bestVersion.DownloadURL))
-		// 上报 downloading 状态
+		// report downloading status
 		reportUpgradeResult(local.UpdateServer, local.DeviceID, "app", currentAppVersion, targetAppVersion, "downloading", "", "")
 
 		dlResp, err := http.Get(local.UpdateServer + bestVersion.DownloadURL)
@@ -2741,7 +2741,7 @@ func (s *systemService) UpdateAppVersion(version string) error {
 		logger.Info("UpdateAppVersion: bundle already downloaded", zap.String("path", bundlePath))
 	}
 
-	// 记录初始的 status.json，供重启后/出错时同步状态
+	// record the initial status.json, for syncing state after a restart or on error
 	statusFilePath := "/var/lib/nimoos_data/upgrade/status.json"
 	initialStatus := map[string]string{
 		"update_type":   "app",
@@ -2753,19 +2753,19 @@ func (s *systemService) UpdateAppVersion(version string) error {
 	statusBytes, _ := json.Marshal(initialStatus)
 	_ = os.WriteFile(statusFilePath, statusBytes, 0644)
 
-	// 上报 installing 状态
+	// report installing status
 	reportUpgradeResult(local.UpdateServer, local.DeviceID, "app", currentAppVersion, targetAppVersion, "installing", "", "")
 
-	// 异步拉起脱机升级脚本以避免进程重启挂掉子进程
+	// asynchronously launch the detached upgrade script so a process restart doesn't kill the child process
 	logger.Info("UpdateAppVersion: launching scaffold script", zap.String("bundle", bundlePath))
 
-	// 使用 systemd-run --scope 创建独立的 systemd scope，
-	// 使升级脚本在单独的 cgroup 中运行。即使 nimoos.service 被 systemd 停止，
-	// scope 单元不会被连带杀死，从而实现真正的脱机升级。
+	// use systemd-run --scope to create an independent systemd scope,
+	// running the upgrade script in its own cgroup. Even if nimoos.service is stopped by systemd,
+	// the scope unit isn't killed along with it, achieving a true detached upgrade.
 	cmd := exec.Command("systemd-run", "--scope", "--unit=nimoos-app-upgrade", "--quiet",
 		"bash", "/usr/libexec/nimo_app_upgrade.sh", bundlePath, currentAppVersion, targetAppVersion)
 
-	// 统一输出到 upgrade.log（每次升级清空旧日志）
+	// route all output to upgrade.log (truncated on each upgrade)
 	logFile, ferr := os.OpenFile("/var/log/nimoos_app_upgrade.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if ferr == nil {
 		cmd.Stdout = logFile
@@ -2792,7 +2792,7 @@ func (s *systemService) UpdateAppVersion(version string) error {
 }
 
 func (s *systemService) SyncStartupUpgradeStatus() {
-	// 1. 同步应用升级状态
+	// 1. sync app upgrade status
 	appStatusFilePath := "/var/lib/nimoos_data/upgrade/status.json"
 	if _, err := os.Stat(appStatusFilePath); err == nil {
 		if statusBytes, err := os.ReadFile(appStatusFilePath); err == nil {
@@ -2824,7 +2824,7 @@ func (s *systemService) SyncStartupUpgradeStatus() {
 		_ = os.Remove(appStatusFilePath)
 	}
 
-	// 2. 同步系统 (OS) 升级状态
+	// 2. sync system (OS) upgrade status
 	systemStatusFilePath := "/var/lib/nimoos_data/upgrade/system_status.json"
 	if _, err := os.Stat(systemStatusFilePath); err == nil {
 		if statusBytes, err := os.ReadFile(systemStatusFilePath); err == nil {
@@ -2860,7 +2860,7 @@ func (s *systemService) SyncStartupUpgradeStatus() {
 	}
 }
 
-// isFileLocked 检查文件是否被 flock 锁定
+// isFileLocked checks whether the file is locked via flock
 func isFileLocked(lockPath string) (bool, error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

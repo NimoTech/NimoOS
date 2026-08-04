@@ -28,17 +28,20 @@ func TestValidateFileUploadMetadata(t *testing.T) {
 		wantSC  int
 	}{
 		{"ok", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents-x"}, 10, big, false, 0},
-		// 上传「进入」受保护名的用户数据文件夹现在是允许的(targetPath 不再被拦)。
+		// Uploading "into" a protected-name user data folder is now allowed
+		// (targetPath is no longer blocked).
 		{"upload into Documents allowed", map[string]string{"filename": "a.txt", "targetPath": "/DATA/Documents"}, 10, big, false, 0},
 		{"upload into Downloads allowed", map[string]string{"filename": "a.txt", "targetPath": "/DATA/admin/Downloads"}, 10, big, false, 0},
 		{"empty filename", map[string]string{"filename": "", "targetPath": "/DATA/x"}, 10, big, true, 400},
 		{"illegal filename slash", map[string]string{"filename": "a/b.txt", "targetPath": "/DATA/x"}, 10, big, true, 400},
 		{"illegal filename dotdot", map[string]string{"filename": "..", "targetPath": "/DATA/x"}, 10, big, true, 400},
-		// relativePath 仍拦受保护名:防止「文件夹上传」在根部重建系统特殊文件夹。返回 403。
+		// relativePath still blocks protected names: prevents a "folder upload"
+		// from recreating a system special folder at the root. Returns 403.
 		{"protected in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "Media/a.txt"}, 10, big, true, 403},
 		{"traversal in relpath", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x", "relativePath": "../../etc/a.txt"}, 10, big, true, 400},
 		{"empty file", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 0, big, true, 400},
-		// 无人为单文件上限:约 98 GiB 的文件只要磁盘空间足够(×1.05 余量)就放行。
+		// No artificial per-file cap: a ~98 GiB file is allowed as long as disk
+		// space is sufficient (×1.05 margin).
 		{"huge file with space allowed", map[string]string{"filename": "a.mov", "targetPath": "/DATA/x"}, 104960272307, uint64(200 * 1024 * 1024 * 1024), false, 0},
 		{"insufficient space", map[string]string{"filename": "a.txt", "targetPath": "/DATA/x"}, 1000, 100, true, 413},
 		{"huge file insufficient space", map[string]string{"filename": "a.mov", "targetPath": "/DATA/x"}, 104960272307, big, true, 413},
@@ -200,7 +203,7 @@ func TestIngestToTargetWithPolicy(t *testing.T) {
 		return p
 	}
 
-	t.Run("skip 已存在则不覆盖", func(t *testing.T) {
+	t.Run("skip does not overwrite an existing file", func(t *testing.T) {
 		stg := t.TempDir()
 		tgt := t.TempDir()
 		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
@@ -220,7 +223,7 @@ func TestIngestToTargetWithPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("overwrite 覆盖同名", func(t *testing.T) {
+	t.Run("overwrite replaces the same-name file", func(t *testing.T) {
 		stg := t.TempDir()
 		tgt := t.TempDir()
 		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)
@@ -236,7 +239,7 @@ func TestIngestToTargetWithPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("rename 加序号", func(t *testing.T) {
+	t.Run("rename appends a number", func(t *testing.T) {
 		stg := t.TempDir()
 		tgt := t.TempDir()
 		_ = os.WriteFile(filepath.Join(tgt, "a.txt"), []byte("OLD"), 0644)

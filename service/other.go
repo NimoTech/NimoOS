@@ -51,7 +51,7 @@ func (s *otherService) Search(key string) ([]model.SearchEngine, error) {
 	})
 
 	client := resty.New()
-	client.SetTimeout(3 * time.Second) // 设置全局超时时间
+	client.SetTimeout(3 * time.Second) // set global timeout
 	var wg sync.WaitGroup
 	for i := 0; i < len(engines); i++ {
 		wg.Add(1)
@@ -102,7 +102,7 @@ func (s *otherService) Search(key string) ([]model.SearchEngine, error) {
 
 func (s *otherService) AgentSearch(url string) ([]byte, error) {
 	client := resty.New()
-	client.SetTimeout(3 * time.Second) // 设置全局超时时间
+	client.SetTimeout(3 * time.Second) // set global timeout
 	resp, err := client.R().Get(url)
 	if err != nil {
 		logger.Error("Then get search result error: %v", zap.Error(err), zap.String("url", url))

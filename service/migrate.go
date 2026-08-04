@@ -357,8 +357,10 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 
 	case MigrateTypePhotos:
 		anchor := DefaultPhotosPath
-		// 防呆:photos.conf 手工把 DataPath 配到非默认位置时,锚点软链迁移
-		// 语义不成立(数据根本不在锚点),拒绝并给出清晰错误。
+		// Fail-safe: if photos.conf manually points DataPath somewhere
+		// other than the default, the anchor-symlink migration semantics
+		// no longer hold (the data isn't actually at the anchor), so reject
+		// with a clear error.
 		if p, ok := photosConfDataPath("/etc/nimoos/photos.conf"); ok && p != "" && p != anchor {
 			return "", fmt.Errorf("photos DataPath is custom-configured to %s (non-default); reset it to default or migrate manually", p)
 		}
@@ -370,7 +372,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		if isSystemRestore {
 			dst = anchor
 		} else if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			// dst 的父目录 <目标盘>/.system_data 可能不存在(rsync 不建父目录)
+			// dst's parent directory <target disk>/.system_data may not exist (rsync doesn't create parent dirs)
 			return "", fmt.Errorf("failed to create target directory %s: %w", filepath.Dir(dst), err)
 		}
 		newPath = anchor
@@ -470,7 +472,7 @@ func executeMigration(jobID, migrationType, targetMountPoint string) (string, er
 		}
 
 		if migrationType == MigrateTypePhotos {
-			// 相册服务持有 photos.db(SQLite WAL)与缩略图目录,必须先停。
+			// The photos service holds photos.db (SQLite WAL) and the thumbnail directory open, so it must be stopped first.
 			if err := systemctl.StopService("nimoos-photos"); err != nil {
 				logger.Error("failed to stop nimoos-photos before migration", zap.Error(err))
 			}

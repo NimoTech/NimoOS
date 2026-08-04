@@ -68,9 +68,9 @@ type FsListResp struct {
 }
 
 var (
-	// 升级成 WebSocket 协议
+	// Upgrade to WebSocket protocol
 	upgraderFile = websocket.Upgrader{
-		// 允许CORS跨域请求
+		// Allow cross-origin (CORS) requests
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
@@ -78,7 +78,7 @@ var (
 	conn *websocket.Conn
 	err  error
 
-	// uploadBatchStore 惰性初始化:复用全局 gorm 单例(与 route/v2.go 的构造同源)。
+	// uploadBatchStore is lazily initialized: reuses the global gorm singleton (same construction as route/v2.go).
 	uploadBatchStore *uploadsvc.BatchStore
 )
 
@@ -103,12 +103,12 @@ func checkPathAccess(ctx echo.Context, path string) error {
 		zap.String("role", role),
 		zap.String("remoteIP", ctx.RealIP()))
 
-	// 1. 内部调用/本地回环认证豁免权限检查。
+	// 1. Internal calls / localhost loopback are exempt from permission checks.
 	// Localhost bypass: JWT middleware skipped, no headers set.
 	if role == "" && userID == "" {
 		return nil
 	}
-	// 2. 超级管理员特权判定。
+	// 2. Super-admin privilege check.
 	// Only User ID 1 (Root Admin) gets the "Skeleton Key" to all paths.
 	// Other admins (like admin1) must still follow explicit folder grants for security isolation.
 	isSuperAdmin := userID == "1"
@@ -119,13 +119,13 @@ func checkPathAccess(ctx echo.Context, path string) error {
 		return nil
 	}
 
-	// 3. 基本放行规则检测。
+	// 3. Base allow-rule check.
 	// Base safety check (empty for users now that prefixes are removed).
 	if utils.IsPathAllowed(cleanPath, false) {
 		return nil
 	}
 
-	// 4. 显式文件夹授权校验。
+	// 4. Explicit folder grant check.
 	// Slow path: check whether the user has an explicit folder grant.
 	if userID != "" {
 		uid, err := strconv.Atoi(userID)
@@ -142,12 +142,12 @@ func checkPathAccess(ctx echo.Context, path string) error {
 	return echo.ErrForbidden
 }
 
-// @Summary 读取文件
+// @Summary Read file
 // @Produce  application/json
 // @Accept application/json
 // @Tags file
 // @Security ApiKeyAuth
-// @Param path query string true "路径"
+// @Param path query string true "path"
 // @Success 200 {string} string "ok"
 // @Router /file/read [get]
 func GetFilerContent(ctx echo.Context) error {
@@ -167,7 +167,7 @@ func GetFilerContent(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
 		})
 	}
-	// 文件读取任务是将文件内容读取到内存中。
+	// The file read task reads the file content into memory.
 	info, err := ioutil.ReadFile(filePath)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
@@ -261,11 +261,11 @@ func GetDownloadFile(ctx echo.Context) error {
 		}
 		if !info.IsDir() {
 
-			// 打开文件
+			// Open the file
 			fileTmp, _ := os.Open(filePath)
 			defer fileTmp.Close()
 
-			// 获取文件的名称
+			// Get the file name
 			fileName := path.Base(filePath)
 			ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 			ctx.File(filePath)
@@ -281,10 +281,12 @@ func GetDownloadFile(ctx echo.Context) error {
 		})
 	}
 
-	// 这三个头只对打包分支生效;单文件分支上面已经 return,
-	// 走到这里必然是归档打包响应,ctx.File 自带的 Content-Type 不受影响。
-	// Content-Type 只对 zip 明确声明,其余格式(tar/targz…,前端当前不传)交给
-	// net/http 首写时的内容嗅探,避免张冠李戴。
+	// These three headers only apply to the archive branch; the single-file
+	// branch above already returned, so reaching here means an archive response,
+	// which doesn't affect ctx.File's own Content-Type. Content-Type is only
+	// explicitly set for zip; other formats (tar/targz…, not currently sent by
+	// the frontend) are left to net/http's content sniffing on first write, to
+	// avoid mislabeling.
 	if extension == ".zip" {
 		ctx.Response().Header().Set("Content-Type", "application/zip")
 	}
@@ -292,7 +294,7 @@ func GetDownloadFile(ctx echo.Context) error {
 	ctx.Response().Header().Set("Cache-Control", "no-cache")
 
 	name := downloadArchiveName(list, extension)
-	// 必须在 ar.Create(写响应体) 之前设置,写入响应体后响应头会被锁死。
+	// Must be set before ar.Create (which writes the response body); once the body is written, headers are locked.
 	ctx.Response().Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
 
 	err = ar.Create(ctx.Response().Writer)
@@ -315,10 +317,12 @@ func GetDownloadFile(ctx echo.Context) error {
 	return nil
 }
 
-// downloadArchiveName 决定批量下载归档的对外文件名:
-// 单个文件夹 → 文件夹名+扩展名;多选 → 公共父目录名+扩展名(群晖式:在 photos
-// 目录选 5 个文件 → photos.zip);公共父目录是根("/" 或空)时兜底 NimoOS。
-// extension 来自 GetCompressionAlgorithm(如 ".zip"/".tar.gz"),跟随 format 参数。
+// downloadArchiveName decides the outward-facing filename for a batch download
+// archive: a single folder → folder name + extension; multiple selections →
+// common parent directory name + extension (Synology-style: picking 5 files in
+// the photos directory → photos.zip); falls back to NimoOS when the common
+// parent is root ("/" or empty).
+// extension comes from GetCompressionAlgorithm (e.g. ".zip"/".tar.gz"), following the format param.
 func downloadArchiveName(list []string, extension string) string {
 	var base string
 	if len(list) == 1 {
@@ -367,19 +371,20 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
 		})
 	}
-	// Content-Type/Last-Modified/Content-Length 由 ServeContent 自行设置
-	// (按文件名扩展/内容嗅探 + modtime + seeker 长度)。此前这里手工把这三个头
-	// 加在 ctx.Request().Header 上——写错了对象,纯空操作,已删。
+	// Content-Type/Last-Modified/Content-Length are set by ServeContent itself
+	// (based on filename extension/content sniffing + modtime + seeker length).
+	// This used to manually set these three headers on ctx.Request().Header —
+	// wrong object, a pure no-op — now removed.
 	http.ServeContent(ctx.Response().Writer, ctx.Request(), fileName, node.ModTime(), fi)
 	return nil
 }
 
-// @Summary 获取目录列表
+// @Summary Get directory listing
 // @Produce  application/json
 // @Accept application/json
 // @Tags file
 // @Security ApiKeyAuth
-// @Param path query string false "路径"
+// @Param path query string false "path"
 // @Success 200 {string} string "ok"
 // @Router /file/dirpath [get]
 func DirPath(ctx echo.Context) error {
@@ -418,9 +423,11 @@ func DirPath(ctx echo.Context) error {
 			info[i].Extensions = ex
 		}
 	}
-	// 上传中断角标:凡当前用户自己的 interrupted 批次的缺失文件落在某子条目路径下,
-	// 该条目注入 extensions.upload,前端据此叠加「裂开」角标。查询失败只降级不报错——
-	// 角标是提示性信息,不能拖垮列目录主流程。
+	// Upload-interrupted badge: for any of the current user's own interrupted
+	// batches, if a missing file's path falls under a given child entry, inject
+	// extensions.upload on that entry so the frontend can overlay a "broken"
+	// badge. Query failure only degrades gracefully, never errors — the badge
+	// is informational and must not derail the main list-directory flow.
 	if broken, berr := getUploadBatchStore().BrokenChildren(req.Path, ctx.Request().Header.Get("user_id")); berr == nil && len(broken) > 0 {
 		for i := (req.Index - 1) * req.Size; i < forEnd; i++ {
 			bid, ok := broken[info[i].Name]
@@ -526,14 +533,17 @@ func RenamePath(ctx echo.Context) error {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES)})
 	}
 
-	// 必须在实际 rename 之前调用:缓存 key 含旧路径的 mtime/size,rename 之
-	// 后旧路径已不存在,再也算不出当初的 key 了。
+	// Must be called before the actual rename: the cache key includes the old
+	// path's mtime/size, and after rename the old path no longer exists, so
+	// the original key can never be recomputed.
 	file.PurgeThumbCacheEntry(op)
 	success, err := service.MyService.System().RenameFile(op, np)
 	if success == common_err.SUCCESS {
-		// 重命名/移动成功后,挂在 op 自身/子树上的分享记录 path 仍指旧位置,
-		// 会在「已共享」Tab 里变成永远打不开的悬挂项——正确语义是改写路径,
-		// 不是删除(与删除目录时的 DeleteShareByPath 对应)。
+		// After a successful rename/move, share records hanging off op itself or
+		// its subtree still point their path at the old location, which turns
+		// into a permanently unopenable dangling entry in the "Shared" tab —
+		// the correct semantics is to rewrite the path, not delete it (mirrors
+		// DeleteShareByPath used when a directory is deleted).
 		if shares := service.MyService.Shares(); shares != nil {
 			shares.RewriteSharePathPrefix(op, np)
 		}
@@ -908,14 +918,17 @@ var deletedMediaExts = map[string]bool{
 	".m4v": true, ".3gp": true,
 }
 
-// jsonMangledName 复现 encoding/json 对非法 UTF-8 的处理:每个非法字节替换为
-// U+FFFD,合法多字节 rune 原样保留。用于把磁盘上的真实目录名映射到「前端经
-// 列表接口看到的名字」,以便删除时反向匹配。
+// jsonMangledName reproduces encoding/json's handling of invalid UTF-8: each
+// invalid byte is replaced with U+FFFD, while valid multi-byte runes are kept
+// as-is. Used to map the real on-disk directory name to "the name the frontend
+// sees via the list API", so deletion can match it back.
 //
-// 不用 strings.ToValidUTF8——它把连续非法字节整段换成一个 U+FFFD,与 JSON 的
-// 逐字节替换语义不一致(encoding/json 的字符串编码器也是按 utf8.DecodeRuneInString
-// 逐 rune 前进,非法字节时该函数返回 (RuneError, 1),即每个非法字节各自产出一个
-// U+FFFD,这里的循环与之完全对应)。
+// Doesn't use strings.ToValidUTF8 — it collapses a run of consecutive invalid
+// bytes into a single U+FFFD, which doesn't match JSON's byte-by-byte
+// replacement semantics (encoding/json's string encoder also advances via
+// utf8.DecodeRuneInString rune by rune; on an invalid byte that function
+// returns (RuneError, 1), i.e. each invalid byte produces its own U+FFFD — the
+// loop here matches that exactly).
 func jsonMangledName(name string) string {
 	if utf8.ValidString(name) {
 		return name
@@ -923,16 +936,18 @@ func jsonMangledName(name string) string {
 	var b strings.Builder
 	for i := 0; i < len(name); {
 		r, size := utf8.DecodeRuneInString(name[i:])
-		b.WriteRune(r) // 非法字节时 DecodeRuneInString 返回 (RuneError, 1),恰好逐字节替换
+		b.WriteRune(r) // on an invalid byte DecodeRuneInString returns (RuneError, 1), giving byte-by-byte replacement
 		i += size
 	}
 	return b.String()
 }
 
-// resolveDeletePath 把客户端送来的删除路径解析为磁盘真实路径。
-// 路径存在 → 原样返回。不存在(Lstat ENOENT)→ 在父目录中找「JSON 整形后
-// 恰好等于请求名」的真实条目:唯一命中返回真实路径;零命中返回 os.ErrNotExist;
-// 多个命中返回歧义错误(绝不猜删)。其余 Lstat 错误原样返回。
+// resolveDeletePath resolves a client-supplied delete path to the real on-disk
+// path. If the path exists → returned as-is. If it doesn't (Lstat ENOENT) →
+// search the parent directory for a real entry whose "JSON-mangled name
+// exactly equals the requested name": a single match returns the real path;
+// zero matches returns os.ErrNotExist; multiple matches returns an ambiguity
+// error (never guess a delete). Any other Lstat error is returned as-is.
 func resolveDeletePath(p string) (string, error) {
 	if _, err := os.Lstat(p); err == nil {
 		return p, nil
@@ -945,7 +960,7 @@ func resolveDeletePath(p string) (string, error) {
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// 父目录本身都读不到,没有救援的余地。
+		// Can't even read the parent directory — no room for rescue.
 		return p, os.ErrNotExist
 	}
 
@@ -984,10 +999,13 @@ func DeleteFile(ctx echo.Context) error {
 		}
 	}
 
-	// 把每个请求路径解析为磁盘真实路径。不存在时消灭"假成功":直接返回
-	// FILE_DOES_NOT_EXIST,而不是让后面的 os.RemoveAll 对着一个不存在的路径
-	// 悄悄返回 nil。命中救援匹配的真实路径与请求路径可能不同名,需要重新过一遍
-	// 保护名/系统路径祖先检查(checkPathAccess 基于父目录路径语义等价,不必重跑)。
+	// Resolve each requested path to the real on-disk path. When it doesn't
+	// exist, eliminate the "false success": return FILE_DOES_NOT_EXIST directly
+	// instead of letting the later os.RemoveAll silently return nil against a
+	// nonexistent path. A rescued real path may have a different name from the
+	// requested one, so re-run the protected-name/system-path-ancestor checks
+	// (checkPathAccess is semantically equivalent based on the parent directory
+	// path, no need to rerun it).
 	for i, p := range paths {
 		resolved, err := resolveDeletePath(p)
 		if err != nil {
@@ -1017,18 +1035,22 @@ func DeleteFile(ctx echo.Context) error {
 
 	for _, v := range paths {
 		unlock := pathlock.LockWrite(v)
-		// 必须在 RemoveAll 之前调用:缓存 key 含 mtime/size,文件没了就再也算
-		// 不出当初的 key。目录不遍历子文件即时清缓存(成本考虑),留给 LRU 兜底。
+		// Must be called before RemoveAll: the cache key includes mtime/size, and
+		// once the file is gone the original key can never be recomputed. For a
+		// directory, its children aren't walked to clear their cache immediately
+		// (cost consideration) — left to the LRU as a fallback.
 		file.PurgeThumbCacheEntry(v)
 		err := os.RemoveAll(v)
 		unlock()
 		if err != nil {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
 		}
-		// 目录删掉后,挂在它自身/子树上的 Samba 分享记录就成了「已共享」Tab 里
-		// 永远打不开的悬挂项(实测:删父目录后其下已分享的子文件夹仍列在 Tab 里)。
-		// 同步清掉并重写 smb 配置;DeleteShareByPath 自带 "/" 边界,不伤同前缀
-		// 兄弟目录的分享。
+		// Once a directory is deleted, Samba share records hanging off it or its
+		// subtree become permanently unopenable dangling entries in the "Shared"
+		// tab (verified: after deleting a parent directory, its already-shared
+		// child folders still show up in the tab). Clear them and rewrite the smb
+		// config in sync; DeleteShareByPath has its own "/" boundary, so it
+		// doesn't harm sibling directories with the same prefix.
 		if shares := service.MyService.Shares(); shares != nil {
 			shares.DeleteShareByPath(v)
 		}
@@ -1195,40 +1217,41 @@ func GetFileCount(ctx echo.Context) error {
 }
 
 type CenterHandler struct {
-	// 广播通道，有数据则循环每个用户广播出去
+	// Broadcast channel — when data arrives, loop over every user and broadcast it out
 	broadcast chan []byte
-	// 注册通道，有用户进来 则推到用户集合map中
+	// Register channel — when a user connects, push it into the clients map
 	register chan *Client
-	// 注销通道，有用户关闭连接 则将该用户剔出集合map中
+	// Unregister channel — when a user closes/errors the connection, evict it from the clients map
 	unregister chan *Client
-	// 用户集合，每个用户本身也在跑两个协程，监听用户的读、写的状态
+	// Client set — each user also has two goroutines running, monitoring its read/write state
 	clients map[string]*Client
 }
 
 type Client struct {
 	handler *CenterHandler
 	conn    *websocket.Conn
-	// 每个用户自己的循环跑起来的状态监控
+	// Each user's own running-loop state monitoring
 	send         chan []byte
 	ID           string       `json:"id"`
 	IP           string       `json:"ip"`
 	Name         service.Name `json:"name"`
 	RtcSupported bool         `json:"rtcSupported"`
 	TimerId      int          `json:"timerId"`
-	// mu 只保护 LastBeat：readPump（收到 pong/任意消息时）与 monitoring 的
-	// 心跳超时检查分属两个 goroutine，读写都要过锁。
+	// mu only guards LastBeat: readPump (on receiving pong/any message) and
+	// monitoring's heartbeat timeout check are two different goroutines; both
+	// reads and writes must go through the lock.
 	mu       sync.Mutex
 	LastBeat time.Time `json:"lastBeat"`
 }
 
-// touchLastBeat 记录一次心跳/活动时间，供 monitoring 的超时检查读取。
+// touchLastBeat records a heartbeat/activity timestamp for monitoring's timeout check to read.
 func (c *Client) touchLastBeat(now time.Time) {
 	c.mu.Lock()
 	c.LastBeat = now
 	c.mu.Unlock()
 }
 
-// snapshotLastBeat 读取当前心跳时间（加锁，避免与 touchLastBeat 数据竞争）。
+// snapshotLastBeat reads the current heartbeat time (locked, to avoid a data race with touchLastBeat).
 func (c *Client) snapshotLastBeat() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1304,7 +1327,7 @@ func ConnectWebSocket(ctx echo.Context) error {
 	}
 	list = service.MyService.Peer().GetPeers()
 	if len(list) > 10 {
-		fmt.Println("解决完后依然有溢出", list)
+		fmt.Println("still overflowing after resolving", list)
 	}
 	currentPeer := PeerModel{ID: client.ID, Name: client.Name, RtcSupported: client.RtcSupported}
 	pmsg := make(map[string]interface{})
@@ -1330,7 +1353,7 @@ func ConnectWebSocket(ctx echo.Context) error {
 	fmt.Println(err)
 	client.send <- otherBy
 
-	// 推给监控中心注册到用户集合中
+	// Push to the monitoring center to register into the client set
 	handler.register <- client
 
 	client.send <- []byte(`{"type":"ping"}`)
@@ -1345,7 +1368,7 @@ func ConnectWebSocket(ctx echo.Context) error {
 	by, _ := json.Marshal(msg)
 	client.send <- by
 
-	// 每个 client 都挂起 2 个新的协程，监控读、写状态
+	// Each client spins up 2 new goroutines, monitoring read/write state
 	go client.writePump()
 	go client.readPump()
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
@@ -1359,20 +1382,20 @@ var handler = CenterHandler{
 }
 
 func init() {
-	// 起个协程跑起来，监听注册、注销、消息 3 个 channel
+	// Spin up a goroutine to listen on the 3 channels: register, unregister, message
 	go handler.monitoring()
 
-	crontab := cron.New(cron.WithSeconds()) // 精确到秒
-	// 定义定时器调用的任务函数
+	crontab := cron.New(cron.WithSeconds()) // second-level precision
+	// Define the task function invoked by the timer
 
 	task := func() {
 		handler.broadcast <- []byte(`{"type":"ping"}`)
 	}
-	// 定时任务
-	spec := "*/30 * * * * ?" // cron表达式，每五秒一次
-	// 添加定时任务,
+	// Scheduled task
+	spec := "*/30 * * * * ?" // cron expression, once every 30 seconds
+	// Add the scheduled task,
 	crontab.AddFunc(spec, task)
-	// 启动定时器
+	// Start the timer
 	crontab.Start()
 }
 
@@ -1383,33 +1406,33 @@ func (c *Client) writePump() {
 		c.conn.Close()
 	}()
 	for {
-		// 广播推过来的新消息，马上通过websocket推给自己
+		// New message pushed in from broadcast, immediately push it to self via websocket
 		message, _ := <-c.send
-		fmt.Println("推送消息", string(message), "1")
+		fmt.Println("pushing message", string(message), "1")
 		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 			return
 		}
 	}
 }
 
-// 读，监听客户端是否有推送内容过来服务端
+// Read: listen for whether the client has pushed content to the server
 func (c *Client) readPump() {
 	defer func() {
 		c.handler.unregister <- c
 		c.conn.Close()
 	}()
 	for {
-		// 循环监听是否该用户是否要发言
+		// Loop listening for whether this user wants to speak
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
-			// 异常关闭的处理
+			// Handling for abnormal close
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
 			c.handler.broadcast <- []byte(`{"type":"peer-left","peerId":"` + c.ID + `"}`)
 			break
 		}
-		// 要的话，推给广播中心，广播中心再推给每个用户
+		// If so, push to the broadcast center, which then pushes to every user
 
 		t := gjson.GetBytes(message, "type")
 		if t.String() == "disconnect" {
@@ -1456,13 +1479,15 @@ func (c *Client) readPump() {
 	}
 }
 
-// heartbeatTimeout 心跳假死判定阈值：ping 广播每 30s 一次，容忍 3 个周期
-// 没有回应（考虑到瞬时网络抖动），超过判定为假死（网线拔出/系统休眠等无
-// TCP FIN 的场景）。
+// heartbeatTimeout is the threshold for judging a connection dead-but-alive:
+// ping broadcasts once every 30s, tolerating 3 cycles with no response
+// (accounting for transient network jitter); beyond that it's judged dead
+// (scenarios with no TCP FIN, such as an unplugged cable or system sleep).
 const heartbeatTimeout = 90 * time.Second
 
-// staleClientIDs 返回心跳超时的客户端：lastBeats 为 id→最后心跳时间，
-// now-lastBeat > timeout 判定假死。恰好等于 timeout 不算超时。
+// staleClientIDs returns clients whose heartbeat has timed out: lastBeats maps
+// id → last heartbeat time; now-lastBeat > timeout is judged dead. Exactly
+// equal to timeout does not count as a timeout.
 func staleClientIDs(lastBeats map[string]time.Time, now time.Time, timeout time.Duration) []string {
 	var stale []string
 	for id, lastBeat := range lastBeats {
@@ -1474,23 +1499,25 @@ func staleClientIDs(lastBeats map[string]time.Time, now time.Time, timeout time.
 }
 
 func (ch *CenterHandler) monitoring() {
-	// 与 ping 广播同周期（30s）巡检一次心跳超时的假死连接。ch.clients 只在
-	// monitoring 这个 goroutine 里被读写，因此心跳超时的踢出逻辑也放在这个
-	// select 循环里处理，不需要额外给 clients map 加锁。
+	// Sweeps for heartbeat-timed-out dead connections on the same cycle as the
+	// ping broadcast (30s). ch.clients is only read/written inside the
+	// monitoring goroutine, so the heartbeat-timeout eviction logic is also
+	// handled in this select loop, with no need for extra locking on the
+	// clients map.
 	staleTicker := time.NewTicker(30 * time.Second)
 	defer staleTicker.Stop()
 	for {
 		select {
-		// 注册，新用户连接过来会推进注册通道，这里接收推进来的用户指针
+		// Register: when a new user connects it's pushed into the register channel; here we receive the pushed-in user pointer
 		case client := <-ch.register:
 			ch.clients[client.ID] = client
-			// 注销，关闭连接或连接异常会将用户推出群聊
+			// Unregister: closing the connection or a connection error pushes the user out of the room
 		case client := <-ch.unregister:
 			delete(ch.clients, client.ID)
-			// 消息，监听到有新消息到来
+			// Message: a new message has arrived
 		case message := <-ch.broadcast:
-			println("消息来了，message：" + string(message))
-			// 推送给每个用户的通道，每个用户都有跑协程起了writePump的监听
+			println("message arrived, message: " + string(message))
+			// Push to each user's channel; every user has a running goroutine listening in writePump
 			for _, client := range ch.clients {
 				client.send <- message
 			}
@@ -1500,13 +1527,16 @@ func (ch *CenterHandler) monitoring() {
 	}
 }
 
-// kickStaleClients 踢出心跳超时（假死）的 client：关闭其连接、从 clients
-// 集合中移除，并按现有「peer-left」的广播消息形态通知其余在线 peer（前端
-// Network.js 已在消费这个 type，断线时走的是同一条路径）。
+// kickStaleClients evicts clients whose heartbeat has timed out (dead-but-alive):
+// closes their connection, removes them from the clients set, and notifies the
+// remaining online peers using the existing "peer-left" broadcast message shape
+// (the frontend's Network.js already consumes this type — disconnects go
+// through the same path).
 //
-// 注意：这里直接遍历 ch.clients 推送，而不是发去 ch.broadcast 通道——
-// kickStaleClients 本身就是在 monitoring 的 select 循环内被调用，
-// 若改成往 ch.broadcast 发送会因为没有其它 goroutine 接收而死锁。
+// Note: this iterates ch.clients directly to push, rather than sending to the
+// ch.broadcast channel — kickStaleClients itself is called from inside
+// monitoring's select loop, so sending to ch.broadcast instead would deadlock
+// since no other goroutine is receiving.
 func (ch *CenterHandler) kickStaleClients(now time.Time) {
 	lastBeats := make(map[string]time.Time, len(ch.clients))
 	for id, c := range ch.clients {

@@ -7,10 +7,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// 编译期接口断言:确保 TaskStore 始终满足 upload.Store 契约。
+// Compile-time interface assertion: ensures TaskStore always satisfies the upload.Store contract.
 var _ upload.Store = (*TaskStore)(nil)
 
-// TaskStore 封装 o_upload_tasks 的读写与状态迁移,实现 upload.Store 接口。
+// TaskStore wraps read/write and status transitions for o_upload_tasks, implementing the upload.Store interface.
 type TaskStore struct{ db *gorm.DB }
 
 func NewTaskStore(db *gorm.DB) *TaskStore { return &TaskStore{db: db} }
@@ -66,8 +66,8 @@ func (s *TaskStore) Delete(id string) error {
 	return s.db.Where("id = ?", id).Delete(&upload.UploadTask{}).Error
 }
 
-// ListUnfinishedByBatch 返回某批次尚未完成的任务(uploading/paused/failed),
-// 供批次中断时统一终止并清 staging。
+// ListUnfinishedByBatch returns a batch's not-yet-finished tasks (uploading/paused/failed),
+// for uniformly terminating and clearing staging when a batch is interrupted.
 func (s *TaskStore) ListUnfinishedByBatch(batchID string) ([]upload.UploadTask, error) {
 	var ts []upload.UploadTask
 	err := s.db.

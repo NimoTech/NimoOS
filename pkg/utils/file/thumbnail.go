@@ -6,7 +6,7 @@ import (
 	"github.com/disintegration/imaging"
 )
 
-// Thumbnail generation parameters for BF23 ("真正缩略"). A long-edge cap of
+// Thumbnail generation parameters for BF23 ("actual thumbnailing"). A long-edge cap of
 // 400px at JPEG quality ~70 targets ~20-50KB output for typical photos,
 // versus the multi-hundred-KB-to-multi-MB originals that were previously
 // served unchanged.

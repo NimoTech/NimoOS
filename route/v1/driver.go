@@ -41,9 +41,11 @@ func ListDriverInfo(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: list})
 }
 
-// googleByoCred 暂存用户自建(BYO)的 Google OAuth 凭据。由 PostGoogleDriveAuth 写入
-// service.Cache(随机 sid 为键、短 TTL),授权回调 GetRecoverStorage 按 state 里的 sid 取回。
-// client_secret 只在服务器内存中短暂存在,绝不进入任何 URL / 中转页。
+// googleByoCred temporarily holds a user's self-supplied (BYO) Google OAuth
+// credentials. Written by PostGoogleDriveAuth into service.Cache (keyed by a
+// random sid, short TTL); the auth callback GetRecoverStorage retrieves it by
+// the sid carried in state. client_secret only ever lives briefly in server
+// memory and never enters any URL or intermediate page.
 type googleByoCred struct {
 	ClientID     string
 	ClientSecret string
@@ -54,8 +56,9 @@ type googleDriveAuthReq struct {
 	ClientSecret string `json:"client_secret"`
 }
 
-// PostGoogleDriveAuth 接收用户自己的 Google OAuth client_id/client_secret,存入短期缓存,
-// 并返回一个用该 client_id 拼好的 Google 授权 URL(state 携带一次性 sid,供回调取回凭据)。
+// PostGoogleDriveAuth accepts the user's own Google OAuth client_id/client_secret,
+// stores them in a short-lived cache, and returns a Google auth URL built with
+// that client_id (state carries a one-time sid so the callback can retrieve the credentials).
 func PostGoogleDriveAuth(ctx echo.Context) error {
 	var req googleDriveAuthReq
 	if err := ctx.Bind(&req); err != nil {
@@ -74,8 +77,9 @@ func PostGoogleDriveAuth(ctx echo.Context) error {
 	sid := hex.EncodeToString(b)
 	service.Cache.Set(sid, googleByoCred{ClientID: req.ClientID, ClientSecret: req.ClientSecret}, 10*time.Minute)
 
-	// 与 google_drive.GetConfig() 里的授权 URL 结构一致,只是 client_id 用用户填的、
-	// 且 state 里带上 sid。${HOST} 占位符仍由前端替换成本机地址。
+	// Same auth URL structure as in google_drive.GetConfig(), just with the
+	// user-supplied client_id and sid carried in state. The ${HOST} placeholder
+	// is still substituted with the local address by the frontend.
 	authURL := "https://accounts.google.com/o/oauth2/auth/oauthchooseaccount?response_type=code" +
 		"&client_id=" + url.QueryEscape(req.ClientID) +
 		"&redirect_uri=" + url.QueryEscape(base.RedirectURI) +
