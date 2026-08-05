@@ -117,13 +117,12 @@ func init() {
 	//configfile.Install()
 }
 
-// @title nimoOS API
+// @title NimoOS API
 // @version 1.0.0
-// @contact.name lauren.pan
-// @contact.url https://www.zimaboard.com
-// @contact.email lauren.pan@icewhale.org
-// @description nimoOS v1 API
-// @host 192.168.2.217:8089
+// @contact.name NimoTech
+// @contact.url https://github.com/NimoTech/NimoOS
+// @contact.email nimonas@yeaher.com
+// @description NimoOS core service v1 API
 // @securityDefinitions.apikey ApiKeyAuth
 // @in header
 // @name Authorization
