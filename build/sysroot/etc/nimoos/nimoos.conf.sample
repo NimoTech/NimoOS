@@ -32,4 +32,4 @@ USBAutoMount =
 [system]
 
 [file]
-# ThumbCacheDir = /DATA/.system_data/thumb-cache ; 文件缩略图缓存目录,可指到别的盘
+# ThumbCacheDir = /DATA/.system_data/thumb-cache ; file thumbnail cache directory, can point to a different disk

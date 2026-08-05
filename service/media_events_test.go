@@ -18,7 +18,8 @@ func TestFilterMediaCreated(t *testing.T) {
 	require.NoError(t, os.WriteFile(txt, []byte("x"), 0o644))
 
 	got := filterMediaCreated([]string{sub, jpg, txt, filepath.Join(dir, "gone.png")})
-	// 目录放行(订阅方递归展开)、媒体扩展名放行(大小写不敏感)、
-	// 非媒体文件与已消失路径丢弃
+	// directories pass through (subscribers expand them recursively), media
+	// extensions pass through (case-insensitive), non-media files and
+	// vanished paths are dropped
 	require.Equal(t, []string{sub, jpg}, got)
 }

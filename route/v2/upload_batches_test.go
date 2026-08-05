@@ -108,7 +108,7 @@ func TestUploadBatchLifecycle(t *testing.T) {
 		t.Fatalf("expected 404 HTTPError, got %v", err)
 	}
 
-	// 4) 造一条该批次的 uploading 任务行 + staging 假文件
+	// 4) Create an uploading task row for this batch + a fake staging file
 	taskID := "t1"
 	if err := ts.Create(&commonUpload.UploadTask{
 		ID: taskID, OwnerUserID: "u1", BatchID: "b1", Status: commonUpload.UploadStatusUploading,
@@ -153,7 +153,7 @@ func TestUploadBatchLifecycle(t *testing.T) {
 		t.Fatalf("task status=%s", gotTask.Status)
 	}
 
-	// 5) 再 interrupt -> 幂等
+	// 5) interrupt again -> idempotent
 	rec, c = doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches/b1/interrupt", nil, "u1")
 	c.SetParamNames("id")
 	c.SetParamValues("b1")

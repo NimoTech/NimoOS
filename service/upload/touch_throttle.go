@@ -1,13 +1,18 @@
 package upload
 
-// maxThrottleEntries 是 TouchThrottle.last 的容量上限。NimoOS 是常驻 systemd 进程,
-// offsetThrottle 按 tus 任务 id 记 key、只增不减,不设上限会随长期运行无限增长。
-// 超过上限时整体清空重建——粗暴但足够:最坏后果只是清空后每个仍活跃的 key 会
-// "多放行一次"写库(下一次事件必然通过节流),不影响正确性,只是节流窗口重置了一次。
+// maxThrottleEntries is the capacity cap for TouchThrottle.last. NimoOS is a
+// long-running systemd process, and offsetThrottle keys entries by tus task id,
+// only ever adding — without a cap it would grow unbounded over a long
+// uptime. When the cap is exceeded, the whole map is wiped and rebuilt — crude
+// but good enough: the worst consequence is that each still-active key gets
+// "let through once extra" for a DB write right after the wipe (the next event
+// is guaranteed to pass the throttle anyway), which doesn't affect correctness,
+// it just resets the throttle window once.
 const maxThrottleEntries = 10000
 
-// TouchThrottle 按 key 节流：同一 key 距上次放行不足 intervalSecs 则拒绝。
-// 仅在单 goroutine（tus 事件循环）内使用，不加锁。
+// TouchThrottle throttles by key: rejects if less than intervalSecs has passed
+// since the same key was last let through.
+// Only used within a single goroutine (the tus event loop); not locked.
 type TouchThrottle struct {
 	interval int64
 	last     map[string]int64

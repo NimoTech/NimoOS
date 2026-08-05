@@ -45,9 +45,11 @@ func isLocalVolumeFSType(fstype string) bool {
 // parent volume), used whenever per-volume staging cannot or should not be used.
 const legacyStagingRoot = "/DATA"
 
-// resolveStagingRoot 返回 targetPath 应使用的暂存根(卷挂载根)与是否回退。
-// mounts 为 (挂载点, fstype) 列表快照,便于单测。回退(fellBack=true)时 root
-// 固定为 legacyStagingRoot("/DATA"),对应现有行为不变。
+// resolveStagingRoot returns the staging root (volume mount root) that
+// targetPath should use, and whether it fell back. mounts is a snapshot list
+// of (mountpoint, fstype), to keep this unit-testable. When falling back
+// (fellBack=true), root is fixed to legacyStagingRoot ("/DATA"), matching the
+// existing behavior.
 func resolveStagingRoot(targetPath string, mounts []MountEntry) (root string, fellBack bool) {
 	clean := filepath.Clean(targetPath)
 
@@ -59,7 +61,8 @@ func resolveStagingRoot(targetPath string, mounts []MountEntry) (root string, fe
 		if !matches {
 			continue
 		}
-		// 最长前缀优先:更深的挂载点匹配优先于浅层匹配(例如 /media/RAID_0 优先于 /)。
+		// Longest prefix wins: a deeper mountpoint match takes priority over a
+		// shallower one (e.g. /media/RAID_0 wins over /).
 		if !found || len(mp) > len(bestMP) {
 			bestMP, bestFS, found = mp, m.FSType, true
 		}

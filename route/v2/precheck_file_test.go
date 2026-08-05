@@ -33,9 +33,11 @@ func TestStatPrecheck_ExistsMatchingSize(t *testing.T) {
 	}
 }
 
-// 新语义的核心断言:同名但大小不同 -> exists 仍为 true(同名即冲突,不论大小),
-// 只有 size_match 为 false。旧实现下 fileExistsWithSize 会因大小不同直接判定
-// 「不存在」(exists=false),这条断言在旧实现下必须失败(红)。
+// Core assertion of the new semantics: same name but different size -> exists
+// is still true (same name means conflict, regardless of size), only
+// size_match is false. Under the old implementation, fileExistsWithSize would
+// judge "does not exist" (exists=false) purely because the size differs — this
+// assertion must fail (red) under the old implementation.
 func TestStatPrecheck_SameNameDifferentSize(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("hello world")
@@ -45,7 +47,7 @@ func TestStatPrecheck_SameNameDifferentSize(t *testing.T) {
 	}
 	exists, sizeMatch, isDir := statPrecheck(dir, "a.txt", int64(len(content))+1)
 	if !exists {
-		t.Error("expected exists=true for same-name file with different size (同名即冲突)")
+		t.Error("expected exists=true for same-name file with different size (same name means conflict)")
 	}
 	if sizeMatch {
 		t.Error("expected size_match=false for same-name file with different size")
@@ -204,8 +206,9 @@ func TestFileUploadPrecheck_Handler(t *testing.T) {
 	}
 }
 
-// 同名但大小不同 -> exists=true/size_match=false 的 HTTP 层断言(新语义的核心场景,
-// 冲突弹窗只关心「是否同名」,不关心大小)。
+// HTTP-layer assertion for same name but different size -> exists=true,
+// size_match=false (core scenario of the new semantics: the conflict dialog
+// only cares whether the name matches, not the size).
 func TestFileUploadPrecheck_Handler_SameNameDifferentSize(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("test data for precheck")
@@ -244,7 +247,7 @@ func TestFileUploadPrecheck_Handler_SameNameDifferentSize(t *testing.T) {
 	}
 }
 
-// 同名但为目录 -> exists=true, is_dir=true 的 HTTP 层断言。
+// HTTP-layer assertion for same name but a directory -> exists=true, is_dir=true.
 func TestFileUploadPrecheck_Handler_SameNameIsDir(t *testing.T) {
 	dir := t.TempDir()
 	subdir := filepath.Join(dir, "existing-folder")
@@ -310,8 +313,10 @@ func TestFileUploadPrecheck_EmptyTargetPath(t *testing.T) {
 	}
 }
 
-// precheck 不再因 targetPath 落在受保护名文件夹(如 AppData/Documents/Downloads)而拒绝:
-// 上传「进入」这些用户数据文件夹是正常用途。应返回 200 并给出每个文件的存在性结果。
+// precheck no longer rejects because targetPath falls under a protected-name
+// folder (e.g. AppData/Documents/Downloads): uploading "into" these user data
+// folders is normal usage. It should return 200 with an existence result for
+// each file.
 func TestFileUploadPrecheck_ProtectedTargetPathAllowed(t *testing.T) {
 	reqBody := precheckRequest{
 		TargetPath: "/DATA/AppData/SomeApp",
@@ -326,7 +331,7 @@ func TestFileUploadPrecheck_ProtectedTargetPathAllowed(t *testing.T) {
 	c := e.NewContext(req, rec)
 
 	if err := FileUploadPrecheck(c); err != nil {
-		t.Fatalf("expected no error (targetPath 不再受保护拦截), got %v", err)
+		t.Fatalf("expected no error (targetPath no longer blocked as protected), got %v", err)
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)

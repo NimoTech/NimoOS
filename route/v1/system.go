@@ -76,14 +76,14 @@ func GetFirmwareCheckVersion(ctx echo.Context) error {
 	data["download_progress"] = checkResult.DownloadProgress
 
 	if !checkResult.IsDownloaded && !checkResult.IsDownloading && utils.DefaultQuery(ctx, "trigger_download", "0") == "1" {
-		// DownloadUpdate 内部启动协程，立即返回
+		// DownloadUpdate spawns an internal goroutine and returns immediately
 		service.MyService.System().DownloadUpdate()
 	}
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
 }
 
-// @Summary 系统信息
+// @Summary system info
 // @Produce  application/json
 // @Accept application/json
 // @Tags sys
@@ -139,7 +139,7 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
 }
 
-// @Summary 应用更新
+// @Summary app update
 // @Produce  application/json
 // @Accept application/json
 // @Tags sys
@@ -182,7 +182,7 @@ func GetNimoOSErrorLogs(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: service.MyService.System().GetNimoOSLogs(line)})
 }
 
-// 系统配置
+// system config
 func GetSystemConfigDebug(ctx echo.Context) error {
 	array := service.MyService.System().GetSystemConfigDebug()
 	disk := service.MyService.System().GetDiskInfo()
@@ -362,7 +362,7 @@ func GetSystemUtilization(ctx echo.Context) error {
 	data["cpu"] = cpuData
 	data["mem"] = service.MyService.System().GetMemInfo()
 
-	// 拼装网络信息
+	// Assemble network info
 	netList := service.MyService.System().GetNetInfo()
 	newNet := []model.IOCountersStat{}
 	nets := service.MyService.System().GetNet(true)
@@ -542,9 +542,9 @@ func GetSystemProxy(ctx echo.Context) error {
 	}
 	rda, _ := ioutil.ReadAll(resp.Body)
 	//	json.NewEncoder(c.Writer).Encode(json.RawMessage(string(rda)))
-	// 响应状态码
+	// Response status code
 	ctx.Response().Writer.WriteHeader(resp.StatusCode)
-	// 复制转发的响应Body到响应Body
+	// Copy the proxied response body to the response body
 	io.Copy(ctx.Response().Writer, ioutil.NopCloser(bytes.NewBuffer(rda)))
 	return nil
 }
@@ -559,11 +559,11 @@ func PutSystemState(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: "The operation will be completed shortly."})
 }
 
-// @Summary 获取一个可用端口
+// @Summary get an available port
 // @Produce  application/json
 // @Accept application/json
 // @Tags app
-// @Param  type query string true "端口类型 udp/tcp"
+// @Param  type query string true "port type udp/tcp"
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
 // @Router /app/getport [get]
@@ -575,16 +575,16 @@ func GetPort(ctx echo.Context) error {
 		p, _ = port.GetAvailablePort(t)
 		ok = !port.IsPortAvailable(p, t)
 	}
-	// @tiger 这里最好封装成 {'port': ...} 的形式，来体现出参的上下文
+	// @tiger this would be better wrapped as {'port': ...} to give the output context
 	return ctx.JSON(common_err.SUCCESS, &model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: p})
 }
 
-// @Summary 检查端口是否可用
+// @Summary check whether a port is available
 // @Produce  application/json
 // @Accept application/json
 // @Tags app
-// @Param  port path int true "端口号"
-// @Param  type query string true "端口类型 udp/tcp"
+// @Param  port path int true "port number"
+// @Param  type query string true "port type udp/tcp"
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
 // @Router /app/check/{port} [get]

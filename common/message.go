@@ -4,8 +4,9 @@ import (
 	"github.com/NimoTech/NimoOS/codegen/message_bus"
 )
 
-// EventMediaCreated 文件落盘完成(上传/复制/移动)。properties["paths"] 为 JSON 数组,
-// 元素可以是文件路径,也可以是目录路径(整目录复制/移动时只发目的地根)。
+// EventMediaCreated fires when a file finishes landing on disk (upload/copy/move).
+// properties["paths"] is a JSON array whose elements can be file paths or
+// directory paths (a whole-directory copy/move only emits the destination root).
 const EventMediaCreated = "nimoos:media:created"
 
 // devtype -> action -> event

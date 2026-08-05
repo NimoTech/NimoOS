@@ -9,4 +9,9 @@
 ### 
 
 
-curl -fsSL https://raw.githubusercontent.com/NimoTech/get/main/update.sh | bash
+# Fetches the current updater from the release bucket. This used to curl a
+# raw.githubusercontent.com path that the CasaOS→NimoOS rename invented and
+# that nothing ever answered on, so running this script simply failed. The
+# updater now lives in NimoOS-Build and is published to the bucket below; see
+# that repository's README for the full install and update path.
+curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash

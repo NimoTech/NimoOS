@@ -120,7 +120,7 @@ var MsgFlags = map[int]string{
 	COMMAND_ERROR_INVALID_OPERATION: "invalid operation",
 }
 
-// 获取错误信息
+// GetMsg gets the error message
 func GetMsg(code int) string {
 	msg, ok := MsgFlags[code]
 	if ok {

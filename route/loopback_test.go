@@ -24,7 +24,7 @@ func TestLoopbackOnly_AllowsIPv4Loopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !called || rec.Code != http.StatusOK {
-		t.Fatalf("127.0.0.1 应放行: called=%v code=%d", called, rec.Code)
+		t.Fatalf("127.0.0.1 should be allowed through: called=%v code=%d", called, rec.Code)
 	}
 }
 
@@ -44,7 +44,7 @@ func TestLoopbackOnly_AllowsIPv6Loopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !called || rec.Code != http.StatusOK {
-		t.Fatalf("::1 应放行: called=%v code=%d", called, rec.Code)
+		t.Fatalf("::1 should be allowed through: called=%v code=%d", called, rec.Code)
 	}
 }
 
@@ -62,10 +62,10 @@ func TestLoopbackOnly_RejectsExternal(t *testing.T) {
 	})
 	err := h(c)
 	if called {
-		t.Fatal("外部请求不应放行")
+		t.Fatal("external requests should not be allowed through")
 	}
 	he, ok := err.(*echo.HTTPError)
 	if !ok || he.Code != http.StatusForbidden {
-		t.Fatalf("期望 403 HTTPError,got %v", err)
+		t.Fatalf("expected 403 HTTPError, got %v", err)
 	}
 }

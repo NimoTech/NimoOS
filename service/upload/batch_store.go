@@ -9,12 +9,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// BatchStore 封装 o_upload_batches / o_upload_batch_items 的读写与状态迁移。
+// BatchStore wraps read/write and status transitions for o_upload_batches / o_upload_batch_items.
 type BatchStore struct{ db *gorm.DB }
 
 func NewBatchStore(db *gorm.DB) *BatchStore { return &BatchStore{db: db} }
 
-// Create 幂等创建批次:同 id 已存在则直接返回 nil(前端重试/重复提交安全)。
+// Create idempotently creates a batch: if the same id already exists, it just
+// returns nil (safe against frontend retries/duplicate submits).
 func (s *BatchStore) Create(b *UploadBatch, items []UploadBatchItem) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var cnt int64
@@ -52,10 +53,13 @@ func (s *BatchStore) MissingItems(batchID string) ([]UploadBatchItem, error) {
 	return items, err
 }
 
-// MarkItemDone 把 (batchID, relativePath) 置 done 并重算计数;全部完成 → completed;
-// 若批次此前被判 interrupted(超时误判/补传),收到完成即回 active。
-// item 原本已 done(重复上传/覆盖)则不重复计数。批次或 item 不存在时静默返回 nil
-// (清单未上报成功时不阻塞上传主流程)。
+// MarkItemDone sets (batchID, relativePath) to done and recomputes the count;
+// once everything is done → completed. If the batch was previously judged
+// interrupted (timeout misjudgment/resumed upload), receiving a completion
+// brings it back to active.
+// If the item was already done (duplicate upload/overwrite), it isn't counted
+// again. If the batch or item doesn't exist, silently returns nil (a manifest
+// report failure must not block the main upload flow).
 func (s *BatchStore) MarkItemDone(batchID, relativePath string, now int64) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&UploadBatchItem{}).
@@ -67,7 +71,8 @@ func (s *BatchStore) MarkItemDone(batchID, relativePath string, now int64) error
 		if res.RowsAffected == 0 {
 			return nil
 		}
-		// done 计数原子自增(item 的 false→true 恰好一次,由上面 RowsAffected 保证)。
+		// done count increments atomically (the item's false→true happens exactly
+		// once, guaranteed by RowsAffected above).
 		if err := tx.Model(&UploadBatch{}).Where("id = ?", batchID).
 			Updates(map[string]interface{}{
 				"done":             gorm.Expr("done + 1"),
@@ -75,30 +80,38 @@ func (s *BatchStore) MarkItemDone(batchID, relativePath string, now int64) error
 			}).Error; err != nil {
 			return err
 		}
-		// 全部完成 → completed(active/interrupted 均可迁移)。
+		// Everything done → completed (either active or interrupted can transition).
 		if err := tx.Model(&UploadBatch{}).
 			Where("id = ? AND done >= total AND status IN ?", batchID,
 				[]string{BatchStatusActive, BatchStatusInterrupted}).
 			Update("status", BatchStatusCompleted).Error; err != nil {
 			return err
 		}
-		// 未完成但批次此前被判中断 → 回 active(超时误判/补传可逆)。
+		// Not done yet, but the batch was previously judged interrupted → back to
+		// active (timeout misjudgment/resumed upload is reversible).
 		return tx.Model(&UploadBatch{}).
 			Where("id = ? AND status = ? AND done < total", batchID, BatchStatusInterrupted).
 			Update("status", BatchStatusActive).Error
 	})
 }
 
-// MarkItemDoneAcrossBatches 按绝对路径等价,在所有 active/interrupted 批次中
-// 把命中的未完成项都记账(不限 batchID、不要求 targetPath 二元组完全相同)。
-// completedAbs = filepath.Join(targetPath, relativePath);对每个候选批次,若
-// completedAbs 落在 batch.TargetPath 之下(前缀匹配,以 "/" 分隔避免误伤
-// /DATA/Media 与 /DATA/Medias 这类字符串前缀相似但目录不同的情况),则取去
-// 掉批次根路径后的余部作为该批次坐标系下的 relativePath 调 MarkItemDone。
-// 典型场景:用户整夹上传(批次 targetPath=/X,item=backup/a.jpg),手动补传时
-// 进入子目录直传(targetPath=/X/backup,relativePath=a.jpg)——二元组不同但绝对
-// 路径相同,以前 miss、现在能命中;反之批次落在子目录、补传在父目录带子路径
-// 同样命中。原有精确路径匹配(targetPath 相同、relativePath 相同)天然被覆盖。
+// MarkItemDoneAcrossBatches, matching by absolute-path equivalence, accounts
+// for any matching unfinished item across all active/interrupted batches (not
+// scoped to a single batchID, and not requiring the targetPath pair to match exactly).
+// completedAbs = filepath.Join(targetPath, relativePath); for each candidate
+// batch, if completedAbs falls under batch.TargetPath (prefix match, split on
+// "/" to avoid mistakenly matching string-prefix-similar-but-different
+// directories like /DATA/Media vs /DATA/Medias), the remainder after stripping
+// the batch's root path is taken as the relativePath in that batch's coordinate
+// system and passed to MarkItemDone.
+// Typical scenario: the user uploads a whole folder (batch targetPath=/X,
+// item=backup/a.jpg); when manually resuming, they navigate into the
+// subdirectory and upload directly (targetPath=/X/backup, relativePath=a.jpg)
+// — the pair differs but the absolute path is the same, which used to miss and
+// now hits; conversely, if the batch is rooted at a subdirectory and the resume
+// happens at the parent directory with a sub-path, that also hits. The
+// original exact-path match (same targetPath, same relativePath) is naturally
+// covered as a special case.
 func (s *BatchStore) MarkItemDoneAcrossBatches(targetPath, relativePath string, now int64) error {
 	completedAbs := filepath.Clean(filepath.Join(targetPath, relativePath))
 
@@ -125,7 +138,8 @@ func (s *BatchStore) MarkItemDoneAcrossBatches(targetPath, relativePath string, 
 	return nil
 }
 
-// TouchProgress 记录批次仍有上传进度;interrupted 批次借此回 active(超时误判可逆)。
+// TouchProgress records that the batch still has upload progress; an
+// interrupted batch uses this to go back to active (timeout misjudgment is reversible).
 func (s *BatchStore) TouchProgress(batchID string, now int64) error {
 	return s.db.Model(&UploadBatch{}).
 		Where("id = ? AND status IN ?", batchID, []string{BatchStatusActive, BatchStatusInterrupted}).
@@ -136,7 +150,8 @@ func (s *BatchStore) SetStatus(id, status string) error {
 	return s.db.Model(&UploadBatch{}).Where("id = ?", id).Update("status", status).Error
 }
 
-// SetInterrupted 置 interrupted 并记录时刻(staging 延迟清理以此起算)。仅 active 可迁移。
+// SetInterrupted sets interrupted and records the timestamp (staging's delayed
+// cleanup is timed from this). Only active can transition.
 func (s *BatchStore) SetInterrupted(id string, now int64) error {
 	return s.db.Model(&UploadBatch{}).
 		Where("id = ? AND status = ?", id, BatchStatusActive).
@@ -155,11 +170,16 @@ func (s *BatchStore) ListByStatus(status string) ([]UploadBatch, error) {
 	return bs, err
 }
 
-// BrokenChildren 返回 dir 的直接子条目名 → batchID:凡 owner 自己的 interrupted 批次
-// 的缺失文件落在该子条目路径下,即命中。列目录接口据此给文件夹注入「裂开」角标;
-// 天然递归——用户钻到任何一层,缺内容的祖先/子文件夹都会被各自层级的调用命中。
-// 只看 owner 自己的批次:与批次详情/放弃接口的 owner 校验(getOwnedBatch)同口径,
-// 否则别人的批次角标看得见、点不开(GET/abandon 404),且永远清不掉。
+// BrokenChildren returns a map of dir's direct child entry names → batchID: any
+// missing file from one of the owner's own interrupted batches that falls
+// under that child entry's path counts as a hit. The list-directory endpoint
+// uses this to inject a "broken" badge onto folders; it's naturally recursive
+// — wherever the user drills down, ancestor/child folders missing content will
+// each be hit by the call at their own level.
+// Only looks at the owner's own batches: this matches the owner check
+// (getOwnedBatch) used by the batch-detail/abandon endpoints, otherwise
+// someone else's batch badge would be visible but unclickable (GET/abandon
+// 404), and could never be cleared.
 func (s *BatchStore) BrokenChildren(dir, owner string) (map[string]string, error) {
 	out := map[string]string{}
 	var batches []UploadBatch
@@ -201,9 +221,13 @@ func (s *BatchStore) BrokenChildren(dir, owner string) (map[string]string, error
 	return out, nil
 }
 
-// DeleteTerminal 删除终态(completed/abandoned)批次及其 items,返回删除的批次数。
-// 终态批次不产生角标、也不再参与销账,留着只会让 items 无限累积(单批可达数千行)。
-// active/interrupted 永不自动清除——感叹号角标只能由用户手动放弃或补传完成来解决。
+// DeleteTerminal deletes terminal-state (completed/abandoned) batches and their
+// items, returning the number of batches deleted.
+// Terminal-state batches produce no badge and no longer participate in
+// reconciliation; keeping them around would only let items accumulate without
+// bound (a single batch can reach thousands of rows).
+// active/interrupted are never auto-cleared — the warning badge can only be
+// resolved by the user manually abandoning it or completing the resumed upload.
 func (s *BatchStore) DeleteTerminal() (int, error) {
 	var ids []string
 	if err := s.db.Model(&UploadBatch{}).

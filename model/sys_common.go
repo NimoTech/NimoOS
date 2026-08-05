@@ -14,12 +14,12 @@ package model
 
 import "time"
 
-// 系统配置
+// System config
 type SysInfoModel struct {
-	Name string // 系统名称
+	Name string // System name
 }
 
-// 服务配置
+// Service config
 type ServerModel struct {
 	HttpPort     string
 	RunMode      string
@@ -30,7 +30,7 @@ type ServerModel struct {
 	UpdateUrl    string
 }
 
-// 服务配置
+// Service config
 type APPModel struct {
 	LogPath        string
 	LogSaveName    string
@@ -47,14 +47,14 @@ type CommonModel struct {
 	RuntimePath string
 }
 
-// 公共返回模型
+// Common response model
 type Result struct {
 	Success int         `json:"success" example:"200"`
 	Message string      `json:"message" example:"ok"`
-	Data    interface{} `json:"data" example:"返回结果"`
+	Data    interface{} `json:"data" example:"response result"`
 }
 
-// redis配置文件
+// Redis config file
 type RedisModel struct {
 	Host        string
 	Password    string

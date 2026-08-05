@@ -5,13 +5,14 @@ import (
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
 )
 
-// DefaultGCConfig 返回 NimoOS Files 服务使用的 GC 配置:
-// StagingDir 取自 common 常量,TTL 沿用阶段一定义的值。
+// DefaultGCConfig returns the GC config used by the NimoOS Files service:
+// StagingDir comes from a common constant, TTL reuses the value defined in phase one.
 func DefaultGCConfig() commonUpload.GCConfig {
 	return commonUpload.GCConfig{
 		StagingDir: common.FileUploadStagingDir,
-		// 任务残片可能被路由到 /media/<卷>/.system_data/file-tus-staging,
-		// 与批次清扫(batch_sweeper)同源枚举,消除 RAID 上永久残留的半截上传。
+		// Task fragments may be routed to /media/<volume>/.system_data/file-tus-staging;
+		// enumerated from the same source as the batch sweep (batch_sweeper), to
+		// eliminate half-finished uploads permanently stranded on RAID.
 		StagingDirs: func() []string {
 			return StagingDirs(common.FileUploadStagingDir, "/media")
 		},

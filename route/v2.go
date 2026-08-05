@@ -137,21 +137,21 @@ func InitV2Router() http.Handler {
 			if strings.HasPrefix(c.Request().URL.Path, V2APIPath+"/network/") {
 				return true
 			}
-			// tus 上传端点不在 OpenAPI 规格里，跳过校验。
+			// The tus upload endpoint isn't in the OpenAPI spec, skip validation.
 			if strings.Contains(c.Request().URL.Path, "/file/upload-tus") {
 				return true
 			}
-			// upload-precheck 端点不在 OpenAPI 规格里，跳过校验。
+			// The upload-precheck endpoint isn't in the OpenAPI spec, skip validation.
 			if strings.Contains(c.Request().URL.Path, "/file/upload-precheck") {
 				return true
 			}
-			// uploads 任务管理端点不在 OpenAPI 规格里，跳过校验。
+			// The uploads task management endpoints aren't in the OpenAPI spec, skip validation.
 			{
 				p := c.Request().URL.Path
 				if p == V2APIPath+"/file/uploads" || strings.HasPrefix(p, V2APIPath+"/file/uploads/") {
 					return true
 				}
-				// upload-batches 批次对账端点不在 OpenAPI 规格里，跳过校验。
+				// The upload-batches reconciliation endpoints aren't in the OpenAPI spec, skip validation.
 				if p == V2APIPath+"/file/upload-batches" || strings.HasPrefix(p, V2APIPath+"/file/upload-batches/") {
 					return true
 				}
@@ -180,7 +180,7 @@ func InitV2Router() http.Handler {
 		e.GET(V2APIPath+"/network/wifi/scan", si.GetWifiScanResults)
 	}
 
-	// 构造上传任务 store(复用全局 gorm 句柄)并注入路由层。
+	// Construct the upload task store (reusing the global gorm handle) and inject it into the route layer.
 	uploadStore := upload.NewTaskStore(sqlite.GetDb(config.AppInfo.DBPath + "/db"))
 	v2Route.SetTaskStore(uploadStore)
 	uploadBatches := upload.NewBatchStore(sqlite.GetDb(config.AppInfo.DBPath + "/db"))
@@ -195,12 +195,12 @@ func InitV2Router() http.Handler {
 
 	e.POST(V2APIPath+"/file/upload-precheck", v2Route.FileUploadPrecheck)
 
-	// 上传任务:列出 / 详情 / 取消。
+	// Upload tasks: list / detail / cancel.
 	e.GET(V2APIPath+"/file/uploads", v2Route.ListUploads)
 	e.GET(V2APIPath+"/file/uploads/:id", v2Route.GetUpload)
 	e.POST(V2APIPath+"/file/uploads/:id/cancel", v2Route.CancelUpload)
 
-	// 上传批次对账:创建 / 清单 / 中断信号 / 放弃。
+	// Upload batch reconciliation: create / manifest / interrupt signal / abandon.
 	e.POST(V2APIPath+"/file/upload-batches", v2Route.CreateUploadBatch)
 	e.GET(V2APIPath+"/file/upload-batches/:id", v2Route.GetUploadBatch)
 	e.POST(V2APIPath+"/file/upload-batches/:id/interrupt", v2Route.InterruptUploadBatch)

@@ -40,10 +40,12 @@ type sharesStruct struct {
 	db *gorm.DB
 }
 
-// sharePathScope 把「清理某路径上/下所有分享」的匹配范围规范化为
-// (精确路径, 子树 LIKE 模式):尾斜杠归一;LIKE 通配符(\ % _)转义,防止
-// 路径里出现通配符时误匹配;子树模式带 "/" 边界——旧实现裸 `path+"%"` 会在
-// 删 /a/b 时误删 /a/bc 上的分享。
+// sharePathScope normalizes the matching range for "clean up all shares at
+// or under a path" into (exact path, subtree LIKE pattern): trailing slash
+// is normalized away; LIKE wildcards (\ % _) are escaped to prevent
+// mismatches when the path itself contains wildcard characters; the
+// subtree pattern carries a "/" boundary — the old implementation's bare
+// `path+"%"` would wrongly delete /a/bc's share when deleting /a/b.
 func sharePathScope(path string) (exact string, subtreePattern string) {
 	exact = strings.TrimRight(path, "/")
 	if exact == "" {
@@ -56,18 +58,21 @@ func sharePathScope(path string) (exact string, subtreePattern string) {
 	return exact, esc + "/%"
 }
 
-// DeleteShareByPath 删除挂在 path 本身及其子树上的全部分享记录并重写 smb
-// 配置。供删除文件夹的链路调用:目录没了,分享再留着就是「已共享」Tab 里
-// 永远打不开的悬挂项。
+// DeleteShareByPath deletes all share records mounted at path itself or its
+// subtree, and rewrites the smb config. Called from the folder-deletion
+// path: once the directory is gone, a lingering share becomes a dangling
+// entry in the "Shared" tab that can never be opened.
 func (s *sharesStruct) DeleteShareByPath(path string) {
 	exact, subtree := sharePathScope(path)
 	s.db.Where(`path = ? OR path LIKE ? ESCAPE '\'`, exact, subtree).Delete(&model.SharesDBModel{})
 	s.UpdateConfigFile()
 }
 
-// rewriteSharePath 把 sharePath 从 oldExact 子树映射到 newExact 子树:恰为
-// oldExact 本身 → newExact;在其子树内 → 前缀替换;不在范围内原样返回。
-// oldExact/newExact 须已做尾斜杠归一(调用方经 sharePathScope/TrimRight)。
+// rewriteSharePath maps sharePath from the oldExact subtree to the newExact
+// subtree: exactly oldExact itself → newExact; inside its subtree → prefix
+// replacement; outside the range → returned unchanged. oldExact/newExact
+// must already have trailing slashes normalized away (callers do this via
+// sharePathScope/TrimRight).
 func rewriteSharePath(sharePath, oldExact, newExact string) string {
 	if sharePath == oldExact {
 		return newExact
@@ -78,11 +83,16 @@ func rewriteSharePath(sharePath, oldExact, newExact string) string {
 	return sharePath
 }
 
-// RewriteSharePathPrefix 把挂在 oldPath 自身/子树上的分享记录改写到 newPath
-// 下,并同步更新 Name(smb 配置节名取自 basename)。返回改写条数;仅在确有
-// 改写时才重写 smb 配置(避免普通移动触发无谓的 smbd 重启)。供移动/重命名
-// 含分享(自身或子树)目录的链路调用:分享记录的 path 若仍指旧位置,会在
-// 「已共享」Tab 里成为永远打不开的悬挂项——正确语义是改写路径,不是删除。
+// RewriteSharePathPrefix rewrites share records mounted at oldPath itself or
+// its subtree to sit under newPath, and updates Name in step (the smb
+// config section name is derived from basename). Returns the number of
+// rows rewritten; only rewrites the smb config when something actually
+// changed (to avoid an ordinary move triggering a pointless smbd restart).
+// Called from the move/rename path for directories that contain shares
+// (themselves or in their subtree): if a share record's path still points
+// at the old location, it becomes a dangling entry in the "Shared" tab
+// that can never be opened — the correct semantics is to rewrite the
+// path, not delete it.
 func (s *sharesStruct) RewriteSharePathPrefix(oldPath, newPath string) int {
 	oldExact, subtree := sharePathScope(oldPath)
 	newExact := strings.TrimRight(newPath, "/")

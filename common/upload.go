@@ -1,21 +1,26 @@
 package common
 
-// Files 文件管理器 tus 上传相关常量。与 Photos 的 photos-tus-staging 分开，
-// 互不干扰。
+// Files constants related to the file manager's tus uploads. Kept separate
+// from Photos' photos-tus-staging so the two never interfere with each other.
 const (
-	// FileUploadStagingDir 是 tusd 落临时分片的目录。上传中的所有半成品都在
-	// 这里，绝不在用户目录留 .part/.tmp。
+	// FileUploadStagingDir is the directory where tusd lands temporary
+	// chunks. Every in-progress upload's partial data lives here — never
+	// leave .part/.tmp files in the user's own directories.
 	FileUploadStagingDir = "/DATA/.system_data/file-tus-staging"
 )
 
-// 分级缓存清理 TTL(秒)。可后续提升为配置项;当前以常量提供默认值。
+// Tiered cache-cleanup TTLs (seconds). May become configurable later; for
+// now these constants provide the default values.
 const (
-	// UploadIdleTimeoutSeconds: uploading 任务多久无进展降级为 paused(6 小时)。
+	// UploadIdleTimeoutSeconds: how long an uploading task can go without
+	// progress before it's downgraded to paused (6 hours).
 	UploadIdleTimeoutSeconds = int64(6 * 60 * 60)
-	// UploadPausedTTLSeconds: paused(待重传)staging 保留窗口(3 天)。
+	// UploadPausedTTLSeconds: retention window for paused (awaiting resume)
+	// staging data (3 days).
 	UploadPausedTTLSeconds = int64(3 * 24 * 60 * 60)
-	// UploadCanceledTTLSeconds: canceled/failed 多久清理(1 小时)。
+	// UploadCanceledTTLSeconds: how long until canceled/failed uploads are
+	// cleaned up (1 hour).
 	UploadCanceledTTLSeconds = int64(60 * 60)
-	// UploadGCIntervalSeconds: GC 协程运行间隔(1 小时)。
+	// UploadGCIntervalSeconds: interval between GC goroutine runs (1 hour).
 	UploadGCIntervalSeconds = int64(60 * 60)
 )
