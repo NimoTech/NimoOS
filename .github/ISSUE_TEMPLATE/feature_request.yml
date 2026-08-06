@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an idea for NimoOS
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. If this feature belongs to a specific
+        component that has its own repository (for example `NimoOS-Photos`,
+        `NimoOS-Search`, `NimoOS-AI`, `NimoOS-UI`, or `NimoOS-AppStore`),
+        consider filing it there. If you're not sure, this repository is
+        fine — it can be moved later.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: >
+        Is your feature request related to a problem you're running into?
+        Describe the situation — "I'm always frustrated when..." is a good
+        starting point.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: A clear and concise description of what you'd like to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >
+        Any alternative solutions, features, or workarounds you've already
+        considered or tried.
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — mockups, links, related issues.

@@ -47,8 +47,10 @@ func filterMediaCreated(paths []string) []string {
 }
 
 // PublishMediaPathsEvent publishes a paths-carrying media event with the
-// caller's pre-filtered list. 10s 超时:MessageBus 半死(端口通但不应答)时
-// 不让发布 goroutine 无限期挂起堆积;失败只记日志(软依赖)。
+// caller's pre-filtered list. 10s timeout: when MessageBus is half-dead
+// (port reachable but not responding), this keeps publishing goroutines
+// from piling up hung indefinitely; failures are only logged (soft
+// dependency).
 func PublishMediaPathsEvent(eventName string, media []string) {
 	if len(media) == 0 {
 		return
@@ -82,7 +84,8 @@ func PublishMediaPathsEvent(eventName string, media []string) {
 }
 
 // PublishMediaCreated fires nimoos:media:created for the given landed paths.
-// Fire-and-forget: MessageBus 是软依赖,失败只记日志,绝不影响文件操作本身。
+// Fire-and-forget: MessageBus is a soft dependency, failures are only
+// logged, and never affect the file operation itself.
 func PublishMediaCreated(paths []string) {
 	PublishMediaPathsEvent(common.EventMediaCreated, filterMediaCreated(paths))
 }

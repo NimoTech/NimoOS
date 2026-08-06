@@ -24,8 +24,8 @@ do_mount() {
   # Get info for this drive: $ID_FS_LABEL and $ID_FS_TYPE
   eval $(blkid -o udev ${DEVICE} | grep -i -e "ID_FS_LABEL" -e "ID_FS_TYPE")
 
-  #ID_FS_LABEL=新加卷
-  #ID_FS_LABEL_ENC=新加卷
+  #ID_FS_LABEL=New Volume
+  #ID_FS_LABEL_ENC=New Volume
   #ID_FS_TYPE=ntfs
 
   # Figure out a mount point to use
@@ -53,7 +53,7 @@ do_mount() {
   # MOUNT_POINT="/DATA/USB_Storage1"
   # arr=("/DATA/USB_Storage1" "/DATA/USB_Storage2" "/DATA/USB_Storage3" "/DATA/USB_Storage4" "/DATA/USB_Storage5" "/DATA/USB_Storage6" "/DATA/USB_Storage7" "/DATA/USB_Storage8" "/DATA/USB_Storage9" "/DATA/USB_Storage10" "/DATA/USB_Storage11" "/DATA/USB_Storage12")
   # for folder in ${arr[@]}; do
-  #   #如果文件夹不存在，创建文件夹
+  #   #Create the folder if it doesn't exist
   #   if [ ! -d "$folder" ]; then
   #     mkdir -p ${folder}
   #     MOUNT_POINT=$folder

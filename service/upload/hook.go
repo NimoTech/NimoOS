@@ -9,7 +9,7 @@ import (
 	"github.com/tus/tusd/v2/pkg/handler"
 )
 
-// NewTaskFromHook 把一次 tus CreatedUploads 事件映射为一条 uploading 任务行。
+// NewTaskFromHook maps one tus CreatedUploads event to an uploading task row.
 func NewTaskFromHook(ev handler.HookEvent, now time.Time) *commonUpload.UploadTask {
 	meta := ev.Upload.MetaData
 	rel := meta["relativePath"]

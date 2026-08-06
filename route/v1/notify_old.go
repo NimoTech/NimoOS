@@ -16,7 +16,7 @@ var upGrader = websocket.Upgrader{
 	},
 }
 
-// @Summary websocket 接口,连接成功后发送一个"notify"字符串
+// @Summary websocket endpoint, sends a "notify" string once connected
 // @Produce  application/json
 // @Accept application/json
 // @Tags notify
@@ -25,7 +25,7 @@ var upGrader = websocket.Upgrader{
 // @Success 200 {string} string "ok"
 // @Router /notify/ws [get]
 func NotifyWS(ctx echo.Context) error {
-	// 升级get请求为webSocket协议
+	// Upgrade the GET request to the WebSocket protocol
 	ws, err := upGrader.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
 	if err != nil {
 		return nil
@@ -43,7 +43,7 @@ func NotifyWS(ctx echo.Context) error {
 	}
 }
 
-// @Summary 标记notify已读
+// @Summary mark notify as read
 // @Produce  application/json
 // @Accept application/json
 // @Tags notify

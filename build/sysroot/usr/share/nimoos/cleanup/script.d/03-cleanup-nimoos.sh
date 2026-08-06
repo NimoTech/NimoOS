@@ -6,8 +6,10 @@
  # @LastEditTime: 2022-11-15 15:53:37
  # @FilePath: /NimoOS/build/sysroot/usr/share/nimoos/cleanup/script.d/03-cleanup-nimoos.sh
  # @Description: 
- # @Website: https://www.nimoos.io
- # Copyright (c) 2022 by icewhale, All Rights Reserved. 
+ # Copyright (c) 2021-2025 IceWhale Technology Co., Ltd.
+ # Copyright (c) 2026 NimoTech
+ # Licensed under the Apache License, Version 2.0.
+ # Modified from the original CasaOS source by NimoTech.
 ### 
 
 set -e

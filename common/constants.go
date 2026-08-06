@@ -4,7 +4,7 @@ const (
 	SERVICENAME = "nimoos"
 	BODY        = " "
 	RANW_NAME   = "Nimo-RemoteAccess"
-	// NimoOS-Cookie 全局共享密钥（设备端编译在固件中，云端在配置文件中）
+	// NimoOS-Cookie global shared secret (compiled into firmware on-device, in a config file in the cloud)
 	CookieSecret = "NimoOS-Cookie-Secret-2026"
 )
 

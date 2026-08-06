@@ -106,8 +106,8 @@ func TestCancelUploadIdempotentAndCleansStaging(t *testing.T) {
 	s := setupTaskStore(t)
 	SetTaskStore(s)
 	_ = s.Create(&commonUpload.UploadTask{ID: "x", OwnerUserID: "1", Status: commonUpload.UploadStatusUploading})
-	// 造 staging 文件
-	dir := stagingDirForTest() // helper 见下
+	// Create a staging file
+	dir := stagingDirForTest() // helper below
 	_ = os.MkdirAll(dir, 0700)
 	_ = os.WriteFile(filepath.Join(dir, "x"), []byte("d"), 0600)
 	_ = os.WriteFile(filepath.Join(dir, "x.info"), []byte("{}"), 0600)
@@ -133,12 +133,13 @@ func TestCancelUploadIdempotentAndCleansStaging(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "x")); !os.IsNotExist(err) {
 		t.Fatal("staging should be removed")
 	}
-	if code := call(); code != 200 { // 幂等
+	if code := call(); code != 200 { // idempotent
 		t.Fatalf("second cancel code=%d", code)
 	}
 }
 
-// TestGetUploadIDOR 确保 owner="2" 无法读取 owner="1" 的任务(GetUpload 越权应返回 404)。
+// TestGetUploadIDOR ensures owner="2" cannot read owner="1"'s task
+// (GetUpload should return 404 on a privilege-escalation attempt).
 func TestGetUploadIDOR(t *testing.T) {
 	s := setupTaskStore(t)
 	SetTaskStore(s)
@@ -146,7 +147,7 @@ func TestGetUploadIDOR(t *testing.T) {
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/v2/nimoos/file/uploads/z", nil)
-	req.Header.Set("user_id", "2") // 不同 owner
+	req.Header.Set("user_id", "2") // different owner
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 	c.SetParamNames("id")
@@ -154,7 +155,7 @@ func TestGetUploadIDOR(t *testing.T) {
 
 	err := GetUpload(c)
 
-	// 应返回 404
+	// Should return 404
 	if err != nil {
 		he, ok := err.(*echo.HTTPError)
 		if !ok || he.Code != http.StatusNotFound {
@@ -164,7 +165,7 @@ func TestGetUploadIDOR(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 
-	// 任务状态未被修改,owner="1" 仍可查
+	// Task status was not modified; owner="1" can still look it up
 	got, getErr := s.Get("z")
 	if getErr != nil {
 		t.Fatalf("Get task failed: %v", getErr)
@@ -174,13 +175,13 @@ func TestGetUploadIDOR(t *testing.T) {
 	}
 }
 
-// TestCancelUploadIDOR 确保 owner="2" 无法取消 owner="1" 的任务。
+// TestCancelUploadIDOR ensures owner="2" cannot cancel owner="1"'s task.
 func TestCancelUploadIDOR(t *testing.T) {
 	s := setupTaskStore(t)
 	SetTaskStore(s)
 	_ = s.Create(&commonUpload.UploadTask{ID: "y", OwnerUserID: "1", Status: commonUpload.UploadStatusUploading})
 
-	// 造 staging 文件，用于断言文件未被删除
+	// Create a staging file, to assert it was not deleted
 	dir := stagingDirForTest()
 	_ = os.MkdirAll(dir, 0700)
 	stagingFile := filepath.Join(dir, "y")
@@ -190,7 +191,7 @@ func TestCancelUploadIDOR(t *testing.T) {
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/v2/nimoos/file/uploads/y/cancel", nil)
-	req.Header.Set("user_id", "2") // 不同 owner
+	req.Header.Set("user_id", "2") // different owner
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 	c.SetParamNames("id")
@@ -198,7 +199,7 @@ func TestCancelUploadIDOR(t *testing.T) {
 
 	err := CancelUpload(c)
 
-	// 应返回 404(通过 echo.HTTPError 或 handler 直接写入)
+	// Should return 404 (either via echo.HTTPError or written directly by the handler)
 	if err != nil {
 		he, ok := err.(*echo.HTTPError)
 		if !ok || he.Code != http.StatusNotFound {
@@ -208,7 +209,7 @@ func TestCancelUploadIDOR(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 
-	// 任务状态仍为 uploading，未被取消
+	// Task status is still uploading; it was not canceled
 	got, getErr := s.Get("y")
 	if getErr != nil {
 		t.Fatalf("Get task failed: %v", getErr)
@@ -217,7 +218,7 @@ func TestCancelUploadIDOR(t *testing.T) {
 		t.Fatalf("task status should still be uploading, got %s", got.Status)
 	}
 
-	// staging 文件未被删除
+	// Staging file was not deleted
 	if _, statErr := os.Stat(stagingFile); os.IsNotExist(statErr) {
 		t.Fatal("staging file should NOT have been removed by unauthorized cancel")
 	}

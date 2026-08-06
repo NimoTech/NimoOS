@@ -1,0 +1,96 @@
+name: Bug report
+description: Report a problem with NimoOS
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. A few things before you start:
+
+        - NimoOS is a multi-repository system. If you know the bug belongs to
+          a specific component with its own repository (for example
+          `NimoOS-Photos`, `NimoOS-Search`, `NimoOS-AI`, `NimoOS-UI`, or
+          `NimoOS-AppStore`), please file it there instead — it'll get more
+          eyes and stay next to the relevant code. If you're not sure, file
+          it here; it can always be moved.
+        - Don't use this form for security vulnerabilities — see
+          [SECURITY.md](https://github.com/NimoTech/NimoOS/blob/main/SECURITY.md)
+          for how to report those privately.
+  - type: input
+    id: version
+    attributes:
+      label: NimoOS version
+      description: Output of `nimoos -v`, or the version shown in Settings.
+      placeholder: "e.g. 1.9.4-alpha1"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      description: >
+        If this is a cross-repository project (Files, Photos, Search, AI,
+        AppStore, Terminal, UI, Gateway), please consider reporting it in that
+        project's own repository instead. Pick "Other / not sure" if this
+        repository is the right place, or if you don't know.
+      options:
+        - Files
+        - Photos
+        - Search
+        - AI
+        - AppStore
+        - Terminal
+        - UI
+        - Gateway
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, in order, to hit this?
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include error messages if any.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Grab the relevant service log and paste it here. Use
+        `sudo journalctl -u <service> -f` while reproducing the issue (for
+        example `sudo journalctl -u nimoos -f` or
+        `sudo journalctl -u nimoos-gateway -f`).
+      render: shell
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Hardware, OS/distribution and version, and anything else relevant.
+      placeholder: |
+        - Hardware: e.g. Intel NUC, amd64
+        - OS: e.g. Debian 12
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — screenshots, related issues, etc.

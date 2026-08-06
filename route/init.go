@@ -5,8 +5,10 @@
  * @LastEditTime: 2022-11-15 15:55:16
  * @FilePath: /NimoOS/route/init.go
  * @Description:
- * @Website: https://www.nimoos.io
- * Copyright (c) 2022 by icewhale, All Rights Reserved.
+ * Copyright (c) 2021-2025 IceWhale Technology Co., Ltd.
+ * Copyright (c) 2026 NimoTech
+ * Licensed under the Apache License, Version 2.0.
+ * Modified from the original CasaOS source by NimoTech.
  */
 package route
 
@@ -120,8 +122,9 @@ func InitNetworkMount() {
 		unmountFailed := false
 		for _, v := range mountPointList {
 			if err := service.MyService.Connections().UnmountSmaba(v.Path); err != nil {
-				// 卸不掉就绝不能递归删除:os.RemoveAll 会穿进仍然活跃的
-				// CIFS 挂载点,把远端共享里的文件删掉
+				// If it can't be unmounted, never recursively remove: os.RemoveAll
+				// would descend into the still-active CIFS mount point and delete
+				// files on the remote share
 				logger.Error("unmount stale samba mount failed", zap.String("path", v.Path), zap.Error(err))
 				unmountFailed = true
 			}
@@ -131,16 +134,19 @@ func InitNetworkMount() {
 		}
 
 		file.IsNotExistMkDir(baseHostPath)
-		// 与创建路径(route/v1/samba.go PostSambaConnectionsCreate)同款处理:
-		// 逐共享判断挂载结果,失败的清理空目录并跳过,只把挂载成功的写回 DB,
-		// 否则这里的全量覆盖会把创建时过滤出的干净列表冲掉、开机复现空目录残留。
+		// Same handling as the create path (route/v1/samba.go PostSambaConnectionsCreate):
+		// check the mount result per-share, clean up and skip the empty dir on
+		// failure, and only write back to the DB the shares that mounted
+		// successfully — otherwise this full overwrite would clobber the clean
+		// list filtered at creation time and reproduce leftover empty dirs on boot.
 		mountedDirs := make([]string, 0, len(directories))
 		for _, v := range directories {
 			mountPoint := baseHostPath + "/" + v
 			file.IsNotExistMkDir(mountPoint)
 			if err := service.MyService.Connections().MountSmaba(connection.Username, connection.Host, v, connection.Port, mountPoint, connection.Password); err != nil {
 				logger.Error("mount samba share failed", zap.String("host", connection.Host), zap.String("directory", v), zap.Error(err))
-				// 非递归 Remove:目录非空/仍被挂载时失败无害,绝不误删远端文件
+				// Non-recursive Remove: harmless failure if the dir is non-empty/still
+				// mounted, and never accidentally deletes remote files
 				_ = os.Remove(mountPoint)
 				continue
 			}

@@ -61,7 +61,7 @@ var (
 
 func init() {
 	flag.Parse()
-	
+
 	// Create a log file to capture panics
 	f, _ := os.OpenFile("/tmp/nimoos_panic.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	os.Stdout = f
@@ -93,9 +93,11 @@ func init() {
 	userDBPath := config.AppInfo.DBPath + "/db/user.db"
 	service.MyService = service.NewServiceWithUserDB(sqliteDB, config.CommonInfo.RuntimePath, userDBPath)
 
-	// 启动 seed:登记 "photos" 为虚拟检索根(幂等),供 search-roots 读端点返回。
-	// 失败仅告警不 panic——下次启动会重试补上。logger 包目前只暴露 Info/Error,
-	// 这里用 zap.L()(logger.LogInit 时已 ReplaceGlobals)直接打 Warn 级别。
+	// Startup seed: register "photos" as a virtual search root (idempotent),
+	// for the search-roots read endpoint to return. Failure only warns, never
+	// panics — the next startup retry will fill it in. The logger package
+	// currently only exposes Info/Error, so we use zap.L() directly here
+	// (logger.LogInit already called ReplaceGlobals) to log at Warn level.
 	if err := service.MyService.RootGrants().SeedVirtual("photos"); err != nil {
 		zap.L().Warn("failed to seed virtual root grant for photos", zap.Error(err))
 	}
@@ -115,13 +117,12 @@ func init() {
 	//configfile.Install()
 }
 
-// @title nimoOS API
+// @title NimoOS API
 // @version 1.0.0
-// @contact.name lauren.pan
-// @contact.url https://www.zimaboard.com
-// @contact.email lauren.pan@icewhale.org
-// @description nimoOS v1版本api
-// @host 192.168.2.217:8089
+// @contact.name NimoTech
+// @contact.url https://github.com/NimoTech/NimoOS
+// @contact.email nimonas@yeaher.com
+// @description NimoOS core service v1 API
 // @securityDefinitions.apikey ApiKeyAuth
 // @in header
 // @name Authorization

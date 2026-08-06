@@ -1,8 +1,10 @@
 package base
 
-// RedirectURI 是所有云盘 OAuth 授权回调统一使用的中转端点(cloudoauth 中转服务),
-// 作为全部 driver 的单一真源。云盘控制台里登记的 redirect_uri 必须与此一致。
-// 默认值为生产中转地址;如需在构建时切换,可用:
+// RedirectURI is the shared relay endpoint (the cloudoauth relay service)
+// used by all cloud-drive OAuth authorization callbacks, and is the single
+// source of truth for every driver. The redirect_uri registered in each
+// cloud-drive console must match this exactly. Defaults to the production
+// relay address; to override it at build time, use:
 //
 //	-ldflags "-X github.com/NimoTech/NimoOS/drivers/base.RedirectURI=https://<host>"
-var RedirectURI = "https://cloudoauth.nimopc.com"
+var RedirectURI = "https://cloudoauth.nimotech.ai"

@@ -1,6 +1,20 @@
-# NimoOS - Your Personal Cloud 
-<!-- Readme i18n links -->
-<!-- > English | [中文](#) | [Français](#) -->
+# NimoOS - Your Personal Cloud
+
+> ### About
+>
+> NimoOS is a fork of [CasaOS](https://github.com/IceWhaleTech/CasaOS)
+> (Apache-2.0), originally developed by IceWhale Technology Co., Ltd.
+> Building on that foundation, NimoOS adds an AI agent, RAG-based
+> retrieval, a knowledge layer, and a built-in web terminal.
+>
+> See [`NOTICE`](./NOTICE) for attribution details. CasaOS and IceWhale
+> are trademarks of IceWhale Technology Co., Ltd. NimoOS is an independent
+> project and is not affiliated with, endorsed by, or sponsored by
+> IceWhale Technology Co., Ltd.
+
+> ⚠️ Multi-user isolation is incomplete — Photos and Search are not yet
+> per-user scoped. Read [SECURITY.md](./SECURITY.md#known-limitations)
+> before deploying NimoOS for more than one person.
 
 <p align="center">
     <!-- NimoOS Banner -->
@@ -9,8 +23,6 @@
         <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NimoTech/logo/main/nimoos/nimoos_banner_twilight_blue_800x300.png">
         <img alt="NimoOS" src="https://raw.githubusercontent.com/NimoTech/logo/main/nimoos/nimoos_banner_twilight_blue_800x300.png">
     </picture>
-    <br/>
-    <i>Connect with the community, establish autonomy, reduce the cost of SaaS, and MAXIMIZE the potential for a personalized copilot.</i>
     <br/>
     <br/>
     <!-- NimoOS Badges -->
@@ -26,135 +38,94 @@
     <a href="https://github.com/NimoTech/NimoOS/issues" target="_blank">
         <img alt="NimoOS Issues" src="https://img.shields.io/github/issues/NimoTech/NimoOS?color=162453&style=flat-square&label=Issues" />
     </a>
-    <a href="https://codecov.io/gh/NimoTech/NimoOS" > 
-    <img src="https://codecov.io/gh/NimoTech/NimoOS/branch/main/graph/badge.svg?token=l9uMKGlkxM"/> 
-    </a>
     <a href="https://github.com/NimoTech/NimoOS/stargazers" target="_blank">
         <img alt="NimoOS Stargazers" src="https://img.shields.io/github/stars/NimoTech/NimoOS?color=162453&style=flat-square&label=Stars" />
     </a>
-    <!-- <a href="https://github.com/NimoTech/NimoOS/releases" target="_blank">
-    <img alt="NimoOS Downloads" src="https://img.shields.io/github/downloads/NimoTech/NimoOS/total?color=162453&style=flat-square" />
-    </a> -->
     <br/>
     <!-- NimoOS Community -->
-    <a href="https://discord.gg/8T8hd5GPZU" target="_blank">
-        <img alt="IceWhale Discord" src="https://img.shields.io/discord/884667213326463016?color=162453&style=flat-square&label=Discord&logo=discord&logoColor=fff" />
+    <a href="https://discord.com/invite/8NStGMweZh" target="_blank">
+        <img alt="NimoOS Discord" src="https://img.shields.io/badge/Discord-162453?style=flat-square&logo=discord&logoColor=fff&label=Discord" />
+    </a>
+    <a href="https://www.reddit.com/r/Nimo" target="_blank">
+        <img alt="NimoOS Reddit" src="https://img.shields.io/badge/r%2FNimo-162453?style=flat-square&logo=reddit&logoColor=fff&label=Reddit" />
+    </a>
+    <a href="https://x.com/Nimo_PC" target="_blank">
+        <img alt="NimoOS on X" src="https://img.shields.io/badge/%40Nimo__PC-162453?style=flat-square&logo=x&logoColor=fff&label=X" />
     </a>
     <a href="https://github.com/NimoTech/NimoOS/discussions" target="_blank">
         <img alt="NimoOS GitHub Discussions" src="https://img.shields.io/github/discussions/NimoTech/NimoOS?color=162453&style=flat-square&label=Discussions&logo=github" />
     </a>
-<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-    <a href="#credits">
-        <img alt="All Contributors" src="https://img.shields.io/static/v1?label=All%20Contributors&message=15&color=162453&style=flat-square&logo=Handshake&logoColor=fff" />
-    </a>
-    <!-- NimoOS YouTube -->
-    <a href="https://www.youtube.com/channel/UC2zMrUYT17AJhIl9XWZzT8g" target="_blank">
-        <img alt="YouTube Tutorial Views" src="https://img.shields.io/youtube/channel/views/UC2zMrUYT17AJhIl9XWZzT8g?style=flat-square&logo=youtube&logoColor=red&label=YouTube%20Tutorial%20Views" />
-    </a>
-    <br/>    
-    <a href="http://bit.ly/45JQIiL" target="_blank">
-        <img alt="twitter ZimaSpace" src="https://img.shields.io/twitter/follow/ZimaSpace?style=flat-square&logo=X&label=Contact%20Us%20%40%20ZimaSpace&labelColor=555&color=555" />
-    </a>
-    <a href="http://bit.ly/4lgHj7V" target="_blank">
-        <img alt="facebook ZimaSpace" src="https://img.shields.io/badge/ZimaSpace-1877F2?style=flat-square&logo=Facebook&logoColor=fff&label=Contact%20Us&labelColor=555&color=162453" />
-    </a>
     <br/>
     <!-- NimoOS Links -->
-    <a href="https://www.nimoos.io" target="_blank">Website</a> |
-    <a href="http://demo.nimoos.io" target="_blank">Demo</a> |
+    <a href="https://nimopc.com" target="_blank">Website</a> |
     <a href="https://github.com/NimoTech/NimoOS" target="_blank">GitHub</a>
-    <br/>
-    <br/>
-    <!-- NimoOS Snapshots -->
-    <kbd>
-      <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="snapshot-dark.jpg">
-          <source media="(prefers-color-scheme: light)" srcset="snapshot-light.jpg">
-          <img alt="NimoOS Snapshot" src="snapshot-light.jpg">
-      </picture>
-    </kbd>
 </p>
 
-## Why do you need Personal Cloud?
+## What is NimoOS
 
-In 2020, the team noticed three important trends:
-- The cost of computing power and storage was decreasing fast.
-- A part of cloud computing was moving towards edge computing.
-- The issue of consumer data asset ownership and attribution had been ignored.
-
-Based on these trends, the team proposed a thought experiment internally: what if personal clouds were available under $100 in next five years? This personal cloud would provide a low-cost data collaboration solution as a personal data center, storing and managing data for creators and small organizations. A distributed collaborative computing network can be formed by personal servers located around the world. It could also control and connect all smart devices, providing cross-ecosystem local intelligent services.
-
-Furthermore, the personal cloud could combine personal data to train personalized AI assistants. The idea is that this technology would be an effective way to solve the issue of consumer data asset ownership and , as well as provide a more affordable and efficient computing solution for individuals and small organizations.
-
-> If you think what we are doing is valuable. Please **give us a star ⭐** and **fork it 🤞**!
+NimoOS turns a spare Linux box into a personal cloud server: file storage and
+sharing, disk/RAID management, and one-click Docker app installs, plus an AI
+agent with retrieval over your own files, a knowledge layer, and a built-in
+web terminal (see the About block above). It runs as a set of Go
+microservices behind a single gateway, with a web UI on top.
 
 ## Features
 
-- Friendly UI designed for home scenarios
-  - No code, no forms, intuitive, design for humanity
-- Multiple hardware and base system support
-  - ZimaBoard, NUC, RPi, old computers, whatever is available.
-- Selected apps in the app store, one-click installation
-  - Nextcloud, HomeAssistant, AdGuard, Jellyfin, *arr and more!
-- Easily install numerous Docker apps
-  - Over 100,000 apps from the Docker ecosystem can be easily installed
-- Elegant drive and file management
-  - What you see is what you get. No technical background required.
-- Well-designed system/app widgets
-  - What you care about, at a glance. Resource usage, app status, and more!
+- File management — browse, upload, download, share; snapshots and a Time
+  Machine view for recovery; Samba shares; cloud storage mounts via rclone
+- Disk management, USB auto-mount, and RAID management
+- One-click Docker Compose app installs from the built-in app store, plus
+  third-party app stores that use the `x-casaos` compose extension
+- AI agent — local and cloud inference routing, cross-session memory, an MCP
+  client and server, and Telegram/Discord bridges
+- Retrieval-augmented search — a document parsing/embedding pipeline with
+  vector recall, aggregated with filename search
+- Wiki knowledge layer — an auto-maintained navigation map alongside your
+  files, plus manual and auto-distilled knowledge notes
+- Local photo library with vector search and image captioning
+- Built-in web terminal with persistent sessions and a step-up password
+  prompt
+- One-line installer, an offline dependency mirror, LAN device discovery,
+  and a UI localised into 33 languages
+
+See [`ROADMAP.md`](./ROADMAP.md) for the full, maintained capability list,
+including what's still in progress or planned.
 
 ## Getting Started
 
-NimoOS fully supports ZimaBoard, Intel NUC, and Raspberry Pi. Also, more computers and development boards and fully compatible with Ubuntu, Debian, Raspberry Pi OS, and CentOS with one-liner installation.
+### Hardware and OS support
 
-### Hardware Compatibility
-
-- amd64 / x86-64
-- arm64
-- armv7
-
-### System Compatibility
-
-Official Support
-- Debian 12 (✅ Tested, Recommended)
-- Ubuntu Server 20.04 (✅ Tested)
-- Raspberry Pi OS (✅ Tested)
-
-Community Support
-- Elementary 6.1 (✅ Tested)
-- Armbian 22.04 (✅ Tested)
-- Alpine (🚧 Not Fully Tested Yet)
-- OpenWrt (🚧 Not Fully Tested Yet)
-- ArchLinux (🚧 Not Fully Tested Yet)
+- Architectures: amd64, arm64, armv7
+- OS: Debian-family Linux (Debian, Ubuntu, Raspberry Pi OS)
 
 ### Quick Setup NimoOS
 
 Freshly install a system from the list above and run this command:
 
 ```sh
-wget -qO- https://get.nimoos.io | sudo bash
+wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 ```
 
 or
 
 ```sh
-curl -fsSL https://get.nimoos.io | sudo bash
+curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
 ```
 
 ### Update NimoOS
 
-NimoOS can be updated from the User Interface (UI), via `Settings ... Update`.  
+NimoOS can be updated from the User Interface (UI), via `Settings ... Update`.
 
-Alternatively it can be updated from a terminal session.  To update from a terminal session, it must be done either from a secure shell (ssh) session to the device or from a directly attached terminal and keyboard to the device running NimoOS, this cannot be done from the terminal via the NimoOS User Interface (UI).  To update to the latest release of NimoOS from a terminal session run this command:
+Alternatively it can be updated from a terminal session. To update from a terminal session, it must be done either from a secure shell (ssh) session to the device or from a directly attached terminal and keyboard to the device running NimoOS, this cannot be done from the terminal via the NimoOS User Interface (UI). To update to the latest release of NimoOS from a terminal session run this command:
 
 ```sh
-wget -qO- https://get.nimoos.io/update | sudo bash
+wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
 ```
 
 or
 
 ```sh
-curl -fsSL https://get.nimoos.io/update | sudo bash
+curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
 ```
 
 To determine version of NimoOS from a terminal session run this command:
@@ -163,95 +134,46 @@ To determine version of NimoOS from a terminal session run this command:
 nimoos -v
 ```
 
-
-
 ### Uninstall NimoOS
-
-
-v0.3.3 or newer
 
 ```sh
 nimoos-uninstall
 ```
 
-Before v0.3.3
+## Community
 
-```sh
-curl -fsSL https://get.icewhale.io/nimoos-uninstall.sh | sudo bash
-```
+NimoOS is a fork of [CasaOS](https://github.com/IceWhaleTech/CasaOS), originally
+developed by IceWhale Technology Co., Ltd. NimoOS is an independent project and is
+not affiliated with, endorsed by, or sponsored by IceWhale.
 
-## Community 
+NimoOS extends that foundation with an AI agent, RAG-based retrieval, a knowledge
+layer, and a built-in web terminal.
 
-The word Casa comes from the Spanish word for "home". Project NimoOS originated as a pre-installed system for the crowdfunded product [ZimaBoard](https://www.zimaboard.com) on Kickstarter.
+Bug reports and technical discussion belong in
+[Issues](https://github.com/NimoTech/NimoOS/issues) and
+[GitHub Discussions](https://github.com/NimoTech/NimoOS/discussions) — that keeps
+them searchable and linkable to the code.
 
-After looking at many systems and software on the market, the team found no server system designed for home scenarios, sadly true.
+For everything else:
 
-So, we set out to build this open-source project to develop NimoOS with our own hands, everyone in the community, and you.
-
-We believe that through community-driven collaborative innovation and open communication with global developers, we can reshape the digital home experience like never before.
-
-**A warm welcome for you to get help or share great ideas in the [Discord](https://discord.gg/8T8hd5GPZU)!**
-
-[![Discord Card](https://discordapp.com/api/guilds/884667213326463016/widget.png?style=banner2)](https://discord.gg/8T8hd5GPZU)
+- [Discord](https://discord.com/invite/8NStGMweZh)
+- [Reddit — r/Nimo](https://www.reddit.com/r/Nimo)
+- [X — @Nimo_PC](https://x.com/Nimo_PC)
+- [nimopc.com](https://nimopc.com)
 
 ## Contributing
 
-NimoOS is a community-driven open source project and the people involved are NimoOS users. That means NimoOS will always need contributions from community members just like you!
+Contributions are welcome.
 
-- See <https://wiki.nimoos.io/en/contribute> for ways of contributing to NimoOS
-- See <https://wiki.nimoos.io/en/contribute/development> if you want to be involved in code contribution specifically
-
+- Open an issue or a pull request on <https://github.com/NimoTech/NimoOS>
+- See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for how to build the project and what a good change looks like
 
 ## Credits
 
-Many thanks to everyone who has helped NimoOS so far!
-
-Everyone's contribution is greatly appreciated. ([Emoji Key](https://allcontributors.org/docs/en/emoji-key))
-
-<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
-<!-- prettier-ignore-start -->
-<!-- markdownlint-disable -->
-<table>
-  <tr>
-    <td align="center"><a href="https://github.com/jerrykuku"><img src="https://avatars.githubusercontent.com/u/9485680?v=4?s=100" width="100px;" alt=""/><br /><sub><b>老竭力</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=jerrykuku" title="Code">💻</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=jerrykuku" title="Documentation">📖</a> <a href="#ideas-jerrykuku" title="Ideas, Planning, & Feedback">🤔</a> <a href="#infra-jerrykuku" title="Infrastructure (Hosting, Build-Tools, etc)">🚇</a> <a href="#maintenance-jerrykuku" title="Maintenance">🚧</a> <a href="#platform-jerrykuku" title="Packaging/porting to new platform">📦</a> <a href="#question-jerrykuku" title="Answering Questions">💬</a> <a href="https://github.com/NimoTech/NimoOS/pulls?q=is%3Apr+reviewed-by%3Ajerrykuku" title="Reviewed Pull Requests">👀</a></td>
-    <td align="center"><a href="https://github.com/LinkLeong"><img src="https://avatars.githubusercontent.com/u/13556972?v=4?s=100" width="100px;" alt=""/><br /><sub><b>link</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=LinkLeong" title="Code">💻</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=LinkLeong" title="Documentation">📖</a> <a href="#ideas-LinkLeong" title="Ideas, Planning, & Feedback">🤔</a> <a href="#infra-LinkLeong" title="Infrastructure (Hosting, Build-Tools, etc)">🚇</a> <a href="#maintenance-LinkLeong" title="Maintenance">🚧</a> <a href="#question-LinkLeong" title="Answering Questions">💬</a> <a href="https://github.com/NimoTech/NimoOS/pulls?q=is%3Apr+reviewed-by%3ALinkLeong" title="Reviewed Pull Requests">👀</a></td>
-    <td align="center"><a href="https://github.com/tigerinus"><img src="https://avatars.githubusercontent.com/u/7172560?v=4?s=100" width="100px;" alt=""/><br /><sub><b>太戈</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=tigerinus" title="Code">💻</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=tigerinus" title="Documentation">📖</a> <a href="#ideas-tigerinus" title="Ideas, Planning, & Feedback">🤔</a> <a href="#infra-tigerinus" title="Infrastructure (Hosting, Build-Tools, etc)">🚇</a> <a href="#maintenance-tigerinus" title="Maintenance">🚧</a> <a href="#mentoring-tigerinus" title="Mentoring">🧑‍🏫</a> <a href="#security-tigerinus" title="Security">🛡️</a> <a href="#question-tigerinus" title="Answering Questions">💬</a> <a href="https://github.com/NimoTech/NimoOS/pulls?q=is%3Apr+reviewed-by%3Atigerinus" title="Reviewed Pull Requests">👀</a></td>
-    <td align="center"><a href="https://github.com/Lauren-ED209"><img src="https://avatars.githubusercontent.com/u/8243355?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Lauren</b></sub></a><br /><a href="#ideas-Lauren-ED209" title="Ideas, Planning, & Feedback">🤔</a> <a href="#fundingFinding-Lauren-ED209" title="Funding Finding">🔍</a> <a href="#projectManagement-Lauren-ED209" title="Project Management">📆</a> <a href="#question-Lauren-ED209" title="Answering Questions">💬</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=Lauren-ED209" title="Tests">⚠️</a></td>
-    <td align="center"><a href="https://JohnGuan.Cn"><img src="https://avatars.githubusercontent.com/u/3358477?v=4?s=100" width="100px;" alt=""/><br /><sub><b>John Guan</b></sub></a><br /><a href="#blog-JohnGuan" title="Blogposts">📝</a> <a href="#content-JohnGuan" title="Content">🖋</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=JohnGuan" title="Documentation">📖</a> <a href="#ideas-JohnGuan" title="Ideas, Planning, & Feedback">🤔</a> <a href="#eventOrganizing-JohnGuan" title="Event Organizing">📋</a> <a href="#mentoring-JohnGuan" title="Mentoring">🧑‍🏫</a> <a href="#question-JohnGuan" title="Answering Questions">💬</a> <a href="https://github.com/NimoTech/NimoOS/pulls?q=is%3Apr+reviewed-by%3AJohnGuan" title="Reviewed Pull Requests">👀</a></td>
-    <td align="center"><a href="https://blog.tippybits.com"><img src="https://avatars.githubusercontent.com/u/17506770?v=4?s=100" width="100px;" alt=""/><br /><sub><b>David Tippett</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=dtaivpp" title="Documentation">📖</a> <a href="#ideas-dtaivpp" title="Ideas, Planning, & Feedback">🤔</a> <a href="#question-dtaivpp" title="Answering Questions">💬</a></td>
-    <td align="center"><a href="https://github.com/zarevskaya"><img src="https://avatars.githubusercontent.com/u/60230221?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Skaya</b></sub></a><br /><a href="#mentoring-zarevskaya" title="Mentoring">🧑‍🏫</a> <a href="#question-zarevskaya" title="Answering Questions">💬</a> <a href="#tutorial-zarevskaya" title="Tutorials">✅</a> <a href="#translation-zarevskaya" title="Translation">🌍</a></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/AuthorShin"><img src="https://avatars.githubusercontent.com/u/4959043?v=4?s=100" width="100px;" alt=""/><br /><sub><b>AuthorShin</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=AuthorShin" title="Tests">⚠️</a> <a href="https://github.com/NimoTech/NimoOS/issues?q=author%3AAuthorShin" title="Bug reports">🐛</a> <a href="#question-AuthorShin" title="Answering Questions">💬</a> <a href="#ideas-AuthorShin" title="Ideas, Planning, & Feedback">🤔</a></td>
-    <td align="center"><a href="https://github.com/baptiste313"><img src="https://avatars.githubusercontent.com/u/93325157?v=4?s=100" width="100px;" alt=""/><br /><sub><b>baptiste313</b></sub></a><br /><a href="#translation-baptiste313" title="Translation">🌍</a></td>
-    <td align="center"><a href="https://github.com/DrMxrcy"><img src="https://avatars.githubusercontent.com/u/58747968?v=4?s=100" width="100px;" alt=""/><br /><sub><b>DrMxrcy</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=DrMxrcy" title="Tests">⚠️</a> <a href="#ideas-DrMxrcy" title="Ideas, Planning, & Feedback">🤔</a> <a href="#question-DrMxrcy" title="Answering Questions">💬</a></td>
-    <td align="center"><a href="https://github.com/Joooost"><img src="https://avatars.githubusercontent.com/u/12090673?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Joooost</b></sub></a><br /><a href="#ideas-Joooost" title="Ideas, Planning, & Feedback">🤔</a></td>
-    <td align="center"><a href="https://potyarkin.ml"><img src="https://avatars.githubusercontent.com/u/334908?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Vitaly Potyarkin</b></sub></a><br /><a href="#ideas-sio" title="Ideas, Planning, & Feedback">🤔</a></td>
-    <td align="center"><a href="https://github.com/bearfrieze"><img src="https://avatars.githubusercontent.com/u/1023813?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Bjørn Friese</b></sub></a><br /><a href="#ideas-bearfrieze" title="Ideas, Planning, & Feedback">🤔</a></td>
-    <td align="center"><a href="https://github.com/Protektor-Desura"><img src="https://avatars.githubusercontent.com/u/1195496?v=4?s=100" width="100px;" alt=""/><br /><sub><b>Protektor</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/issues?q=author%3AProtektor-Desura" title="Bug reports">🐛</a> <a href="#ideas-Protektor-Desura" title="Ideas, Planning, & Feedback">🤔</a> <a href="#question-Protektor-Desura" title="Answering Questions">💬</a></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/llwaini"><img src="https://avatars.githubusercontent.com/u/59589857?v=4?s=100" width="100px;" alt=""/><br /><sub><b>llwaini</b></sub></a><br /><a href="#projectManagement-llwaini" title="Project Management">📆</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=llwaini" title="Tests">⚠️</a> <a href="#tutorial-llwaini" title="Tutorials">✅</a></td>
-    <td align="center"><a href="https://github.com/CorrectRoadH"><img src="https://avatars.githubusercontent.com/u/29306285?v=4?s=100" width="100px;" alt=""/><br /><sub><b>CorrectRoadH</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=correctroadh" title="Code">💻</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=correctroadh" title="Documentation">📖</a></td>
-    <td align="center"><a href="https://github.com/zhanghengxin"><img src="https://avatars.githubusercontent.com/u/24197448?v=4?s=100" width="100px;" alt=""/><br /><sub><b>zhanghengxin</b></sub></a><br /><a href="https://github.com/NimoTech/NimoOS/commits?author=zhanghengxin" title="Code">💻</a> <a href="https://github.com/NimoTech/NimoOS/commits?author=zhanghengxin" title="Documentation">📖</a></td>
-  </tr>
-</table>
-
-<!-- markdownlint-restore -->
-<!-- prettier-ignore-end -->
-
-<!-- ALL-CONTRIBUTORS-LIST:END -->
-
-This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind are welcome!
+NimoOS is a fork of CasaOS — see [`NOTICE`](./NOTICE) for the upstream project
+and its attribution. Everything NimoOS itself has changed is recorded in this
+repository's git history.
 
 ## Changelog
 
-Detailed changes for each release are documented in the [release notes](https://github.com/NimoTech/NimoOS/releases).
-
----
-
-<p align="center">
-    <a href="https://dashboard.trackgit.com/token/l5q8egi92tfhlxd70l2l">
-        <img src="https://us-central1-trackgit-analytics.cloudfunctions.net/token/ping/l5q8egi92tfhlxd70l2l" alt="trackgit-views" />
-    </a>
-</p>
+Detailed changes for each release are documented in the [release notes](https://github.com/NimoTech/NimoOS/releases) and [`CHANGELOG.md`](./CHANGELOG.md).

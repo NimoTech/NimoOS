@@ -24,7 +24,7 @@ func GetRecoverStorage(ctx echo.Context) error {
 	event := "nimoos:file:recover"
 	if t == "GoogleDrive" {
 		google_drive := google_drive.GetConfig()
-		// BYO:若 state 携带 sid,从缓存取回用户自建的 client_id/client_secret 覆盖默认(编译期)值。
+		// BYO: if state carries a sid, retrieve the user's self-supplied client_id/client_secret from cache to override the default (compile-time) value.
 		if sid := ctx.QueryParam("sid"); sid != "" {
 			if v, ok := service.Cache.Get(sid); ok {
 				if cred, ok := v.(googleByoCred); ok {

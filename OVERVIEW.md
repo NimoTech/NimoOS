@@ -1,170 +1,170 @@
-# NimoOS 核心服务详解
+# NimoOS Core Service Details
 
-NimoOS 是整个系统的核心服务，负责文件管理、系统监控、硬件信息采集、网络存储、存储路径迁移、系统升级以及与其他微服务的协调。
-
----
-
-## 核心职责
-
-- 文件和目录的增删改查、上传下载（tus 断点续传 + 传统分片两套通道）
-- 按用户角色/文件夹授权的路径访问控制（`pkg/utils/path_acl.go` + `route/v1/file.go` 的 `checkPathAccess`）
-- 系统硬件信息采集（CPU、内存、磁盘、网络、GPU，基于 gopsutil + sysfs/nvidia-smi）
-- Samba/SMB 连接与共享管理
-- 云存储挂载（Dropbox、Google Drive、OneDrive，通过 rclone；Google Drive 支持用户自建 OAuth 凭据）
-- 存储路径迁移（Docker 镜像根 / AppData / 用户数据目录在磁盘间搬迁，`service/migrate.go`）
-- 系统 OTA 升级（RAUC A/B 分区 OS 镜像 + 应用包升级，`service/system.go`）
-- 通过 MessageBus 发布系统事件（含 `nimoos:media:created` / `nimoos:media:deleted` 供 Photos 实时增删索引）
-- ZeroTier 网络集成
-- WebSocket SSH 终端
+NimoOS is the core service of the whole system, responsible for file management, system monitoring, hardware info collection, network storage, storage path migration, system upgrades, and coordination with the other microservices.
 
 ---
 
-## 目录结构
+## Core Responsibilities
+
+- CRUD, upload/download for files and directories (tus resumable upload + legacy chunked upload, two channels)
+- Path access control by user role / folder authorization (`pkg/utils/path_acl.go` + `checkPathAccess` in `route/v1/file.go`)
+- System hardware info collection (CPU, memory, disk, network, GPU, based on gopsutil + sysfs/nvidia-smi)
+- Samba/SMB connection and share management
+- Cloud storage mounting (Dropbox, Google Drive, OneDrive, via rclone; Google Drive supports user-provided OAuth credentials)
+- Storage path migration (moving the Docker image root / AppData / user data directory between disks, `service/migrate.go`)
+- System OTA upgrades (RAUC A/B partition OS image + app package upgrades, `service/system.go`)
+- Publishing system events via MessageBus (including `nimoos:media:created` / `nimoos:media:deleted` for Photos to update its index in real time)
+- ZeroTier network integration
+- WebSocket SSH terminal
+
+---
+
+## Directory Structure
 
 ```
 NimoOS/
-├── main.go              # 启动入口：路由挂载、5s 硬件广播 cron、事件类型注册
-├── api/nimoos/          # OpenAPI 规范（openapi.yaml，V2 生成源）
-├── common/              # 服务内常量：事件名（message.go）、tus 上传常量（upload.go）
+├── main.go              # Entry point: route mounting, 5s hardware broadcast cron, event type registration
+├── api/nimoos/          # OpenAPI spec (openapi.yaml, V2 codegen source)
+├── common/              # In-service constants: event names (message.go), tus upload constants (upload.go)
 ├── route/
-│   ├── init.go          # 开机初始化：网络挂载重放、磁盘休眠、path_config 自愈
-│   ├── v1/              # V1 路由（文件、系统、Samba、云存储、驱动、ZeroTier 等）
-│   ├── v2/              # V2 路由（OpenAPI 生成 + 手工挂载的 tus/precheck/uploads）
-│   └── periodical.go    # 每 5s 广播硬件状态（CPU/内存/网络/GPU）
-├── service/             # 业务逻辑层
-│   ├── system.go        # 系统信息、GPU 状态、OTA 升级、下载器、迁移入口
-│   ├── file.go          # 文件操作队列（复制/移动，带落盘校验）
-│   ├── media_events.go  # nimoos:media:created 事件过滤与发布
-│   ├── migrate.go       # 存储路径迁移引擎 + path_config.json
-│   ├── user.go          # 只读查询 user.db：角色、文件夹授权（30s 缓存）
-│   ├── upload/          # tus 上传任务 store、hook 映射、staging GC
-│   ├── pathlock/        # 按路径读写锁，串行化同路径并发写
-│   ├── notify.go        # 通知与事件发布
-│   ├── storage.go       # rclone 云存储挂载
-│   ├── connections.go   # SMB 连接管理（unix.Mount cifs）
-│   └── shares.go        # Samba 共享配置
-├── model/               # API 层数据模型
-├── pkg/                 # 工具包（config、sqlite、cache、samba、utils/path_acl）
-├── drivers/             # 云存储驱动（base/oauth.go 为统一 OAuth 中转端点）
-└── build/               # 构建产物、systemd 服务文件
+│   ├── init.go          # Boot init: network mount replay, disk sleep, path_config self-healing
+│   ├── v1/              # V1 routes (file, system, Samba, cloud storage, drivers, ZeroTier, etc.)
+│   ├── v2/              # V2 routes (OpenAPI-generated + manually mounted tus/precheck/uploads)
+│   └── periodical.go    # Broadcasts hardware status every 5s (CPU/memory/network/GPU)
+├── service/             # Business logic layer
+│   ├── system.go        # System info, GPU status, OTA upgrades, downloader, migration entry point
+│   ├── file.go          # File operation queue (copy/move, with on-disk verification)
+│   ├── media_events.go  # nimoos:media:created event filtering and publishing
+│   ├── migrate.go       # Storage path migration engine + path_config.json
+│   ├── user.go          # Read-only queries against user.db: roles, folder authorization (30s cache)
+│   ├── upload/          # tus upload task store, hook mapping, staging GC
+│   ├── pathlock/        # Per-path read/write locks, serializes concurrent writes to the same path
+│   ├── notify.go        # Notifications and event publishing
+│   ├── storage.go       # rclone cloud storage mounting
+│   ├── connections.go   # SMB connection management (unix.Mount cifs)
+│   └── shares.go        # Samba share configuration
+├── model/               # API layer data models
+├── pkg/                 # Utility packages (config, sqlite, cache, samba, utils/path_acl)
+├── drivers/             # Cloud storage drivers (base/oauth.go is the unified OAuth relay endpoint)
+└── build/               # Build artifacts, systemd service files
 ```
 
 ---
 
-## API 版本
+## API Versions
 
-### V1（传统，JWT 验证，`route/v1.go`）
+### V1 (legacy, JWT-verified, `route/v1.go`)
 
-| 路由前缀 | 功能 |
+| Route prefix | Function |
 |---|---|
-| `/v1/sys/` | 系统信息、OS/应用版本检查与升级、下载取消、SSH、日志、硬件利用率、系统路径与迁移（`/paths`、`/migrate`）、磁盘休眠 |
-| `/v1/file/` | 文件下载/创建/重命名/内容读写/传统分片上传/WebSocket 操作 |
-| `/v1/folder/` | 目录列表、创建、重命名、大小与文件数统计 |
-| `/v1/batch/` | 批量删除、文件移动/复制任务队列、打包下载 |
-| `/v1/image/` | 图片原图/缩略图（`GetFileImage`） |
-| `/v1/cloud/` | 云存储列表/卸载 |
-| `/v1/driver/` | 云盘驱动列表、Google Drive BYO 授权（`POST /driver/google_drive/auth`） |
-| `/v1/samba/` | SMB 连接和共享 CRUD |
-| `/v1/notify/` | 推送通知 |
-| `/v1/other/` | 文件搜索 |
-| `/v1/zt/` | ZeroTier 本地 API 反代 |
-| `/v1/recover/:type` | 云盘 OAuth 授权回调（免 JWT） |
+| `/v1/sys/` | System info, OS/app version check & upgrade, download cancellation, SSH, logs, hardware utilization, system paths & migration (`/paths`, `/migrate`), disk sleep |
+| `/v1/file/` | File download/create/rename/content read-write/legacy chunked upload/WebSocket ops |
+| `/v1/folder/` | Directory listing, creation, renaming, size and file count stats |
+| `/v1/batch/` | Batch delete, file move/copy task queue, packaged download |
+| `/v1/image/` | Original/thumbnail images (`GetFileImage`) |
+| `/v1/cloud/` | Cloud storage listing/unmounting |
+| `/v1/driver/` | Cloud drive driver listing, Google Drive BYO auth (`POST /driver/google_drive/auth`) |
+| `/v1/samba/` | SMB connection and share CRUD |
+| `/v1/notify/` | Push notifications |
+| `/v1/other/` | File search |
+| `/v1/zt/` | ZeroTier local API reverse proxy |
+| `/v1/recover/:type` | Cloud drive OAuth authorization callback (JWT-exempt) |
 
-### V2（OpenAPI 3.0，JWT 验证，`route/v2.go`）
+### V2 (OpenAPI 3.0, JWT-verified, `route/v2.go`)
 
-| 路由前缀 | 功能 |
+| Route prefix | Function |
 |---|---|
-| `/v2/nimoos/health/` | 服务健康状态、端口占用、日志下载 |
-| `/v2/nimoos/file/upload-tus` | tus 断点续传上传端点（tusd v2，手工挂载、跳过 OpenAPI 校验） |
-| `/v2/nimoos/file/upload-precheck` | 重选续传预检：按目标路径+大小跳过已存在文件（`route/v2/precheck_file.go`） |
-| `/v2/nimoos/file/uploads` | 上传任务列表/详情/取消（`route/v2/upload_tasks.go`） |
-| `/v2/nimoos/local_storage/` | 磁盘显示名读写（手工注册，绕过截断的 codegen 接口） |
-| `/v2/nimoos/zt/` | ZeroTier 信息/状态（OpenAPI 生成） |
+| `/v2/nimoos/health/` | Service health status, port usage, log download |
+| `/v2/nimoos/file/upload-tus` | tus resumable upload endpoint (tusd v2, manually mounted, skips OpenAPI validation) |
+| `/v2/nimoos/file/upload-precheck` | Precheck for resuming an upload with a different selection: skips files that already exist by target path + size (`route/v2/precheck_file.go`) |
+| `/v2/nimoos/file/uploads` | Upload task listing/detail/cancellation (`route/v2/upload_tasks.go`) |
+| `/v2/nimoos/local_storage/` | Disk display name read/write (manually registered, works around a truncated codegen interface) |
+| `/v2/nimoos/zt/` | ZeroTier info/status (OpenAPI-generated) |
 
-> 旧的 V2 简单分片上传（UploadFile/TestChunk）已删除，OpenAPI spec 中不再有对应 path；文件上传主通道是 tus。
+> The old V2 simple chunked upload (UploadFile/TestChunk) has been removed and no longer has a corresponding path in the OpenAPI spec; the primary upload channel is tus.
 
-### V3（文件下载，`route/v2.go` 的 `InitFile`）
+### V3 (file download, `InitFile` in `route/v2.go`)
 
-- `/v3/file?token=&path=` — 带 JWT token 验证的文件下载；`&inline=1` 时以 inline Disposition 返回，供浏览器内预览（PDF/图片，支持 Range 与 `#page=N` 跳页）
-
----
-
-## 认证与路径权限
-
-- **JWT 中间件**（`route/v1.go` / `route/v2.go`）：带 Authorization 头或 `?token=` 的请求**必须**解析 token（即使来自 localhost），解析后把 `user_id`、`user_name` 写入请求头；仅无任何凭证的 localhost 请求跳过验证。
-- **实时角色**：V1 中间件每次请求经 `service/user.go` 的 `GetUserRoleByID` 直查 UserService 的 `user.db`（只读打开），把 `user_role` 写入请求头，避免 JWT 里的角色过期；查库失败时 fail-closed 降级为 `user`。
-- **路径门禁**（`route/v1/file.go` 的 `checkPathAccess`，覆盖所有文件/目录 handler）：
-  1. 无 `user_id`/`user_role` 头（真内部调用）直接放行；
-  2. `user_id == 1` 的根管理员放行所有路径；
-  3. 其余用户走 `pkg/utils/path_acl.go` 的 `IsPathAllowed` 基线（`/DATA`、`/mnt`、`/media` 等），再叠加 `user.db` 中 `user_folder_permissions` 表的显式文件夹授权（`IsPathGranted`，30s 缓存）。
-- **系统目录保护**：`containsProtectedName`（`route/v1/file.go`、`route/v2/file.go` 各有一份）拦截对系统默认文件夹名的写入；但用户上传进 `Documents/Downloads/Gallery/Media` 等自身内容目录不受误拦，校验失败返回 4xx。
+- `/v3/file?token=&path=` — file download with JWT token verification; with `&inline=1`, returns with an inline Disposition for in-browser preview (PDF/images, supports Range and jumping to a page via `#page=N`)
 
 ---
 
-## 核心业务逻辑
+## Auth and Path Permissions
 
-### 文件上传（tus 主通道）
-
-- 基于 NimoOS-Common 的共享上传引擎（`commonUpload`）+ tusd v2，分片先落 staging 目录 `/DATA/.system_data/file-tus-staging`（`common/upload.go`），完成后经 rename（跨设备回退为 copy）搬到目标路径（`route/v2/tus_file.go` 的 `ingestToTargetWithPolicy`，支持冲突策略与同名去重）。
-- 创建时校验 metadata 与 `/DATA` 剩余空间配额；resumed 上传幂等落地，不产生重复文件。
-- 每次 tus CreatedUploads 事件映射为 `o_upload_tasks` 表中一条任务行（`service/upload/hook.go`），供 `/file/uploads` 任务 API 查询/取消；6 小时无进展降级为 paused，staging 保留 3 天后由后台 GC 清理（`service/upload/gc.go`，`commonUpload.StartGC` 随 tus handler 启动）。
-- 上传前可先调 `/file/upload-precheck` 按「目标路径 + 大小」跳过已存在文件，用于重选续传。
-- V1 传统分片上传（`/v1/file/upload`，`route/v1/file.go`）仍保留兼容：分片写入 `.temp` 目录，齐片后同步 `SpliceFiles` 合并（经 `pathlock` 路径写锁），O_EXCL 保证分片幂等。
-
-### 媒体事件（Photos 集成）
-
-- **`nimoos:media:created`**（`common/message.go`，实现在 `service/media_events.go`）：文件真正落盘后发布，`properties["paths"]` 为 JSON 数组，元素可为文件或目录（整目录复制/移动只发目的地根）。发布点：tus 落地（`route/v2/tus_file.go`）、V1 分片/单发上传（`route/v1/file.go`）、批量复制/移动完成（`service/file.go`）。发布带 10s 超时、fire-and-forget——MessageBus 是软依赖，失败只记日志，绝不影响文件操作本身。
-- **`nimoos:media:deleted`**（`route/v1/file.go` 的 `DeleteFile`）：删除成功后发布，只含图片/视频扩展名或疑似目录的路径，供 Photos 实时清理索引。
-- 两处的媒体扩展名清单（`mediaCreatedExts` / `deletedMediaExts`）互为镜像，新增格式时需同步。
-
-### 批量文件操作
-
-- 复制/移动走任务队列（`service/file.go` 的 `FileQueue`），移动落地后校验源/目的大小一致才删源，不一致则回滚目的、保留源；copy+skip 策略下目的已存在时不发 media 事件。
-
-### 系统硬件监控
-
-- `main.go` 以 cron `@every 5s` 调 `route/periodical.go` 的 `SendAllHardwareStatusBySocket`，聚合 CPU（占用/核数/温度/功耗/厂商）、内存、网络、GPU，经 `Notify().SendNotify` 以 `nimoos:system:utilization` 事件广播；同一数据也可经 `/v1/sys/utilization` 拉取。
-- **GPU**（`service/system.go` 的 `GetGpuStatus`）：先经 nvidia-smi 枚举 NVIDIA，再扫 `/sys/class/drm` 枚举 Intel（utilization 从 GT idle residency 差分估算、VRAM 从 debugfs 读取、温度经 hwmon、名称经 lspci），两路结果合并而非互相覆盖；有温度读数的卡排前面供前端主 widget 展示。`main.go` 启动 `external.StartIntelGpuMonitor()`（无 intel_gpu_top 时为 no-op）。
-- **CPU 温度**：ACPI thermal zone 读数为 0 时回退 hwmon（`GetCPUHwmonPath`）。
-
-### 系统升级（OTA）
-
-- **OS 升级**：`/v1/sys/os_version/check` + `/v1/sys/os_update`。从 `ServerApi` 指向的更新服务器（校验平台/硬件兼容性与版本连续性）下载 `.raucb` A/B 分区镜像，`rauc install` 经 `systemd-run --scope --unit=nimoos-upgrade` 跑在独立 scope 中，服务自身重启不会连带杀死升级进程。
-- **应用包升级**：`/v1/sys/version` + `/v1/sys/update`，同样的下载器 + 独立 scope（`nimoos-app-upgrade`）模式。
-- 下载器带取消（`/v1/sys/download/cancel`）、进度查询与每日自动检查（`StartDailyDownloadChecker`）；重启后 `SyncStartupUpgradeStatus`（`main.go` 启动时调用）读取遗留状态文件，向云端回报升级成功/回滚并上传日志；`readRAUCBootStatus` 把 A/B 分区 boot 状态随版本检查上报。
-
-### 存储路径迁移
-
-- `service/migrate.go`：把 Docker 镜像根（images）、AppData、用户数据（Gallery/Downloads 等 UserData 组批量迁移）在磁盘间搬迁，当前配置持久化在 `/var/lib/nimoos/path_config.json`。
-- 迁移期间：路径写锁 + 迁移锁文件防并发、停容器并上报进度（`/v1/sys/migrate/:id` 轮询）、复制后逐一校验再删源、循环软链防护（`GetFileOrDirSize` 防递归）；images 迁移会改写 `/etc/docker/daemon.json` 的 `data-root` 并等待 Docker 就绪后重启原容器。
-- 开机 `route/init.go` 的 `InitPathConfig` 用 daemon.json 实际值自愈 path_config.json，并同步 `/var/lib/nimoos/docker_root` 供 AppManagement 读取。
-
-### 云存储挂载
-
-- 通过 rclone HTTP API 挂载/卸载远程存储（`service/storage.go`），配置存 rclone 自己的 config，开机 `InitNetworkMount` 末尾 `CheckAndMountAll` 重放。
-- 所有云盘 OAuth 回调统一走中转域名 `https://cloudoauth.nimopc.com`（`drivers/base/oauth.go`），由中转页跳回本机 `/v1/recover/:type`。
-- **Google Drive BYO**：`POST /v1/driver/google_drive/auth`（`route/v1/driver.go`）接收用户自建的 client_id/client_secret，凭据只存服务器内存短期缓存（10 分钟 TTL，随机 sid 为键），返回拼好的 Google 授权 URL；回调 `GetRecoverStorage` 按 state 中的 sid 取回凭据换 token，client_secret 绝不进入 URL/中转页。
-
-### Samba 管理
-
-- **客户端（连接远端共享）**：连接经 GORM + SQLite 持久化，`unix.Mount` 以 cifs 挂到 `/mnt/<host>/<share>`。创建连接（`route/v1/samba.go` 的 `PostSambaConnectionsCreate`）逐共享挂载：失败的（IPC$/print$ 或权限不足）清理空目录并跳过，只把挂载成功的写回 DB；**一个都没挂上时返回真实错误而非假 200**，且响应不回显明文密码。
-- 开机重放（`route/init.go` 的 `InitNetworkMount`）与创建路径同款逐共享处理；清理残留挂载点时先 unmount，**卸不掉绝不递归删除**——`os.RemoveAll` 会穿透仍活跃的 CIFS 挂载点误删远端文件。
-- **服务端（对外共享）**：共享按创建者用户名记录（`Anonymous` 仅在无用户名时为真，`service/model/o_shares.go`），生成 Samba 配置文件并调 shell 脚本管理 smbd。
+- **JWT middleware** (`route/v1.go` / `route/v2.go`): a request carrying an Authorization header or `?token=` **must** have its token parsed (even from localhost); once parsed, `user_id` and `user_name` are written into the request headers. Only localhost requests with no credentials at all skip verification.
+- **Live role lookup**: on every request, the V1 middleware calls `GetUserRoleByID` in `service/user.go` to query UserService's `user.db` directly (opened read-only), writing `user_role` into the request headers to avoid a stale role baked into the JWT; if the query fails, it fails closed and downgrades to `user`.
+- **Path gating** (`checkPathAccess` in `route/v1/file.go`, covers all file/directory handlers):
+  1. Requests with no `user_id`/`user_role` headers (genuine internal calls) pass straight through;
+  2. The root admin (`user_id == 1`) is allowed on all paths;
+  3. Other users go through the baseline `IsPathAllowed` check in `pkg/utils/path_acl.go` (`/DATA`, `/mnt`, `/media`, etc.), layered with explicit folder grants from the `user_folder_permissions` table in `user.db` (`IsPathGranted`, 30s cache).
+- **System directory protection**: `containsProtectedName` (one copy each in `route/v1/file.go` and `route/v2/file.go`) blocks writes to system default folder names; but user uploads into their own content directories such as `Documents/Downloads/Gallery/Media` are not mistakenly blocked, and validation failures return a 4xx.
 
 ---
 
-## 数据库
+## Core Business Logic
 
-- SQLite + GORM，主库位于 `DBPath` 下（`pkg/sqlite/db.go` AutoMigrate）
-- 表：`o_connections`（SMB 连接）、`o_shares`（SMB 共享）、`o_notify`（通知记录）、`o_peer_drive`（局域网 peer 设备）、`o_upload_tasks`（tus 上传任务，模型在 NimoOS-Common/upload）
-- 另以只读方式打开 UserService 的 `user.db` 查角色与文件夹授权（`service/user.go`），不写入
-- 云存储配置不在本库，由 rclone config 管理；迁移路径状态在 `/var/lib/nimoos/path_config.json`
+### File Upload (tus primary channel)
+
+- Built on NimoOS-Common's shared upload engine (`commonUpload`) + tusd v2. Chunks first land in the staging directory `/DATA/.system_data/file-tus-staging` (`common/upload.go`), then on completion are moved to the target path via rename (falling back to copy across devices) (`ingestToTargetWithPolicy` in `route/v2/tus_file.go`, supports conflict policies and dedup by name).
+- On creation, metadata and remaining `/DATA` space quota are validated; resumed uploads are idempotent and never produce duplicate files.
+- Each tus CreatedUploads event is mapped to a task row in the `o_upload_tasks` table (`service/upload/hook.go`), queryable/cancelable via the `/file/uploads` task API; a task with no progress for 6 hours is downgraded to paused, and staging is kept for 3 days before background GC cleans it up (`service/upload/gc.go`; `commonUpload.StartGC` starts alongside the tus handler).
+- Before uploading, `/file/upload-precheck` can be called to skip files that already exist by "target path + size", for resuming with a different selection.
+- The V1 legacy chunked upload (`/v1/file/upload`, `route/v1/file.go`) is still kept for compatibility: chunks are written to a `.temp` directory, and once all chunks are present, `SpliceFiles` merges them synchronously (under a `pathlock` write lock), with O_EXCL guaranteeing chunk idempotency.
+
+### Media Events (Photos integration)
+
+- **`nimoos:media:created`** (`common/message.go`, implemented in `service/media_events.go`): published after a file is actually written to disk; `properties["paths"]` is a JSON array whose elements can be files or directories (a whole-directory copy/move only publishes the destination root). Publish points: tus landing (`route/v2/tus_file.go`), V1 chunked/single-shot upload (`route/v1/file.go`), completed batch copy/move (`service/file.go`). Publishing has a 10s timeout and is fire-and-forget — MessageBus is a soft dependency, and failures are only logged, never affecting the file operation itself.
+- **`nimoos:media:deleted`** (`DeleteFile` in `route/v1/file.go`): published after a successful delete, only including paths with image/video extensions or that look like directories, so Photos can clean up its index in real time.
+- The media extension lists in the two places (`mediaCreatedExts` / `deletedMediaExts`) mirror each other and must be kept in sync when new formats are added.
+
+### Batch File Operations
+
+- Copy/move go through a task queue (`FileQueue` in `service/file.go`); after a move lands, the source is only deleted once source/destination sizes are verified to match — if they don't match, the destination is rolled back and the source kept; under the copy+skip policy, no media event is published when the destination already exists.
+
+### System Hardware Monitoring
+
+- `main.go` uses a `@every 5s` cron to call `SendAllHardwareStatusBySocket` in `route/periodical.go`, aggregating CPU (usage/core count/temperature/power/vendor), memory, network, and GPU, and broadcasts it via `Notify().SendNotify` as a `nimoos:system:utilization` event; the same data can also be pulled via `/v1/sys/utilization`.
+- **GPU** (`GetGpuStatus` in `service/system.go`): first enumerates NVIDIA GPUs via nvidia-smi, then scans `/sys/class/drm` for Intel GPUs (utilization estimated from the GT idle residency delta, VRAM read from debugfs, temperature via hwmon, name via lspci); the two result sets are merged rather than one overriding the other, with cards that have a temperature reading sorted first for the frontend's main widget. `main.go` starts `external.StartIntelGpuMonitor()` (a no-op when intel_gpu_top is absent).
+- **CPU temperature**: falls back to hwmon (`GetCPUHwmonPath`) when the ACPI thermal zone reading is 0.
+
+### System Upgrade (OTA)
+
+- **OS upgrade**: `/v1/sys/os_version/check` + `/v1/sys/os_update`. Downloads the `.raucb` A/B partition image from the update server pointed to by `ServerApi` (which validates platform/hardware compatibility and version continuity); `rauc install` runs in its own scope via `systemd-run --scope --unit=nimoos-upgrade`, so a restart of the service itself won't also kill the upgrade process.
+- **App package upgrade**: `/v1/sys/version` + `/v1/sys/update`, using the same downloader + independent scope pattern (`nimoos-app-upgrade`).
+- The downloader supports cancellation (`/v1/sys/download/cancel`), progress queries, and a daily auto-check (`StartDailyDownloadChecker`); after a restart, `SyncStartupUpgradeStatus` (called at `main.go` startup) reads the leftover status file, reports upgrade success/rollback to the cloud and uploads logs; `readRAUCBootStatus` reports the A/B partition boot status alongside version checks.
+
+### Storage Path Migration
+
+- `service/migrate.go`: moves the Docker image root (images), AppData, and user data (Gallery/Downloads etc., migrated in the UserData batch) between disks; current config is persisted in `/var/lib/nimoos/path_config.json`.
+- During migration: a path write lock plus a migration lock file prevent concurrency; containers are stopped and progress is reported (polled via `/v1/sys/migrate/:id`); after copying, each item is verified before the source is deleted; there's a guard against circular symlinks (`GetFileOrDirSize` prevents recursion). An images migration rewrites the `data-root` field in `/etc/docker/daemon.json` and restarts the original containers once Docker is ready again.
+- At boot, `InitPathConfig` in `route/init.go` self-heals `path_config.json` using the actual value from daemon.json, and syncs `/var/lib/nimoos/docker_root` for AppManagement to read.
+
+### Cloud Storage Mounting
+
+- Mounts/unmounts remote storage via the rclone HTTP API (`service/storage.go`); config is stored in rclone's own config file, and `CheckAndMountAll` at the end of `InitNetworkMount` replays it at boot.
+- All cloud drive OAuth callbacks go through the unified relay domain `https://cloudoauth.nimotech.ai` (`drivers/base/oauth.go`), which redirects back to the local `/v1/recover/:type`.
+- **Google Drive BYO**: `POST /v1/driver/google_drive/auth` (`route/v1/driver.go`) accepts a user-supplied client_id/client_secret; the credentials are only cached briefly in server memory (10-minute TTL, keyed by a random sid), and a ready-made Google authorization URL is returned. The callback `GetRecoverStorage` retrieves the credentials by the sid in the state to exchange for a token — the client_secret never enters the URL or the relay page.
+
+### Samba Management
+
+- **Client (connecting to remote shares)**: connections are persisted via GORM + SQLite, and `unix.Mount` mounts them as cifs under `/mnt/<host>/<share>`. Creating a connection (`PostSambaConnectionsCreate` in `route/v1/samba.go`) mounts each share individually: shares that fail (IPC$/print$ or insufficient permissions) have their empty directory cleaned up and are skipped, and only successfully mounted shares are written back to the DB; **if none of them mount, a real error is returned instead of a fake 200**, and the response never echoes back the plaintext password.
+- Boot-time replay (`InitNetworkMount` in `route/init.go`) uses the same per-share handling as the creation path; when cleaning up leftover mount points, it unmounts first and **never recursively deletes if the unmount fails** — `os.RemoveAll` would traverse into a still-active CIFS mount point and delete remote files by mistake.
+- **Server (sharing outward)**: shares are recorded by the creator's username (`Anonymous` is only true when there's no username, `service/model/o_shares.go`); a Samba config file is generated and a shell script is invoked to manage smbd.
 
 ---
 
-## 配置
+## Database
 
-`conf/conf.conf.sample`：
+- SQLite + GORM, main database located under `DBPath` (AutoMigrate in `pkg/sqlite/db.go`)
+- Tables: `o_connections` (SMB connections), `o_shares` (SMB shares), `o_notify` (notification records), `o_peer_drive` (LAN peer devices), `o_upload_tasks` (tus upload tasks, model in NimoOS-Common/upload)
+- Also opens UserService's `user.db` read-only to query roles and folder authorization (`service/user.go`), never writes to it
+- Cloud storage config is not in this database and is managed by rclone's config; migration path state lives in `/var/lib/nimoos/path_config.json`
+
+---
+
+## Configuration
+
+`conf/conf.conf.sample`:
 
 ```ini
 [app]
@@ -174,7 +174,7 @@ ShellPath = /usr/share/nimoos/shell
 UserDataPath = /var/lib/nimoos/conf
 
 [server]
-ServerApi = https://api.nimoos.io/nimoos-api   # 版本检查/升级/日志上报服务器
+ServerApi =                                 # Version check/handshake service; NimoOS does not run this service, leave blank by default to stay offline
 USBAutoMount =
 
 [common]
@@ -183,29 +183,29 @@ RuntimePath = /var/run/nimoos
 
 ---
 
-## 依赖的其他服务
+## Dependencies on Other Services
 
-| 服务 | 用途 |
+| Service | Purpose |
 |---|---|
-| NimoOS-MessageBus | 发布系统事件（硬件状态、文件操作、media created/deleted） |
-| NimoOS-Gateway | 注册 API 路由、服务发现 |
-| NimoOS-UserService | `user.db` 只读查询：用户角色、文件夹授权 |
-| NimoOS-Common | JWT 验证、日志、HTTP 工具、共享上传引擎（`upload` 包） |
-| NimoOS-Photos | 消费 media 事件维护相册索引（事件消费方） |
-| rclone | 云存储挂载 |
-| RAUC | A/B 分区 OS 镜像升级 |
-| systemd | 服务生命周期管理、升级进程独立 scope |
+| NimoOS-MessageBus | Publishes system events (hardware status, file operations, media created/deleted) |
+| NimoOS-Gateway | Registers API routes, service discovery |
+| NimoOS-UserService | Read-only queries against `user.db`: user roles, folder authorization |
+| NimoOS-Common | JWT verification, logging, HTTP utilities, shared upload engine (`upload` package) |
+| NimoOS-Photos | Consumes media events to maintain the photo album index (event consumer) |
+| rclone | Cloud storage mounting |
+| RAUC | A/B partition OS image upgrades |
+| systemd | Service lifecycle management, upgrade process runs in its own scope |
 
 ---
 
-## 技术栈
+## Tech Stack
 
-- **框架**：Echo v4
-- **数据库**：SQLite + GORM
-- **日志**：go.uber.org/zap
-- **系统信息**：shirou/gopsutil
-- **断点续传**：tus/tusd v2（经 NimoOS-Common upload 引擎）
-- **实时通信**：gorilla/websocket、go-socket.io
-- **挂载**：golang.org/x/sys/unix（cifs）、moby/sys/mount
-- **定时任务**：robfig/cron v3
-- **归档**：mholt/archiver v3
+- **Framework**: Echo v4
+- **Database**: SQLite + GORM
+- **Logging**: go.uber.org/zap
+- **System info**: shirou/gopsutil
+- **Resumable upload**: tus/tusd v2 (via the NimoOS-Common upload engine)
+- **Real-time communication**: gorilla/websocket, go-socket.io
+- **Mounting**: golang.org/x/sys/unix (cifs), moby/sys/mount
+- **Scheduled tasks**: robfig/cron v3
+- **Archiving**: mholt/archiver v3

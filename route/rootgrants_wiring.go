@@ -6,21 +6,26 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// registerRootGrantRoutes 把 root-grant 相关路由挂到 nimoosGroup 上:只读的
-// search-roots,以及 _internal 下三个写端点(loopback-only 保护)。
+// registerRootGrantRoutes mounts the root-grant-related routes onto nimoosGroup:
+// the read-only search-roots endpoint, plus the three write endpoints under
+// _internal (protected by loopback-only).
 //
-// 抽成独立函数是为了留一个测试接缝(test seam):InitV1Router 里调用
-// service.MyService.RootGrants() 依赖完整初始化的全局 Repository,难以在单测
-// 里构造;抽出来后,测试可以传入一个假的 service.RootGrantRepo,走真实的
-// echo 路由树 + ServeHTTP 验证 loopbackOnly 确实挂在了 _internal 分组上——
-// 而不只是测 loopbackOnly 函数本身或直调 handler 方法。见 rootgrants_wiring_test.go。
+// Extracted into a standalone function to leave a test seam: InitV1Router calls
+// service.MyService.RootGrants(), which depends on a fully-initialized global
+// Repository and is hard to construct in a unit test; once extracted, the test
+// can pass in a fake service.RootGrantRepo and verify — via the real echo route
+// tree + ServeHTTP — that loopbackOnly is actually mounted on the _internal
+// group, rather than only testing the loopbackOnly function itself or calling
+// the handler methods directly. See rootgrants_wiring_test.go.
 func registerRootGrantRoutes(nimoosGroup *echo.Group, repo service.RootGrantRepo) {
 	rootGrantHandler := v1.NewRootGrantHandler(repo)
 	nimoosGroup.GET("/search-roots", rootGrantHandler.SearchRoots)
 
-	// _internal 写端点只服务于本机的 Wiki 等内部调用方,必须 loopback-only:
-	// /v1/nimoos 前缀整体注册到了网关,若只靠上面的 JWT 中间件,任何持有效
-	// token 的外部用户都能改写授权表(等同提权),见 route/loopback.go 注释。
+	// The _internal write endpoints only serve local callers like Wiki, and must
+	// be loopback-only: the /v1/nimoos prefix as a whole is registered with the
+	// gateway, so relying only on the JWT middleware above would let any external
+	// user with a valid token rewrite the grant table (equivalent to privilege
+	// escalation) — see the comment in route/loopback.go.
 	v1InternalGroup := nimoosGroup.Group("/_internal", loopbackOnly)
 	{
 		v1InternalGroup.PUT("/root-grants/:root_id", rootGrantHandler.UpsertGrant)

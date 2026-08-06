@@ -38,10 +38,11 @@ func TestResolveStagingRoot(t *testing.T) {
 	}
 }
 
-// 最长前缀优先:/media/RAID_0 与 / 同时匹配时,选更深的 /media/RAID_0。
+// Longest prefix wins: when /media/RAID_0 and / both match, /media/RAID_0
+// (the deeper one) is chosen.
 func TestResolveStagingRootLongestPrefixWins(t *testing.T) {
 	mounts := []MountEntry{
-		{Mountpoint: "/", FSType: "ext4"}, // 根本身也是允许类型,但更浅
+		{Mountpoint: "/", FSType: "ext4"}, // root itself is also an allowed type, but shallower
 		{Mountpoint: "/media/RAID_0", FSType: "ext4"},
 	}
 	root, fellBack := resolveStagingRoot("/media/RAID_0/x.jpg", mounts)
@@ -50,7 +51,8 @@ func TestResolveStagingRootLongestPrefixWins(t *testing.T) {
 	}
 }
 
-// 无任何挂载点信息(空快照)时必须安全回退,不panic。
+// With no mountpoint info at all (empty snapshot), it must fall back safely,
+// without panicking.
 func TestResolveStagingRootEmptyMounts(t *testing.T) {
 	root, fellBack := resolveStagingRoot("/DATA/x.jpg", nil)
 	if root != "/DATA" || !fellBack {

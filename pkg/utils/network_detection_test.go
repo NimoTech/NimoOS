@@ -6,7 +6,10 @@
  * @FilePath: /NimoOS/pkg/utils/network_detection_test.go
  * @Description:
  *
- * Copyright (c) 2022 by LinkLeong a624669980@163.com, All Rights Reserved.
+ * Copyright (c) 2022 by LinkLeong a624669980@163.com
+ * Copyright (c) 2026 NimoTech
+ * Licensed under the Apache License, Version 2.0.
+ * Modified from the original CasaOS source by NimoTech.
  */
 
 package utils

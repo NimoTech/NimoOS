@@ -41,3 +41,16 @@ func TestIsPathAllowed_EmptyPath(t *testing.T) {
 	assert.False(t, IsPathAllowed("", false))
 	assert.False(t, IsPathAllowed("", true))
 }
+
+func TestIsPathAllowed_EmptyAllowlistDeniesNonAdmin(t *testing.T) {
+	// Default-deny: if dataAllowedPrefixes is ever left unpopulated (e.g. a
+	// future config-loading bug), non-admin access to any path must fail
+	// closed rather than open.
+	saved := dataAllowedPrefixes
+	dataAllowedPrefixes = []string{}
+	defer func() { dataAllowedPrefixes = saved }()
+
+	assert.False(t, IsPathAllowed("/DATA", false))
+	assert.False(t, IsPathAllowed("/mnt/disk1", false))
+	assert.True(t, IsPathAllowed("/DATA", true), "admin is never affected by the allowlist")
+}

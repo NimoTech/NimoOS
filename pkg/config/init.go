@@ -5,8 +5,10 @@
  * @LastEditTime: 2022-09-05 11:58:02
  * @FilePath: /NimoOS/pkg/config/init.go
  * @Description:
- * @Website: https://www.nimoos.io
- * Copyright (c) 2022 by icewhale, All Rights Reserved.
+ * Copyright (c) 2021-2025 IceWhale Technology Co., Ltd.
+ * Copyright (c) 2026 NimoTech
+ * Licensed under the Apache License, Version 2.0.
+ * Modified from the original CasaOS source by NimoTech.
  */
 package config
 
@@ -43,7 +45,7 @@ var (
 	ConfigFilePath string
 )
 
-// 初始化设置，获取系统的部分信息。
+// InitSetup initializes the setup and reads some system info.
 func InitSetup(config string, sample string) {
 	ConfigFilePath = NimoOSConfigFilePath
 	if len(config) > 0 {
@@ -69,7 +71,7 @@ func InitSetup(config string, sample string) {
 
 	var err error
 
-	// 读取文件
+	// read the config file
 	Cfg, err = ini.Load(ConfigFilePath)
 	if err != nil {
 		panic(err)
@@ -82,7 +84,7 @@ func InitSetup(config string, sample string) {
 	mapTo("common", CommonInfo)
 }
 
-// 映射
+// mapTo maps a config section onto v
 func mapTo(section string, v interface{}) {
 	err := Cfg.Section(section).MapTo(v)
 	if err != nil {

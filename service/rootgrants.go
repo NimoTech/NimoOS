@@ -1,6 +1,8 @@
 /*
- * @Description: RootGrantRepo——o_root_grants 授权表的读写实现。供检索授权链路
- * (Wiki 对账 / 虚拟根 seed / 检索侧读取 enabled 列表)复用。
+ * @Description: RootGrantRepo — read/write implementation for the
+ * o_root_grants authorization table. Reused across the search-authorization
+ * chain (Wiki reconciliation / virtual root seed / search-side reads of the
+ * enabled list).
  */
 package service
 
@@ -12,18 +14,18 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// RootGrantRepo 是 o_root_grants 表的读写接口。
+// RootGrantRepo is the read/write interface for the o_root_grants table.
 type RootGrantRepo interface {
-	// UpsertGrant 按 rootID 主键 upsert 一行,UpdatedAt 取当前时间。
+	// UpsertGrant upserts one row keyed on rootID; UpdatedAt takes the current time.
 	UpsertGrant(rootID, path string, enabled bool, source string) error
-	// DeleteGrant 按 rootID 删除一行。
+	// DeleteGrant deletes one row by rootID.
 	DeleteGrant(rootID string) error
-	// EnabledRootIDs 返回所有 enabled=true 的 root_id(不区分 source,含 virtual)。
+	// EnabledRootIDs returns all root_id with enabled=true (regardless of source, including virtual).
 	EnabledRootIDs() ([]string, error)
-	// ReconcileWiki 以入参为准全量同步 source="wiki" 的行:新增/更新在列表里的、
-	// 删除不在列表里的;绝不触碰 source="virtual" 的行。
+	// ReconcileWiki fully syncs the source="wiki" rows against the input: adds/updates
+	// rows present in the list, deletes rows not in the list; never touches source="virtual" rows.
 	ReconcileWiki(grants []model.RootGrant) error
-	// SeedVirtual 幂等地登记一个虚拟根(source="virtual", enabled=true, path="")。
+	// SeedVirtual idempotently registers a virtual root (source="virtual", enabled=true, path="").
 	SeedVirtual(rootID string) error
 }
 
@@ -31,12 +33,13 @@ type rootGrantStore struct {
 	db *gorm.DB
 }
 
-// NewRootGrantRepo 构造 RootGrantRepo 实现。
+// NewRootGrantRepo constructs a RootGrantRepo implementation.
 func NewRootGrantRepo(db *gorm.DB) RootGrantRepo {
 	return &rootGrantStore{db: db}
 }
 
-// upsert 是内部公共实现:按 root_id 主键冲突时更新指定列。
+// upsert is the shared internal implementation: on a root_id primary-key
+// conflict, it updates the specified columns.
 func (s *rootGrantStore) upsert(row model.RootGrant) error {
 	return s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "root_id"}},
@@ -59,9 +62,11 @@ func (s *rootGrantStore) DeleteGrant(rootID string) error {
 }
 
 func (s *rootGrantStore) EnabledRootIDs() ([]string, error) {
-	// 显式以初始化过的空切片起始(而非 var ids []string 的 nil),硬化契约:
-	// 空表也要返回 []string{},调用方(如 SearchRoots handler)JSON 序列化后
-	// 得到 [] 而不是 null。不依赖 gorm Pluck 对目标切片的内部初始化行为。
+	// Explicitly start from an initialized empty slice (rather than the nil
+	// of `var ids []string`) to harden the contract: an empty table must
+	// also return []string{}, so callers (e.g. the SearchRoots handler)
+	// JSON-serialize it as [] rather than null. Don't rely on gorm Pluck's
+	// internal initialization behavior for the target slice.
 	ids := []string{}
 	err := s.db.Model(&model.RootGrant{}).Where("enabled = ?", true).Pluck("root_id", &ids).Error
 	if err != nil {
@@ -70,18 +75,24 @@ func (s *rootGrantStore) EnabledRootIDs() ([]string, error) {
 	return ids, nil
 }
 
-// ReconcileWiki 在一个事务里全量对账 source="wiki" 的行:先删掉不在入参列表里的
-// wiki 行,再逐条 upsert 入参(source 固定写死为 "wiki",忽略入参里可能带的其它
-// 值)。入参为空时,删除所有 source="wiki" 的行。全程不涉及 source="virtual"。
+// ReconcileWiki fully reconciles the source="wiki" rows in a single
+// transaction: first deletes wiki rows not present in the input list, then
+// upserts each input row one by one (source is hardcoded to "wiki",
+// ignoring any other value the input might carry). If the input is empty,
+// all source="wiki" rows are deleted. source="virtual" is never touched.
 //
-// 命名空间假设(隐含、未做防御代码,YAGNI):下面的 upsert 循环不检查入参
-// grants 里的 root_id 是否撞上了 SeedVirtual 登记的虚拟根(如 "photos")。
-// 这依赖 Wiki 侧 root_id 的生成方式与虚拟根命名空间事实不相交:Wiki 的
-// root_id 取自 crypto/rand 生成的 16 字节随机数的 hex 编码(128 位随机空间),
-// 而 "photos" 这类虚拟根 id 是硬编码的短常量字符串,二者长度和字符分布都
-// 对不上,可忽略 Wiki 侧传入一个恰好等于某虚拟根 id 的随机 root_id 的可能性。
-// 若未来虚拟根改用与 Wiki root_id 同构的命名(比如也上 16 字节 hex),
-// 这条假设就不再成立,需要在这里补显式的命名空间校验。
+// Namespace assumption (implicit, no defensive code, YAGNI): the upsert
+// loop below does not check whether a root_id in the input grants collides
+// with a virtual root registered via SeedVirtual (e.g. "photos"). This
+// relies on the fact that Wiki-side root_id generation and the virtual-root
+// namespace are, in practice, disjoint: Wiki's root_id is the hex encoding
+// of a crypto/rand-generated 16-byte random number (128 bits of randomness),
+// while virtual root ids like "photos" are hardcoded short constant
+// strings — the two differ enough in length and character distribution
+// that a Wiki-supplied random root_id happening to equal some virtual root
+// id can be ignored. If virtual roots ever switch to a naming scheme
+// isomorphic to Wiki's root_id (e.g. also 16-byte hex), this assumption no
+// longer holds and an explicit namespace check must be added here.
 func (s *rootGrantStore) ReconcileWiki(grants []model.RootGrant) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		ids := make([]string, 0, len(grants))

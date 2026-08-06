@@ -46,3 +46,14 @@ node_modules
 
 # Claude Code local guidance — not for upload
 CLAUDE.md
+
+# Build artifacts. Three compiled binaries (casa, casa_test, casaos, ~30MB each)
+# were tracked here. Go binaries embed the build machine's module paths, so they
+# also carried ~1000 filesystem path strings and a developer username.
+casa
+casa_test
+casaos
+nimoos
+
+# Internal working notes (not published)
+/docs/

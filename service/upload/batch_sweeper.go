@@ -3,6 +3,7 @@ package upload
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	commonUpload "github.com/NimoTech/NimoOS-Common/upload"
@@ -12,23 +13,104 @@ import (
 )
 
 const (
-	// BatchIdleInterruptSeconds: active 批次多久无进度自动判中断(关窗信号丢失的兜底)。
+	// BatchIdleInterruptSeconds: how long an active batch can go without
+	// progress before it's auto-judged interrupted (a fallback for a lost
+	// window-close signal).
 	BatchIdleInterruptSeconds = int64(120)
-	// BatchStagingGraceSeconds: 超时中断后再等多久才清 staging——期间 tus 会话内
-	// 自动重连(最长约 4 分钟)仍可从 offset 续上,清早了会把整文件打断。
+	// BatchStagingGraceSeconds: how long to wait after a timeout-interrupt
+	// before clearing staging — during this window, a tus session's automatic
+	// reconnect (up to ~4 minutes) can still resume from the offset; clearing
+	// too early would break the whole file transfer.
 	BatchStagingGraceSeconds = int64(600)
-	// BatchSweepIntervalSeconds: 扫描间隔。
+	// BatchSweepIntervalSeconds: the sweep interval.
 	BatchSweepIntervalSeconds = int64(30)
 )
 
-// SweepBatches 执行一轮批次扫描:
-//  1. active 且 (now - last_progress_at) > 120s → interrupted(角标出现)
-//  2. interrupted 且未清 staging 且 (now - interrupted_at) > 600s → 终止任务 + 清 staging
-//  3. expires_at 到期 → 删除批次与 items
+// listMountPoints enumerates current mount points (reads /proc/self/mounts); a
+// package-level var to make it easy to inject in tests.
+var listMountPoints = func() []string {
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 {
+			// Spaces in mounts are escaped as \040 (e.g. volume labels containing spaces).
+			out = append(out, strings.ReplaceAll(f[1], `\040`, " "))
+		}
+	}
+	return out
+}
+
+// targetOrphaned determines whether a batch's target directory is
+// "definitively missing": the target can't be stat'd, and it's covered by some
+// non-root mount point (i.e. the volume it's on is actually mounted). When the
+// volume isn't mounted (USB unplugged / RAID not yet assembled / slow cold-boot
+// enumeration), the target also can't be stat'd, but the mount point that would
+// cover it is also absent — so it's not judged dead; once the volume comes
+// back, the badge comes back too. Root "/" doesn't count as coverage: when the
+// volume is absent, the path falls back to the root filesystem's view (e.g. a
+// leftover empty dir at /media/X), and there's no way to tell "deleted" from
+// "not mounted" based on the root mount alone. The cost is that data placed
+// directly on the root filesystem doesn't get the benefit of this orphan
+// fallback (NimoOS data volumes are all independently mounted, so this isn't
+// actually affected in practice).
+func targetOrphaned(target string, mountPoints []string) bool {
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		return false // exists, or some other error like a permission issue: never judged orphaned
+	}
+	clean := filepath.Clean(target)
+	for _, m := range mountPoints {
+		mm := filepath.Clean(m)
+		if mm == "/" {
+			continue
+		}
+		if clean == mm || strings.HasPrefix(clean, mm+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// cancelUnfinished terminates a batch's unfinished tus tasks and clears leftover files from each staging dir.
+func cancelUnfinished(tasks *TaskStore, batchID string, stagingDirs []string, now int64) error {
+	list, err := tasks.ListUnfinishedByBatch(batchID)
+	if err != nil {
+		return err
+	}
+	expires := now + common.UploadCanceledTTLSeconds
+	for _, t := range list {
+		_, _ = commonUpload.Cancel(tasks, t.ID, expires)
+		for _, dir := range stagingDirs {
+			os.Remove(filepath.Join(dir, t.ID))         //nolint:errcheck
+			os.Remove(filepath.Join(dir, t.ID+".info")) //nolint:errcheck
+		}
+	}
+	return nil
+}
+
+// SweepBatches performs one round of batch scanning:
+//  1. active and (now - last_progress_at) > 120s → interrupted (badge appears)
+//  2. interrupted, staging not yet cleared, and (now - interrupted_at) > 600s → terminate tasks + clear staging
+//  3. orphan fallback: an interrupted batch whose target directory has been
+//     deleted (targetOrphaned) → auto-abandoned
+//  4. terminal state (completed/abandoned) → delete the batch and its items
 //
-// stagingDirs 是当前所有在用的暂存目录(见 StagingDirs):任务 ID 现在可能带卷前缀、
-// 落在不同卷的暂存目录里,不能再假设单一目录,清理时逐个尝试(不存在则 os.Remove
-// 静默失败,忽略即可)。
+// interrupted batches don't auto-expire: the badge stays up until the user
+// manually abandons it or the resumed upload completes. The only exception is
+// the orphan case in step 3 — the badge only ever attaches to entries that
+// actually exist in a listing, so once the target directory is gone, the badge
+// never shows and the user has no manual entry point to clear it; leaving it
+// unhandled would strand it forever (real incident: after /media/RAID_0/homer
+// was deleted, 4 batches with 7k+ items were left with no way to clear them).
+//
+// stagingDirs is the set of all currently in-use staging directories (see
+// StagingDirs): task IDs may now carry a volume prefix and live in staging
+// directories on different volumes, so a single directory can no longer be
+// assumed — cleanup tries each one in turn (os.Remove fails silently if it
+// doesn't exist, which is fine to ignore).
 func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDirs []string, now int64) error {
 	actives, err := batches.ListByStatus(BatchStatusActive)
 	if err != nil {
@@ -53,32 +135,39 @@ func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDirs []string, n
 		if b.StagingCleaned || now-b.InterruptedAt <= BatchStagingGraceSeconds {
 			continue
 		}
-		list, lerr := tasks.ListUnfinishedByBatch(b.ID)
-		if lerr != nil {
-			return lerr
-		}
-		expires := now + common.UploadCanceledTTLSeconds
-		for _, t := range list {
-			_, _ = commonUpload.Cancel(tasks, t.ID, expires)
-			for _, dir := range stagingDirs {
-				os.Remove(filepath.Join(dir, t.ID))         //nolint:errcheck
-				os.Remove(filepath.Join(dir, t.ID+".info")) //nolint:errcheck
-			}
+		if err := cancelUnfinished(tasks, b.ID, stagingDirs, now); err != nil {
+			return err
 		}
 		if err := batches.MarkStagingCleaned(b.ID); err != nil {
 			return err
 		}
 	}
-	if _, err := batches.DeleteExpired(now); err != nil {
+	mounts := listMountPoints()
+	for _, b := range interrupted {
+		if !targetOrphaned(b.TargetPath, mounts) {
+			continue
+		}
+		if err := cancelUnfinished(tasks, b.ID, stagingDirs, now); err != nil {
+			return err
+		}
+		if err := batches.SetStatus(b.ID, BatchStatusAbandoned); err != nil {
+			return err
+		}
+	}
+	if _, err := batches.DeleteTerminal(); err != nil {
 		return err
 	}
 	return nil
 }
 
-// StartBatchSweeper 在独立 goroutine 中按固定间隔扫描(与任务 GC 并存,职责不同:
-// 任务 GC 管 o_upload_tasks 生命周期,本扫描器管批次状态机与延迟清理)。
-// stagingDirsFn 每轮重新枚举当前在用的暂存目录(见 StagingDirs),而非固定传入一次
-// ——这样运行期间新挂载的卷一旦产生了暂存目录,下一轮扫描就能覆盖到。
+// StartBatchSweeper scans at a fixed interval in its own goroutine (coexists
+// with task GC, with a different responsibility: task GC manages the
+// o_upload_tasks lifecycle, this sweeper manages the batch state machine and
+// delayed cleanup).
+// stagingDirsFn re-enumerates the currently in-use staging directories every
+// round (see StagingDirs), rather than being passed in once and fixed — this
+// way, once a volume mounted during runtime produces a staging directory, the
+// next sweep round will pick it up.
 func StartBatchSweeper(batches *BatchStore, tasks *TaskStore, stagingDirsFn func() []string) {
 	go func() {
 		ticker := time.NewTicker(time.Duration(BatchSweepIntervalSeconds) * time.Second)

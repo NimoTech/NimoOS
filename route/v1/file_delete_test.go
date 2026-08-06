@@ -253,14 +253,16 @@ func TestDeleteFileHandlerMangledNameRescue(t *testing.T) {
 	}
 }
 
-// fakeSharesService 记录 DeleteShareByPath 调用,供「删目录须连带清理分享」
-// 的 handler 级断言;其余方法为满足接口的空实现。
+// fakeSharesService records DeleteShareByPath calls, for the handler-level
+// assertion that "deleting a directory must also clean up its shares";
+// the other methods are empty implementations just to satisfy the interface.
 type fakeSharesService struct{}
 
 var recordedShareCleanups []string
 
-// recordedShareRewrites 记录 RewriteSharePathPrefix 的调用,供「重命名含分享
-// 目录的父目录 → 分享路径跟随改写」的 handler 级断言使用。
+// recordedShareRewrites records RewriteSharePathPrefix calls, used by the
+// handler-level assertion that "renaming a parent directory containing shares
+// must rewrite the share paths accordingly".
 var recordedShareRewrites [][2]string
 
 func (fakeSharesService) GetSharesList() []model2.SharesDBModel         { return nil }
@@ -278,7 +280,8 @@ func (fakeSharesService) RewriteSharePathPrefix(oldPath, newPath string) int {
 	return 1
 }
 
-// 删除成功的目录必须触发分享清理(带被删路径),否则「已共享」Tab 留悬挂项。
+// A successfully deleted directory must trigger share cleanup (with the deleted
+// path), otherwise the "Shared" tab is left with dangling entries.
 func TestDeleteFileCleansSharesUnderDeletedPath(t *testing.T) {
 	dir := t.TempDir()
 	victim := filepath.Join(dir, "上传和下载")

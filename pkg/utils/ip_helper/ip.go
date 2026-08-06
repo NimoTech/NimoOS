@@ -16,17 +16,17 @@ func IsIPv6(address string) bool {
 	return strings.Count(address, ":") >= 2
 }
 
-// 获取外网ip
+// GetExternalIPV4 gets the external (public) IP
 func GetExternalIPV4() string {
 	return httper2.Get("https://api.ipify.org", nil)
 }
 
-// 获取外网ip
+// GetExternalIPV6 gets the external (public) IP
 func GetExternalIPV6() string {
 	return httper2.Get("https://api6.ipify.org", nil)
 }
 
-// 获取本地ip
+// GetLoclIp gets the local IP
 func GetLoclIp() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {

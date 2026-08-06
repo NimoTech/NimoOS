@@ -56,13 +56,18 @@ func TestThumbCacheKey_DiffersByMtimeAndSize(t *testing.T) {
 // the cache and returns the same path WITHOUT rewriting the cached file's
 // content.
 //
-// 判别信号是内容比较,不是 mtime:命中分支会 Chtimes 刷新 mtime 作为"最近
-// 使用"标记(见 TestCacheHitRefreshesMtime),所以「mtime 不回退」这种断言对
-// 命中与误重新生成都成立,起不到区分作用。这里第一次生成后,故意往缓存文件
-// 里塞一段已知的哨兵字节(不是合法 JPEG),再触发第二次调用;命中分支只应
-// Chtimes,不应重写文件,所以哨兵字节必须原样保留。如果命中分支被误改成会
-// 重新生成/重写缓存文件,这里读到的就会是重新编码出的 JPEG 字节而不是哨兵
-// 字节,从而让本测试真正 FAIL。
+// The discriminating signal is content comparison, not mtime: the hit
+// branch calls Chtimes to refresh mtime as a "recently used" marker (see
+// TestCacheHitRefreshesMtime), so an assertion like "mtime didn't go
+// backwards" would hold for both a real hit and a mistaken regeneration —
+// it can't tell them apart. Here, after the first generation, we
+// deliberately stuff a known sentinel byte sequence (not a valid JPEG) into
+// the cache file, then trigger a second call; the hit branch should only
+// Chtimes, never rewrite the file, so the sentinel bytes must survive
+// unchanged. If the hit branch were accidentally changed to
+// regenerate/rewrite the cache file, what we'd read back here would be
+// freshly re-encoded JPEG bytes instead of the sentinel, causing this test
+// to genuinely FAIL.
 func TestGetOrCreateThumbnailCached_MissThenHit(t *testing.T) {
 	withTempThumbCacheDir(t)
 	srcPath, _ := makeLargeJPEG(t, 800, 600)
@@ -227,10 +232,10 @@ func TestPruneThumbCacheRemovesOldEntries(t *testing.T) {
 		t.Fatalf("want removed=2, got %d err=%v", n, err)
 	}
 	if _, err := os.Stat(fresh); err != nil {
-		t.Fatal("fresh 不应被删")
+		t.Fatal("fresh entry should not be removed")
 	}
 	if _, err := os.Stat(stale); err == nil {
-		t.Fatal("stale 应被删")
+		t.Fatal("stale entry should be removed")
 	}
 }
 

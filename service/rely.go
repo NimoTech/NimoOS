@@ -5,8 +5,10 @@
  * @LastEditTime: 2022-06-02 18:00:57
  * @FilePath: /NimoOS/service/rely.go
  * @Description:
- * @Website: https://www.nimoos.io
- * Copyright (c) 2022 by icewhale, All Rights Reserved.
+ * Copyright (c) 2021-2025 IceWhale Technology Co., Ltd.
+ * Copyright (c) 2026 NimoTech
+ * Licensed under the Apache License, Version 2.0.
+ * Modified from the original CasaOS source by NimoTech.
  */
 package service
 
@@ -31,12 +33,12 @@ func (r *relyService) Create(rely model2.RelyDBModel) {
 
 }
 
-// 获取我的应用列表
+// Get my app list
 func (r *relyService) GetInfo(id string) model2.RelyDBModel {
 	var m model2.RelyDBModel
 	r.db.Where("custom_id = ?", id).First(&m)
 
-	// @tiger - 作为出参不应该直接返回数据库内的格式（见类似问题的注释）
+	// @tiger - as an output param this shouldn't directly return the DB's internal format (see comment on similar issue)
 	return m
 }
 

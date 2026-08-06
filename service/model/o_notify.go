@@ -1,7 +1,7 @@
 package model
 
 type AppNotify struct {
-	State     int    `json:"state"` //0:一直在变动的未读消息 1:未读  2:已读
+	State     int    `json:"state"` //0: unread message still changing 1: unread  2: read
 	Message   string `json:"message"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
