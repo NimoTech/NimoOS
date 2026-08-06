@@ -18,13 +18,13 @@ import (
 
 	"github.com/NimoTech/NimoOS-Common/external"
 	"github.com/NimoTech/NimoOS-Common/utils/jwt"
+	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	v2Route "github.com/NimoTech/NimoOS/route/v2"
 	"github.com/deepmap/oapi-codegen/pkg/middleware"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
-	"github.com/NimoTech/NimoOS-Common/utils/logger"
 	"go.uber.org/zap"
 )
 
@@ -92,7 +92,7 @@ func InitV2Router() http.Handler {
 		TokenLookupFuncs: []echo_middleware.ValuesExtractor{
 			func(ctx echo.Context) ([]string, error) {
 				if len(ctx.Request().Header.Get(echo.HeaderAuthorization)) > 0 {
-					return []string{ctx.Request().Header.Get(echo.HeaderAuthorization)}, nil
+					return []string{strings.TrimPrefix(ctx.Request().Header.Get(echo.HeaderAuthorization), "Bearer ")}, nil
 				}
 				return []string{ctx.QueryParam("token")}, nil
 			},
@@ -173,7 +173,7 @@ func InitV2Router() http.Handler {
 	}); ok {
 		e.GET(V2APIPath+"/local_storage/display_names", si.GetLocalStorageDisplayNames)
 		e.PUT(V2APIPath+"/local_storage/display_name", si.UpdateLocalStorageDisplayName)
-		
+
 		// Network Endpoints
 		e.GET(V2APIPath+"/network/interfaces", si.GetNetworkInterfaces)
 		e.PUT(V2APIPath+"/network/interfaces", si.UpdateNetworkInterface)
