@@ -84,10 +84,17 @@ SOURCE_BIN_FILE=${SOURCE_BIN_PATH}/${APP_NAME}
 CURRENT_BIN_PATH=/usr/bin
 CURRENT_BIN_PATH_LEGACY=/usr/local/bin
 CURRENT_BIN_FILE=${CURRENT_BIN_PATH}/${APP_NAME}
-CURRENT_BIN_FILE_LEGACY=$(realpath -e ${CURRENT_BIN_PATH_LEGACY}/${APP_NAME} || which ${APP_NAME} || echo CURRENT_BIN_FILE_LEGACY_NOT_FOUND)
+# Probing for a previous installation must stay quiet when there is not one.
+# Every one of these lookups is expected to miss on a first install, but they
+# used to do so loudly: a `realpath` error per path tried, a "No such file or
+# directory" for the current binary, a "command not found" from running the
+# CURRENT_BIN_FILE_LEGACY_NOT_FOUND sentinel as if it were a path, and a `stat`
+# error on that same sentinel — five lines per script, six scripts, on a
+# perfectly healthy clean install. The outcomes below are unchanged.
+CURRENT_BIN_FILE_LEGACY=$(realpath -e ${CURRENT_BIN_PATH_LEGACY}/${APP_NAME} 2>/dev/null || which ${APP_NAME} 2>/dev/null || echo CURRENT_BIN_FILE_LEGACY_NOT_FOUND)
 
 SOURCE_VERSION="$(${SOURCE_BIN_FILE} -v)"
-CURRENT_VERSION="$(${CURRENT_BIN_FILE} -v || ${CURRENT_BIN_FILE_LEGACY} -v || (stat "${CURRENT_BIN_FILE_LEGACY}" >/dev/null && echo LEGACY_WITHOUT_VERSION) || echo CURRENT_VERSION_NOT_FOUND)"
+CURRENT_VERSION="$({ [ -x "${CURRENT_BIN_FILE}" ] && ${CURRENT_BIN_FILE} -v; } || { [ -x "${CURRENT_BIN_FILE_LEGACY}" ] && ${CURRENT_BIN_FILE_LEGACY} -v; } || { [ -e "${CURRENT_BIN_FILE_LEGACY}" ] && echo LEGACY_WITHOUT_VERSION; } || echo CURRENT_VERSION_NOT_FOUND)"
 
 __info_done "CURRENT_VERSION: ${CURRENT_VERSION}"
 __info_done "SOURCE_VERSION: ${SOURCE_VERSION}"
