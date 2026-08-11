@@ -1,13 +1,27 @@
 package upload
 
 // Upload batch state machine: active → interrupted (window-close signal/timeout)
-// → active (new progress received, reversible); active/interrupted →
-// completed (done==total) / abandoned (user gave up).
+// → active (new progress received — but ONLY for timeout interrupts, see below);
+// active/interrupted → completed (done==total) / abandoned (user gave up).
 const (
 	BatchStatusActive      = "active"
 	BatchStatusInterrupted = "interrupted"
 	BatchStatusCompleted   = "completed"
 	BatchStatusAbandoned   = "abandoned"
+)
+
+// Why an interrupt carries a source: the "new progress revives an interrupted
+// batch" rule exists because the idle sweeper can MISJUDGE a slow-but-alive
+// upload — for that case revival is correct. A window-close signal is not a
+// judgment call: the page is confirmed gone, yet uploads the server had
+// already fully received keep completing for a moment afterwards, and those
+// late completions used to revive the batch — hiding the badge until the
+// sweeper re-judged it 120s+ later (found in real-device acceptance,
+// 2026-08-11). Late completions still count toward done and can still finish
+// the batch; they just can't flip a signal-interrupt back to active.
+const (
+	BatchInterruptSourceSignal  = "signal"
+	BatchInterruptSourceTimeout = "timeout"
 )
 
 // UploadBatch is the header row for one "user selected and started an upload"
@@ -26,6 +40,8 @@ type UploadBatch struct {
 	Done           int    `gorm:"column:done" json:"done"`
 	LastProgressAt int64  `gorm:"column:last_progress_at" json:"last_progress_at"`
 	InterruptedAt  int64  `gorm:"column:interrupted_at" json:"interrupted_at"`
+	// BatchInterruptSourceSignal/Timeout while interrupted; cleared on revival.
+	InterruptSource string `gorm:"column:interrupt_source" json:"-"`
 	StagingCleaned bool   `gorm:"column:staging_cleaned" json:"-"`
 	CreatedAt      int64  `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 	UpdatedAt      int64  `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`

@@ -126,7 +126,7 @@ func InterruptUploadBatch(c echo.Context) error {
 	if b.Status != upload.BatchStatusActive {
 		return c.JSON(http.StatusOK, map[string]interface{}{"interrupted": false})
 	}
-	if serr := batchStore.SetInterrupted(b.ID, time.Now().Unix()); serr != nil {
+	if serr := batchStore.SetInterrupted(b.ID, time.Now().Unix(), upload.BatchInterruptSourceSignal); serr != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, serr.Error())
 	}
 	cancelBatchTasks(taskStore, b.ID)

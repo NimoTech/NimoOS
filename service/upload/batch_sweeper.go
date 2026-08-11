@@ -122,7 +122,7 @@ func SweepBatches(batches *BatchStore, tasks *TaskStore, stagingDirs []string, n
 			last = b.CreatedAt
 		}
 		if now-last > BatchIdleInterruptSeconds {
-			if err := batches.SetInterrupted(b.ID, now); err != nil {
+			if err := batches.SetInterrupted(b.ID, now, BatchInterruptSourceTimeout); err != nil {
 				return err
 			}
 		}

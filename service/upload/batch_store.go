@@ -88,10 +88,14 @@ func (s *BatchStore) MarkItemDone(batchID, relativePath string, now int64) error
 			return err
 		}
 		// Not done yet, but the batch was previously judged interrupted → back to
-		// active (timeout misjudgment/resumed upload is reversible).
+		// active. ONLY for timeout interrupts: that judgment can be wrong and new
+		// progress disproves it. A signal interrupt is definitive (the page is
+		// confirmed gone) and late completions racing the signal must not hide
+		// the badge by reviving the batch (see BatchInterruptSource* in batch.go).
 		return tx.Model(&UploadBatch{}).
-			Where("id = ? AND status = ? AND done < total", batchID, BatchStatusInterrupted).
-			Update("status", BatchStatusActive).Error
+			Where("id = ? AND status = ? AND done < total AND interrupt_source <> ?",
+				batchID, BatchStatusInterrupted, BatchInterruptSourceSignal).
+			Updates(map[string]interface{}{"status": BatchStatusActive, "interrupt_source": ""}).Error
 	})
 }
 
@@ -139,11 +143,17 @@ func (s *BatchStore) MarkItemDoneAcrossBatches(targetPath, relativePath string, 
 }
 
 // TouchProgress records that the batch still has upload progress; an
-// interrupted batch uses this to go back to active (timeout misjudgment is reversible).
+// interrupted batch uses this to go back to active (timeout misjudgment is
+// reversible). Signal interrupts are excluded for the same reason as in
+// MarkItemDone: a chunk racing the window-close signal is not evidence the
+// page is alive.
 func (s *BatchStore) TouchProgress(batchID string, now int64) error {
 	return s.db.Model(&UploadBatch{}).
-		Where("id = ? AND status IN ?", batchID, []string{BatchStatusActive, BatchStatusInterrupted}).
-		Updates(map[string]interface{}{"status": BatchStatusActive, "last_progress_at": now}).Error
+		Where("id = ? AND (status = ? OR (status = ? AND interrupt_source <> ?))",
+			batchID, BatchStatusActive, BatchStatusInterrupted, BatchInterruptSourceSignal).
+		Updates(map[string]interface{}{
+			"status": BatchStatusActive, "last_progress_at": now, "interrupt_source": "",
+		}).Error
 }
 
 func (s *BatchStore) SetStatus(id, status string) error {
@@ -151,12 +161,15 @@ func (s *BatchStore) SetStatus(id, status string) error {
 }
 
 // SetInterrupted sets interrupted and records the timestamp (staging's delayed
-// cleanup is timed from this). Only active can transition.
-func (s *BatchStore) SetInterrupted(id string, now int64) error {
+// cleanup is timed from this) and the source — signal (window close, definitive)
+// or timeout (sweeper judgment, reversible on new progress). Only active can
+// transition.
+func (s *BatchStore) SetInterrupted(id string, now int64, source string) error {
 	return s.db.Model(&UploadBatch{}).
 		Where("id = ? AND status = ?", id, BatchStatusActive).
 		Updates(map[string]interface{}{
-			"status": BatchStatusInterrupted, "interrupted_at": now, "staging_cleaned": false,
+			"status": BatchStatusInterrupted, "interrupted_at": now,
+			"staging_cleaned": false, "interrupt_source": source,
 		}).Error
 }
 
