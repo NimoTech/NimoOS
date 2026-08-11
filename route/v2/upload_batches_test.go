@@ -252,3 +252,122 @@ func TestCreateBatchValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestAbandonUploadBatchesUnder: one call clears every interrupted batch whose
+// missing files sit under the given path — the badge carries only one batch id,
+// so abandoning by id leaves sibling interrupted batches re-hanging the badge.
+func TestAbandonUploadBatchesUnder(t *testing.T) {
+	bs := setupBatchStore(t)
+	SetBatchStore(bs)
+	ts := setupTaskStore(t)
+	SetTaskStore(ts)
+	e := echo.New()
+
+	for _, id := range []string{"x1", "x2"} {
+		rec, c := doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches", createBatchReq{
+			ID: id, TargetPath: "/DATA/Media",
+			Items: []createBatchItem{{RelativePath: "Trip/" + id + ".jpg", Size: 1}},
+		}, "u1")
+		if err := CreateUploadBatch(c); err != nil || rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: err=%v code=%d", id, err, rec.Code)
+		}
+		rec, c = doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches/"+id+"/interrupt", nil, "u1")
+		c.SetParamNames("id")
+		c.SetParamValues(id)
+		if err := InterruptUploadBatch(c); err != nil || rec.Code != http.StatusOK {
+			t.Fatalf("interrupt %s: err=%v code=%d", id, err, rec.Code)
+		}
+	}
+
+	rec, c := doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches/abandon-under",
+		map[string]string{"path": "/DATA/Media/Trip"}, "u1")
+	if err := AbandonUploadBatchesUnder(c); err != nil {
+		t.Fatalf("abandon-under err: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Abandoned int `json:"abandoned"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Abandoned != 2 {
+		t.Fatalf("want abandoned=2, got %d", body.Abandoned)
+	}
+	for _, id := range []string{"x1", "x2"} {
+		b, _ := bs.Get(id)
+		if b.Status != upload.BatchStatusAbandoned {
+			t.Fatalf("%s should be abandoned, got %s", id, b.Status)
+		}
+	}
+
+	// Relative path → 400
+	_, c = doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches/abandon-under",
+		map[string]string{"path": "Trip"}, "u1")
+	err := AbandonUploadBatchesUnder(c)
+	he, ok := err.(*echo.HTTPError)
+	if !ok || he.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for relative path, got %v", err)
+	}
+}
+
+// TestRemoveUploadBatchItems: canceling single files trims the manifest so the
+// batch can still complete; non-owners get 404 like every other batch endpoint.
+func TestRemoveUploadBatchItems(t *testing.T) {
+	bs := setupBatchStore(t)
+	SetBatchStore(bs)
+	ts := setupTaskStore(t)
+	SetTaskStore(ts)
+	e := echo.New()
+
+	rec, c := doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches", createBatchReq{
+		ID: "b1", TargetPath: "/DATA/Media",
+		Items: []createBatchItem{{RelativePath: "a.jpg", Size: 1}, {RelativePath: "b.jpg", Size: 1}},
+	}, "u1")
+	if err := CreateUploadBatch(c); err != nil || rec.Code != http.StatusCreated {
+		t.Fatalf("create: err=%v code=%d", err, rec.Code)
+	}
+	if err := bs.MarkItemDone("b1", "a.jpg", 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-owner → 404
+	_, c = doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches/b1/remove-items",
+		map[string][]string{"relativePaths": {"b.jpg"}}, "u2")
+	c.SetParamNames("id")
+	c.SetParamValues("b1")
+	err := RemoveUploadBatchItems(c)
+	he, ok := err.(*echo.HTTPError)
+	if !ok || he.Code != http.StatusNotFound {
+		t.Fatalf("want 404 for non-owner, got %v", err)
+	}
+
+	rec, c = doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches/b1/remove-items",
+		map[string][]string{"relativePaths": {"b.jpg"}}, "u1")
+	c.SetParamNames("id")
+	c.SetParamValues("b1")
+	if err := RemoveUploadBatchItems(c); err != nil {
+		t.Fatalf("remove-items err: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	b, _ := bs.Get("b1")
+	// b.jpg removed: total 2→1; a.jpg already done → batch completes.
+	if b.Total != 1 || b.Status != upload.BatchStatusCompleted {
+		t.Fatalf("want total=1 completed, got total=%d status=%s", b.Total, b.Status)
+	}
+
+	// Traversal paths → 400
+	_, c = doJSON(e, http.MethodPost, "/v2/nimoos/file/upload-batches/b1/remove-items",
+		map[string][]string{"relativePaths": {"../etc/passwd"}}, "u1")
+	c.SetParamNames("id")
+	c.SetParamValues("b1")
+	err = RemoveUploadBatchItems(c)
+	he, ok = err.(*echo.HTTPError)
+	if !ok || he.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for traversal, got %v", err)
+	}
+}

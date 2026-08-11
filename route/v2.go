@@ -205,6 +205,10 @@ func InitV2Router() http.Handler {
 	e.GET(V2APIPath+"/file/upload-batches/:id", v2Route.GetUploadBatch)
 	e.POST(V2APIPath+"/file/upload-batches/:id/interrupt", v2Route.InterruptUploadBatch)
 	e.POST(V2APIPath+"/file/upload-batches/:id/abandon", v2Route.AbandonUploadBatch)
+	// abandon-under is a static segment under upload-batches/ — echo matches it
+	// before the :id param routes above.
+	e.POST(V2APIPath+"/file/upload-batches/abandon-under", v2Route.AbandonUploadBatchesUnder)
+	e.POST(V2APIPath+"/file/upload-batches/:id/remove-items", v2Route.RemoveUploadBatchItems)
 
 	e.Any("/v2/nimoos/testecho", func(c echo.Context) error {
 		return c.String(200, "echo works at "+c.Request().URL.Path)

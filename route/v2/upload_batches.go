@@ -150,3 +150,59 @@ func AbandonUploadBatch(c echo.Context) error {
 	cancelBatchTasks(taskStore, b.ID)
 	return c.JSON(http.StatusOK, map[string]interface{}{"abandoned": true})
 }
+
+// AbandonUploadBatchesUnder: POST .../upload-batches/abandon-under {path} —
+// abandons every interrupted batch of the caller whose missing files sit at or
+// under path (the badged entry). The badge only carries one batch id while
+// several interrupted batches can stack on the same folder, so abandoning by
+// id makes the badge reappear with the next batch's id on the next listing.
+func AbandonUploadBatchesUnder(c echo.Context) error {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
+	}
+	if !strings.HasPrefix(req.Path, "/") {
+		return echo.NewHTTPError(http.StatusBadRequest, "path must be absolute")
+	}
+	ids, err := batchStore.AbandonInterruptedUnder(req.Path, c.Request().Header.Get("user_id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	for _, id := range ids {
+		cancelBatchTasks(taskStore, id)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"abandoned": len(ids)})
+}
+
+// RemoveUploadBatchItems: POST .../upload-batches/:id/remove-items
+// {relativePaths} — the user canceled individual files, so they must leave the
+// manifest; otherwise the batch can never complete and the sweeper later hangs
+// a broken badge on a folder the user deliberately trimmed. Done items and
+// unknown paths are ignored (store semantics).
+func RemoveUploadBatchItems(c echo.Context) error {
+	b, err := getOwnedBatch(c)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		RelativePaths []string `json:"relativePaths"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
+	}
+	if len(req.RelativePaths) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "relativePaths required")
+	}
+	for _, p := range req.RelativePaths {
+		// Same criteria as the create endpoint's relativePath validation.
+		if p == "" || strings.Contains(p, "..") || strings.HasPrefix(p, "/") {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid relativePath")
+		}
+	}
+	if err := batchStore.RemoveItems(b.ID, req.RelativePaths); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"removed": true})
+}

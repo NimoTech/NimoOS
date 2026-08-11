@@ -234,6 +234,86 @@ func (s *BatchStore) BrokenChildren(dir, owner string) (map[string]string, error
 	return out, nil
 }
 
+// AbandonInterruptedUnder abandons every one of the owner's interrupted
+// batches that still has a missing item at or under path (the badged entry's
+// absolute path). Same hit test as BrokenChildren: several interrupted batches
+// can stack on one folder (each canceled retry leaves one), while the badge
+// only carries a single batch id — abandoning by id would make the badge
+// reappear with the next batch's id on every listing. Returns the abandoned
+// ids so the caller can clear their staging.
+func (s *BatchStore) AbandonInterruptedUnder(path, owner string) ([]string, error) {
+	var batches []UploadBatch
+	if err := s.db.Where("status = ? AND owner_user_id = ?",
+		BatchStatusInterrupted, owner).Find(&batches).Error; err != nil {
+		return nil, err
+	}
+	clean := filepath.Clean(path)
+	prefix := clean + "/"
+	ids := []string{}
+	for _, b := range batches {
+		items, err := s.MissingItems(b.ID)
+		if err != nil {
+			return nil, err
+		}
+		hit := false
+		for _, it := range items {
+			full := filepath.Clean(filepath.Join(b.TargetPath, it.RelativePath))
+			if full == clean || strings.HasPrefix(full, prefix) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		if err := s.SetStatus(b.ID, BatchStatusAbandoned); err != nil {
+			return nil, err
+		}
+		ids = append(ids, b.ID)
+	}
+	return ids, nil
+}
+
+// RemoveItems drops the given not-yet-done items from the batch manifest and
+// shrinks Total accordingly: the user canceled those files, so the batch must
+// stop waiting for them — a stale manifest leaves the batch permanently
+// incomplete and the sweeper later hangs a broken badge on a folder the user
+// deliberately trimmed. Done items are accounting history and are ignored, as
+// are unknown paths. When everything left on the manifest is done, the batch
+// completes (and the sweeper can collect it).
+func (s *BatchStore) RemoveItems(batchID string, relativePaths []string) error {
+	// Chunked to stay under SQLite's bound-variable limit on large selections.
+	for start := 0; start < len(relativePaths); start += 500 {
+		end := start + 500
+		if end > len(relativePaths) {
+			end = len(relativePaths)
+		}
+		chunk := relativePaths[start:end]
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			res := tx.Where("batch_id = ? AND done = ? AND relative_path IN ?",
+				batchID, false, chunk).Delete(&UploadBatchItem{})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return nil
+			}
+			if err := tx.Model(&UploadBatch{}).Where("id = ?", batchID).
+				Update("total", gorm.Expr("total - ?", res.RowsAffected)).Error; err != nil {
+				return err
+			}
+			return tx.Model(&UploadBatch{}).
+				Where("id = ? AND done >= total AND status IN ?", batchID,
+					[]string{BatchStatusActive, BatchStatusInterrupted}).
+				Update("status", BatchStatusCompleted).Error
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DeleteTerminal deletes terminal-state (completed/abandoned) batches and their
 // items, returning the number of batches deleted.
 // Terminal-state batches produce no badge and no longer participate in
