@@ -23,41 +23,39 @@ consumed by every service) are separate repositories too.
 some of the layout looks the way it does, but it does not change anything
 below.
 
-### Cloning the whole workspace
+### You only need the repository you're changing
 
-You don't need every repository to fix a bug that's contained in one
-service, but building most of them requires the others to exist as sibling
-directories, because Go services `replace` their way to a local checkout of
-`NimoOS-Common` (and, for some services, other siblings) instead of a tagged
-release:
+Each repository builds on its own. Go services depend on `NimoOS-Common` as an
+ordinary published module, and generated OpenAPI code is committed, so a clone
+and a build is the whole setup:
 
-```
-replace github.com/NimoTech/NimoOS-Common => ../NimoOS-Common
-```
-
-That means a full build needs a workspace that looks like:
-
-```
-nimoos/
-├── NimoOS/                # this repository
-├── NimoOS-Common/         # shared library — every Go service replaces to it
-├── NimoOS-MessageBus/     # other services' `go generate` reads its openapi.yaml
-├── NimoOS-Gateway/  NimoOS-UserService/  NimoOS-AppManagement/  ...
-└── NimoOS-UI/
+```bash
+git clone https://github.com/NimoTech/NimoOS.git
+cd NimoOS
+CGO_ENABLED=1 go build ./...
 ```
 
-The easiest way to get there is the public
-[NimoOS-Build](https://github.com/NimoTech/NimoOS-Build) repository, which
-hosts `clone_all.sh` to clone every service repository as a sibling in one
-step; see that repo's README for the up-to-date layout and the rest of its
-build/install scripts. If you only need this repository plus `NimoOS-Common`
-for a self-contained change, cloning those two by hand is enough — just keep
-them siblings.
+Two things still want sibling checkouts:
 
-Before you build, make sure the sibling checkouts you depend on are actually
-up to date. A `replace` directive resolves at build time, not at clone time,
-so a stale sibling produces confusing "undefined" build errors that look
-like they belong to this repo but don't.
+- **Changing `NimoOS-Common` and a service together.** Put a `go.work` in the
+  directory holding both checkouts rather than adding a `replace` to the
+  service's `go.mod`. `go.work` is per-machine and untracked, so a local
+  override can't follow you into a pull request:
+
+  ```
+  nimoos/
+  ├── NimoOS/
+  ├── NimoOS-Common/
+  └── go.work          # go work init ./NimoOS ./NimoOS-Common
+  ```
+
+- **Regenerating this repo's message-bus client.** One `go generate` directive
+  reads `../NimoOS-MessageBus/api/message_bus/openapi.yaml`, so that command
+  needs `NimoOS-MessageBus` as a sibling. Nothing else does — the build
+  doesn't, because `codegen/` is committed.
+
+[NimoOS-Build](https://github.com/NimoTech/NimoOS-Build) hosts `clone_all.sh`
+if you do want every repository side by side anyway.
 
 ### Cross-service features need multiple pull requests
 
@@ -67,17 +65,19 @@ in each affected repository — there is no mechanism to land one PR across
 repositories. Coordinate the merge order in the PR descriptions and link
 them to each other.
 
-One dependency matters more than the rest: several other services' own
-`go generate` steps (this repo included) read
-`../NimoOS-MessageBus/api/message_bus/openapi.yaml` directly — that file is
+One dependency matters more than the rest: several services (this repo
+included) generate their message-bus client from
+`../NimoOS-MessageBus/api/message_bus/openapi.yaml`. That file is
 hand-authored and git-tracked in `NimoOS-MessageBus`, not something its own
-`go generate` produces. There's no ordering requirement and no need to run
-`NimoOS-MessageBus`'s own code generation first; you just need the
-`NimoOS-MessageBus` checkout present as a sibling with an up-to-date
-`api/message_bus/openapi.yaml`. If you're changing that OpenAPI spec itself
-as part of a cross-service feature, land the `NimoOS-MessageBus` PR (or at
-least get the spec change reviewed) before relying on it from another
-service's generated client.
+`go generate` produces, so there's no ordering requirement and no need to run
+that repository's code generation first — you just need its checkout present
+as a sibling.
+
+Because each consumer commits its generated client, changing that spec is
+inherently a multi-PR change: land the `NimoOS-MessageBus` PR first, then a
+regenerate commit in each service that consumes it. CI in the consumers
+deliberately does *not* regenerate against `NimoOS-MessageBus`'s `main` —
+otherwise a change over there would turn every open PR here red.
 
 ### Which repository should a bug or idea go to?
 
@@ -99,11 +99,11 @@ repository so the discussion stays next to the code.
   `NimoOS-Wiki` (SQLite + go-systemd) and `NimoOS-Photos` (SQLite +
   sqlite-vec, which additionally needs the system `sqlite3.h` header). Every
   other service in the system builds as pure Go.
-- **Code generation:** several services (this one included) run
-  `go generate ./...` before `go build`/`go test` to produce OpenAPI server
-  stubs and clients; the generated output is git-ignored. Check the
-  repository's own developer docs for the exact command if `go generate
-  ./...` isn't enough on its own.
+- **Code generation:** OpenAPI server stubs and clients are produced by
+  `go generate ./...` and **committed**, so a clone builds without running it.
+  Run it after editing a spec under `api/`, and commit the result — CI
+  regenerates from this repository's own spec and fails if the committed
+  output has drifted.
 - **Tests:** `go test ./...` from the repository root. Add or update tests
   for any behavioural change — a PR that changes logic without a
   corresponding test change will get asked for one.

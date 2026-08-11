@@ -20,50 +20,45 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # A single checkout is enough now. This job used to clone two siblings:
+      # NimoOS-Common, because go.mod redirected the module to
+      # ../NimoOS-Common, and NimoOS-MessageBus, because codegen/ was
+      # gitignored and had to be regenerated from that repository's OpenAPI
+      # spec. Both needed a token, because both were private.
+      #
+      # NimoOS-Common is an ordinary published module now, and codegen/ is
+      # committed, so neither sibling is needed to build — which also means
+      # this job builds the same way an outside contributor's clone does.
       - name: Check out NimoOS
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          path: NimoOS
-
-      # go.mod redirects github.com/NimoTech/NimoOS-Common to
-      # ../NimoOS-Common and nothing is vendored, so a lone checkout of
-      # this repository cannot build. CI has to reproduce the sibling
-      # layout that a developer checkout has.
-      #
-      # NimoOS-MessageBus is here for api/message_bus/openapi.yaml, which this
-      # repository's go:generate reads to build its message-bus client.
-      - name: Check out NimoOS-Common
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: NimoTech/NimoOS-Common
-          path: NimoOS-Common
-          # Only needed while these repositories are private. Once they are
-          # public the default job token suffices and this secret can go.
-          token: ${{ secrets.CI_SIBLING_TOKEN || github.token }}
-      - name: Check out NimoOS-MessageBus
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: NimoTech/NimoOS-MessageBus
-          path: NimoOS-MessageBus
-          # Only needed while these repositories are private. Once they are
-          # public the default job token suffices and this secret can go.
-          token: ${{ secrets.CI_SIBLING_TOKEN || github.token }}
 
       # Take the toolchain from go.mod so this workflow cannot drift from what
       # the module actually declares.
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version-file: NimoOS/go.mod
-          cache-dependency-path: NimoOS/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
-      # codegen/ is gitignored, so a fresh clone has no generated API code
-      # and does not compile until this runs. Regenerating here also means a
-      # spec change that breaks codegen is caught in CI rather than on
-      # someone's machine a week later.
-      - name: Generate API code
-        working-directory: NimoOS
-        run: go generate ./...
+      # codegen/ is committed, so the build no longer depends on generating it
+      # first. This step catches the opposite problem: generated code that no
+      # longer matches the spec it came from, because someone edited
+      # api/nimoos/openapi.yaml without regenerating, or edited the generated
+      # file by hand.
+      #
+      # -run selects only the directive that reads this repository's own spec.
+      # The other one reads ../NimoOS-MessageBus/api/message_bus/openapi.yaml,
+      # which is not checked out here — deliberately. Regenerating the
+      # message-bus client against whatever is on that repository's main would
+      # turn a change over there into a red build here, on a PR that touched
+      # nothing related. That client is updated on purpose, in its own commit.
+      - name: Check the generated API code is current
+        run: |
+          go generate -run 'api/nimoos/openapi.yaml' ./...
+          if ! git diff --exit-code -- codegen/; then
+            echo "::error::codegen/ is out of date. Run 'go generate ./...' and commit the result."
+            exit 1
+          fi
 
       # CGO_ENABLED=1 matches NimoOS-Build/scripts/deploy.sh, which is what
       # builds the shipped binary. This service also compiles with
@@ -71,13 +66,11 @@ jobs:
       # the moment it touches the database, so building any other way would
       # make a green run meaningless.
       - name: Build
-        working-directory: NimoOS
         env:
           CGO_ENABLED: "1"
         run: go build ./...
 
       - name: Vet
-        working-directory: NimoOS
         env:
           CGO_ENABLED: "1"
         run: go vet ./...
@@ -92,7 +85,6 @@ jobs:
       # fails everywhere else. Making the fallback root injectable, the way
       # mountsFn already is, would let it run anywhere; until then it is skipped.
       - name: Test
-        working-directory: NimoOS
         env:
           CGO_ENABLED: "1"
         run: go test -skip '^(TestValidateFileUploadMetadataForRootUsesResolvedRoot)$' ./...
