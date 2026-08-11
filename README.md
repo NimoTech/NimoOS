@@ -17,14 +17,6 @@
 > before deploying NimoOS for more than one person.
 
 <p align="center">
-    <!-- NimoOS Banner -->
-    <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NimoTech/logo/main/nimoos/nimoos_banner_dark_night_800x300.png">
-        <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NimoTech/logo/main/nimoos/nimoos_banner_twilight_blue_800x300.png">
-        <img alt="NimoOS" src="https://raw.githubusercontent.com/NimoTech/logo/main/nimoos/nimoos_banner_twilight_blue_800x300.png">
-    </picture>
-    <br/>
-    <br/>
     <!-- NimoOS Badges -->
     <a href="https://github.com/NimoTech/NimoOS" target="_blank">
         <img alt="NimoOS Version" src="https://img.shields.io/github/v/release/NimoTech/NimoOS?color=162453&style=flat-square&label=NimoOS" />
@@ -95,40 +87,38 @@ including what's still in progress or planned.
 
 ### Hardware and OS support
 
-- Architectures: amd64, arm64, armv7
+- **Architecture: linux/amd64 only.** arm64 and armv7 binaries build and pass
+  CI, but no arm release artifacts are published yet, so the installer stops
+  with an explanation on those machines rather than half-installing.
 - OS: Debian-family Linux (Debian, Ubuntu, Raspberry Pi OS)
 
 ### Quick Setup NimoOS
 
-Freshly install a system from the list above and run this command:
+Install a system from the list above, then run:
 
 ```sh
-wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
+curl -fsSL https://get.nimotech.ai/get/nimoos-install.sh | sudo bash
 ```
 
-or
+or, with wget:
 
 ```sh
-curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-install.sh | sudo bash
+wget -qO- https://get.nimotech.ai/get/nimoos-install.sh | sudo bash
 ```
 
 ### Update NimoOS
 
-NimoOS can be updated from the User Interface (UI), via `Settings ... Update`.
+From the web UI: `Settings → Update`.
 
-Alternatively it can be updated from a terminal session. To update from a terminal session, it must be done either from a secure shell (ssh) session to the device or from a directly attached terminal and keyboard to the device running NimoOS, this cannot be done from the terminal via the NimoOS User Interface (UI). To update to the latest release of NimoOS from a terminal session run this command:
-
-```sh
-wget -qO- https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
-```
-
-or
+From a terminal — over SSH or on a directly attached keyboard, **not** from
+the terminal built into the NimoOS UI, since updating restarts the services
+that terminal runs through:
 
 ```sh
-curl -fsSL https://nimoos-public.s3.us-east-2.amazonaws.com/get/nimoos-update.sh | sudo bash
+curl -fsSL https://get.nimotech.ai/get/nimoos-update.sh | sudo bash
 ```
 
-To determine version of NimoOS from a terminal session run this command:
+To check which version is installed:
 
 ```sh
 nimoos -v
