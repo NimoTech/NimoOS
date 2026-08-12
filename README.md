@@ -18,8 +18,14 @@
 
 <p align="center">
     <!-- NimoOS Badges -->
-    <a href="https://github.com/NimoTech/NimoOS" target="_blank">
-        <img alt="NimoOS Version" src="https://img.shields.io/github/v/release/NimoTech/NimoOS?color=162453&style=flat-square&label=NimoOS" />
+    <!-- Releases live on NimoOS-Build: one release carries every component
+         tarball, built by that repository's release workflow. Pointing the
+         badge here rather than at this repository is deliberate — this
+         repository has no releases of its own. include_prereleases matters:
+         every release so far is an -alpha, which shields.io hides by default,
+         rendering the badge as a permanent "no release". -->
+    <a href="https://github.com/NimoTech/NimoOS-Build/releases" target="_blank">
+        <img alt="NimoOS Version" src="https://img.shields.io/github/v/release/NimoTech/NimoOS-Build?include_prereleases&color=162453&style=flat-square&label=NimoOS" />
     </a>
     <a href="https://github.com/NimoTech/NimoOS/blob/main/LICENSE" target="_blank">
         <img alt="NimoOS License" src="https://img.shields.io/github/license/NimoTech/NimoOS?color=162453&style=flat-square&label=License" />
@@ -166,4 +172,4 @@ repository's git history.
 
 ## Changelog
 
-Detailed changes for each release are documented in the [release notes](https://github.com/NimoTech/NimoOS/releases) and [`CHANGELOG.md`](./CHANGELOG.md).
+Detailed changes for each release are documented in the [release notes](https://github.com/NimoTech/NimoOS-Build/releases) and [`CHANGELOG.md`](./CHANGELOG.md).
