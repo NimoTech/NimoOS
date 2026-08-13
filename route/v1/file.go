@@ -1237,11 +1237,29 @@ type Client struct {
 	Name         service.Name `json:"name"`
 	RtcSupported bool         `json:"rtcSupported"`
 	TimerId      int          `json:"timerId"`
-	// mu only guards LastBeat: readPump (on receiving pong/any message) and
-	// monitoring's heartbeat timeout check are two different goroutines; both
-	// reads and writes must go through the lock.
+	// mu guards LastBeat and superseded: readPump (on receiving pong/any
+	// message) and monitoring's heartbeat timeout check are two different
+	// goroutines; both reads and writes must go through the lock.
 	mu       sync.Mutex
 	LastBeat time.Time `json:"lastBeat"`
+	// superseded marks a session that a newer connection under the same peer
+	// id has replaced. Its readPump must stay quiet on the way out: the id it
+	// would announce as gone belongs to a device that is online again.
+	superseded bool
+}
+
+// markSuperseded flags this session as replaced by a newer one for the same id.
+func (c *Client) markSuperseded() {
+	c.mu.Lock()
+	c.superseded = true
+	c.mu.Unlock()
+}
+
+// isSuperseded reports whether a newer session has taken over this peer id.
+func (c *Client) isSuperseded() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.superseded
 }
 
 // touchLastBeat records a heartbeat/activity timestamp for monitoring's timeout check to read.
@@ -1288,7 +1306,11 @@ func ConnectWebSocket(ctx echo.Context) error {
 	}
 	list := service.MyService.Peer().GetPeers()
 	if len(peerModel.ID) == 0 {
-		peerModel.ID = key
+		// The row must be keyed by the id the client is actually told to use
+		// (client.ID), not by the locally generated `key` — a row under any
+		// other id can never be found by the `?peer=` lookup on reconnect, so
+		// the device would be handed a new identity every time.
+		peerModel.ID = client.ID
 		peerModel.DisplayName = name.DisplayName
 		peerModel.DeviceName = name.DeviceName
 		peerModel.Model = name.Model
@@ -1307,14 +1329,13 @@ func ConnectWebSocket(ctx echo.Context) error {
 	}
 	http.SetCookie(writer, &cookie)
 	if len(list) > 10 {
-		kickoutList := []Client{}
-		count := len(list) - 10
-		for i := len(list) - 1; count > 0 && i > -1; i-- {
-			if _, ok := handler.clients[list[i].ID]; !ok {
-				count--
-				kickoutList = append(kickoutList, Client{ID: list[i].ID, Name: service.GetNameByDB(list[i]), IP: list[i].IP})
-				service.MyService.Peer().DeletePeer(list[i].ID)
-			}
+		ids := make([]string, 0, len(list))
+		for _, v := range list {
+			ids = append(ids, v.ID)
+		}
+		isOnline := func(id string) bool { _, ok := handler.clients[id]; return ok }
+		for _, id := range kickoutIDs(ids, isOnline, client.ID, 10) {
+			service.MyService.Peer().DeletePeer(id)
 		}
 		// if len(kickoutList) > 0 {
 		// 	other := make(map[string]interface{})
@@ -1429,7 +1450,13 @@ func (c *Client) readPump() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
-			c.handler.broadcast <- []byte(`{"type":"peer-left","peerId":"` + c.ID + `"}`)
+			// A session replaced by a newer one for the same peer id leaves
+			// silently: announcing peer-left here would tell everyone the
+			// device is gone moments after it came back, and nothing would
+			// re-announce it.
+			if !c.isSuperseded() {
+				c.handler.broadcast <- []byte(`{"type":"peer-left","peerId":"` + c.ID + `"}`)
+			}
 			break
 		}
 		// If so, push to the broadcast center, which then pushes to every user
@@ -1452,7 +1479,13 @@ func (c *Client) readPump() {
 			// other["peers"] = clients
 			// otherBy, err := json.Marshal(other)
 			// fmt.Println(err)
-			c.handler.broadcast <- []byte(`{"type":"peer-left","peerId":"` + c.ID + `"}`)
+			// A session replaced by a newer one for the same peer id leaves
+			// silently: announcing peer-left here would tell everyone the
+			// device is gone moments after it came back, and nothing would
+			// re-announce it.
+			if !c.isSuperseded() {
+				c.handler.broadcast <- []byte(`{"type":"peer-left","peerId":"` + c.ID + `"}`)
+			}
 			// c.handler.broadcast <- otherBy
 			break
 		} else if t.String() == "pong" {
@@ -1510,10 +1543,16 @@ func (ch *CenterHandler) monitoring() {
 		select {
 		// Register: when a new user connects it's pushed into the register channel; here we receive the pushed-in user pointer
 		case client := <-ch.register:
-			ch.clients[client.ID] = client
+			// The replaced session keeps its socket on purpose. Closing it
+			// would make that page reconnect five seconds later and take the
+			// id straight back — two tabs of one device (they share the peer
+			// id, it lives in localStorage) would then evict each other for
+			// ever. Dropped from the client set it is already harmless: it is
+			// no longer listed as a device, dialled, or broadcast to.
+			ch.registerClient(client)
 			// Unregister: closing the connection or a connection error pushes the user out of the room
 		case client := <-ch.unregister:
-			delete(ch.clients, client.ID)
+			ch.unregisterClient(client)
 			// Message: a new message has arrived
 		case message := <-ch.broadcast:
 			println("message arrived, message: " + string(message))
@@ -1525,6 +1564,55 @@ func (ch *CenterHandler) monitoring() {
 			ch.kickStaleClients(now)
 		}
 	}
+}
+
+// registerClient makes c the live session for its peer id and returns the
+// session it replaced, if any. Only ever called from the monitoring goroutine,
+// which is the sole owner of ch.clients.
+func (ch *CenterHandler) registerClient(c *Client) *Client {
+	superseded, ok := ch.clients[c.ID]
+	if ok && superseded == c {
+		superseded = nil
+	}
+	if superseded != nil {
+		superseded.markSuperseded()
+	}
+	ch.clients[c.ID] = c
+	return superseded
+}
+
+// unregisterClient removes c only if it is still the live session for its id,
+// and reports whether it removed anything. A session that has already been
+// replaced must not delete its successor on the way out — the device would
+// disappear from every peer list while it is in fact online.
+func (ch *CenterHandler) unregisterClient(c *Client) bool {
+	if current, ok := ch.clients[c.ID]; !ok || current != c {
+		return false
+	}
+	delete(ch.clients, c.ID)
+	return true
+}
+
+// kickoutIDs picks the peer rows to drop when the table overflows: ids come in
+// `updated desc` order, so eviction walks from the end (oldest first) and takes
+// only offline peers, never the peer that is connecting right now. That last
+// exclusion is the point — the arriving peer's row is the one appended last, so
+// walking from the end used to delete the row that had just been created for
+// it, handing the same device a new identity on every connect.
+func kickoutIDs(ids []string, isOnline func(string) bool, arrivingID string, keep int) []string {
+	remaining := len(ids) - keep
+	if remaining <= 0 {
+		return nil
+	}
+	var kicked []string
+	for i := len(ids) - 1; remaining > 0 && i >= 0; i-- {
+		if ids[i] == arrivingID || isOnline(ids[i]) {
+			continue
+		}
+		kicked = append(kicked, ids[i])
+		remaining--
+	}
+	return kicked
 }
 
 // kickStaleClients evicts clients whose heartbeat has timed out (dead-but-alive):
