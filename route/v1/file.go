@@ -1302,6 +1302,9 @@ func ConnectWebSocket(ctx echo.Context) error {
 			key = peerId
 			client.ID = peerModel.ID
 			client.Name = service.GetNameByDB(peerModel)
+			// Keep the row young: a device in daily use must outrank rows for
+			// devices that never came back when the table overflows.
+			service.MyService.Peer().TouchPeer(client.ID, time.Now().Unix())
 		}
 	}
 	list := service.MyService.Peer().GetPeers()

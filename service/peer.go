@@ -23,6 +23,12 @@ type PeerService interface {
 	GetPeerByID(id string) (m model2.PeerDriveDBModel)
 	GetPeers() (peers []model2.PeerDriveDBModel)
 	CreatePeer(m *model2.PeerDriveDBModel)
+	// TouchPeer records that a known device connected again. Eviction picks the
+	// least recently updated offline rows, so without this a device that keeps
+	// its identity is scored by the timestamp of its very first visit and gets
+	// evicted ahead of rows for devices that never come back -- losing the id,
+	// which is what made one phone own several entries.
+	TouchPeer(id string, updated int64)
 	DeletePeer(id string)
 	GetPeerByName(name string) (m model2.PeerDriveDBModel)
 }
@@ -50,6 +56,10 @@ func (s *peerStruct) GetPeers() (peers []model2.PeerDriveDBModel) {
 func (s *peerStruct) CreatePeer(m *model2.PeerDriveDBModel) {
 
 	s.db.Create(m)
+}
+
+func (s *peerStruct) TouchPeer(id string, updated int64) {
+	s.db.Model(&model.PeerDriveDBModel{}).Where("id = ?", id).Update("updated", updated)
 }
 
 func (s *peerStruct) DeletePeer(id string) {
