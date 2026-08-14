@@ -371,7 +371,15 @@ func CancelOp(id string) {
 	if !ok {
 		return
 	}
+	// opFinished is consulted alongside the stored flag for the same reason
+	// buildFileNotifyTask does: CheckFileStatus's stale write-back can clear
+	// FileQueue's Finished, and cancelling a task that already ran to
+	// completion would race the natural-completion retirement this branch
+	// exists to defer to.
 	if op, ok2 := item.(model.FileOperate); ok2 && op.Finished {
+		return
+	}
+	if opFinished(id) {
 		return
 	}
 
