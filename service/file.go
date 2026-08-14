@@ -98,6 +98,62 @@ var opQueue struct {
 	cancelOf map[string]context.CancelFunc
 	// running is the id FileOperate is currently executing, or "" if none.
 	running string
+	// finished is the set of ids whose FileOperate run has returned. See
+	// markOpFinished for why this cannot live in FileQueue.
+	finished map[string]bool
+}
+
+// markOpFinished records that FileOperate has run id to completion. It is
+// the authoritative completion signal the notify poller retires a task on.
+//
+// The obvious place for this is model.FileOperate.Finished in FileQueue,
+// which FileOperate does still set — but that flag is not safe to rely on
+// alone, because CheckFileStatus can erase it. Each CheckFileStatus pass
+// does FileQueue.Load -> walk the destination to size it -> FileQueue.Store
+// of the value it loaded BEFORE that walk. On a large tree the walk takes
+// seconds, and any terminal state FileOperate stored inside that window is
+// silently rolled back to Finished=false by the write-back. Until the
+// 0-byte fix in buildFileNotifyTask that damage was masked: the
+// ProcessedSize >= TotalSize fallback still retired the task, because
+// CheckFileStatus itself sets ProcessedSize to the fully-copied size. A
+// 0-byte task has no such fallback (0 >= 0 is true from the very first
+// instant, which is the bug being fixed), so its completion has to be
+// recorded somewhere CheckFileStatus does not write — otherwise the fix
+// would trade a silent no-op for a task wedged in the queue forever,
+// blocking every task behind it (ExecOpFile only ever starts PeekOps()[0]).
+//
+// It is kept under opQueue's existing mutex, alongside the fingerprint and
+// context bookkeeping, so it is released by exactly the same retirement
+// paths and can never be forgotten by a caller.
+// A task already gone from FileQueue has been retired, and the retirement
+// paths that clear this map have already run — recording it now would leave
+// an entry nothing ever deletes. That ordering is reachable: FileOperate
+// stores its terminal state, the notify poller observes Finished and does
+// FileQueue.Delete + DequeueOp, and only then does this call land. Ids are
+// uuids and never reused, so the stale entry is harmless to correctness, but
+// it is one map entry per file operation for the lifetime of the process.
+// Checking FileQueue narrows that to the few instructions between this load
+// and the store below, the same bound storeFileProgress settles for.
+func markOpFinished(id string) {
+	if _, live := FileQueue.Load(id); !live {
+		return
+	}
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	if opQueue.finished == nil {
+		opQueue.finished = make(map[string]bool)
+	}
+	opQueue.finished[id] = true
+}
+
+// opFinished reports whether FileOperate has run id to completion. False for
+// any id never admitted through EnqueueOp (tests that seed FileQueue
+// directly, or any caller bypassing the queue), which just means such a task
+// falls back to the FileQueue flags exactly as before.
+func opFinished(id string) bool {
+	opQueue.Lock()
+	defer opQueue.Unlock()
+	return opQueue.finished[id]
 }
 
 // fileOperateFingerprint identifies a file-operation request by its
@@ -200,6 +256,7 @@ func releaseQueueSlotLocked(id string) {
 		delete(opQueue.fingerprintOf, id)
 		delete(opQueue.activeFingerprints, fp)
 	}
+	delete(opQueue.finished, id)
 }
 
 // DequeueOp removes id from the queue and releases the fingerprint it was
@@ -227,6 +284,7 @@ func DequeueOp(id string) {
 
 	delete(opQueue.ctxOf, id)
 	delete(opQueue.cancelOf, id)
+	delete(opQueue.finished, id)
 	if opQueue.running == id {
 		opQueue.running = ""
 	}
@@ -258,6 +316,7 @@ func ClearOps() {
 	opQueue.ids = nil
 	opQueue.fingerprintOf = nil
 	opQueue.activeFingerprints = nil
+	opQueue.finished = nil
 	opQueue.running = ""
 }
 
@@ -324,7 +383,15 @@ func CancelOp(id string) {
 	if !ok {
 		return
 	}
+	// opFinished is consulted alongside the stored flag for the same reason
+	// buildFileNotifyTask does: CheckFileStatus's stale write-back can clear
+	// FileQueue's Finished, and cancelling a task that already ran to
+	// completion would race the natural-completion retirement this branch
+	// exists to defer to.
 	if op, ok2 := item.(model.FileOperate); ok2 && op.Finished {
+		return
+	}
+	if opFinished(id) {
 		return
 	}
 
@@ -615,7 +682,15 @@ func FileOperate(k string) {
 	}
 
 	temp := list.(model.FileOperate)
-	if temp.ProcessedSize > 0 {
+	// Refuse to run a task that has already run. ProcessedSize > 0 was the
+	// only guard here, and it silently does not hold for a 0-byte task (a
+	// tree of empty directories never moves ProcessedSize off 0), so such a
+	// task could be executed a second time by any stray ExecOpFile dispatch
+	// landing after the first run finished but before the notify poller
+	// retired it — re-running a completed move against a source that no
+	// longer exists. Finished is set (and markOpFinished recorded) exactly
+	// once per run, so it covers the 0-byte case the size check misses.
+	if temp.Finished || temp.ProcessedSize > 0 || opFinished(k) {
 		return
 	}
 
@@ -872,6 +947,9 @@ itemsLoop:
 		temp.Cancelled = true
 	}
 	FileQueue.Store(k, temp)
+	// Recorded outside FileQueue as well, because CheckFileStatus's stale
+	// write-back can clear the flag just stored above — see markOpFinished.
+	markOpFinished(k)
 
 	if cancelled {
 		// Cancellation's terminal sequence: mark terminal state (above) ->
@@ -948,10 +1026,47 @@ func CheckFileStatus() {
 				}
 			}
 			temp.ProcessedSize = total
-			FileQueue.Store(v, temp)
+			storeFileProgress(v, temp)
 		}
 		time.Sleep(time.Second * 3)
 	}
+}
+
+// storeFileProgress writes a progress snapshot back to FileQueue, but only
+// while the task is still live and non-terminal.
+//
+// The snapshot handed in was loaded before the destination size walk above,
+// which can take seconds on a large tree. Two things can happen inside that
+// window, and writing the snapshot back unconditionally gets both wrong:
+//
+//   - FileOperate finishes and stores the task's terminal state. Writing the
+//     pre-walk snapshot over it rolls Finished (and Cancelled) back to false.
+//   - The notify poller (or CancelOp) retires the task entirely —
+//     FileQueue.Delete + DequeueOp. Writing the snapshot back resurrects it
+//     as a ghost entry that is in FileQueue but not in opQueue.ids, so no
+//     poller pass can ever retire it again, while SendFileOperateNotify's
+//     "len == 0" exit condition counts FileQueue rather than the id queue
+//     and therefore never becomes true. That never-terminating notify loop
+//     is the same failure shape as the 2026-07 data-loss incident.
+//
+// Progress numbers for a task that is already terminal or already retired
+// are worthless anyway, so in both cases the write is simply dropped. This
+// narrows the window to the few instructions between the check and the
+// store rather than spanning a filesystem walk; the authoritative
+// completion signal (markOpFinished) is deliberately kept outside FileQueue
+// so that residual window cannot strand a task.
+func storeFileProgress(id string, progress model.FileOperate) {
+	cur, ok := FileQueue.Load(id)
+	if !ok {
+		return
+	}
+	if op, isOp := cur.(model.FileOperate); isOp && (op.Finished || op.Cancelled) {
+		return
+	}
+	if opFinished(id) {
+		return
+	}
+	FileQueue.Store(id, progress)
 }
 func IsMounted(path string) bool {
 	mounted, _ := mountinfo.Mounted(path)

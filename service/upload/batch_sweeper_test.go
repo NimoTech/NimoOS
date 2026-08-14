@@ -52,7 +52,7 @@ func TestSweepBatchesGraceCleansStaging(t *testing.T) {
 	s := NewBatchStore(db)
 	tasks := NewTaskStore(db)
 	newTestBatch(t, s, "b1", "a.jpg")
-	_ = s.SetInterrupted("b1", 5000)
+	_ = s.SetInterrupted("b1", 5000, BatchInterruptSourceTimeout)
 	if err := SweepBatches(s, tasks, []string{t.TempDir()}, 5000+BatchStagingGraceSeconds+1); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestSweepBatchesOrphanAutoAbandoned(t *testing.T) {
 		if err := s.Create(b, []UploadBatchItem{{BatchID: id, RelativePath: "a.jpg", Size: 1}}); err != nil {
 			t.Fatal(err)
 		}
-		_ = s.SetInterrupted(id, 5000)
+		_ = s.SetInterrupted(id, 5000, BatchInterruptSourceTimeout)
 	}
 	alive := filepath.Join(vol, "alive")
 	if err := os.MkdirAll(alive, 0755); err != nil {
@@ -165,7 +165,7 @@ func TestSweepBatchesCleansAcrossMultipleStagingDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = s.SetInterrupted("b1", 5000)
+	_ = s.SetInterrupted("b1", 5000, BatchInterruptSourceTimeout)
 	if err := SweepBatches(s, tasks, []string{legacyDir, volumeDir}, 5000+BatchStagingGraceSeconds+1); err != nil {
 		t.Fatal(err)
 	}

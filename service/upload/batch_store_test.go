@@ -93,7 +93,7 @@ func TestMarkItemDoneRepeatedDoesNotDoubleCount(t *testing.T) {
 func TestInterruptedRevertsToActiveOnProgress(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "a.jpg")
-	if err := s.SetInterrupted("b1", 2000); err != nil {
+	if err := s.SetInterrupted("b1", 2000, BatchInterruptSourceTimeout); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.TouchProgress("b1", 3000); err != nil {
@@ -103,12 +103,15 @@ func TestInterruptedRevertsToActiveOnProgress(t *testing.T) {
 	if got.Status != BatchStatusActive || got.LastProgressAt != 3000 {
 		t.Fatalf("want active/3000, got %s/%d", got.Status, got.LastProgressAt)
 	}
+	if got.InterruptSource != "" {
+		t.Fatalf("revival should clear interrupt_source, got %q", got.InterruptSource)
+	}
 }
 
 func TestMarkItemDoneRevertsInterruptedToActive(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "a.jpg", "b.jpg")
-	if err := s.SetInterrupted("b1", 2000); err != nil {
+	if err := s.SetInterrupted("b1", 2000, BatchInterruptSourceTimeout); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.MarkItemDone("b1", "a.jpg", 3000); err != nil {
@@ -120,11 +123,62 @@ func TestMarkItemDoneRevertsInterruptedToActive(t *testing.T) {
 	}
 }
 
+// TestSignalInterruptNotRevivedByLateCompletion guards the race found in
+// real-device acceptance (2026-08-11): the pagehide interrupt signal landed
+// and marked the batch interrupted, but an already-received upload finished in
+// the same second and MarkItemDone's "timeout misjudgment is reversible"
+// clause flipped the batch straight back to active — so the badge vanished
+// until the idle sweeper re-judged it 120s+ later. A signal interrupt means
+// the page is confirmed gone; late completions must count as done but must
+// not revive the batch.
+func TestSignalInterruptNotRevivedByLateCompletion(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "b1", "a.jpg", "b.jpg", "c.jpg")
+	if err := s.SetInterrupted("b1", 2000, BatchInterruptSourceSignal); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkItemDone("b1", "a.jpg", 2000); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get("b1")
+	if got.Status != BatchStatusInterrupted || got.Done != 1 {
+		t.Fatalf("late completion must count but not revive: want interrupted/done=1, got %s/%d", got.Status, got.Done)
+	}
+	// Completing everything must still finish the batch (refill flow) even
+	// though the intermediate revival is blocked.
+	_ = s.MarkItemDone("b1", "b.jpg", 2001)
+	if err := s.MarkItemDone("b1", "c.jpg", 2002); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.Get("b1")
+	if got.Status != BatchStatusCompleted || got.Done != 3 {
+		t.Fatalf("full completion must still transition: want completed/done=3, got %s/%d", got.Status, got.Done)
+	}
+}
+
+// TestSignalInterruptNotRevivedByTouchProgress: same rule for the chunk-progress
+// path — an in-flight tus PATCH racing the window-close signal must not bring
+// the batch back to active either.
+func TestSignalInterruptNotRevivedByTouchProgress(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "b1", "a.jpg")
+	if err := s.SetInterrupted("b1", 2000, BatchInterruptSourceSignal); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchProgress("b1", 3000); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get("b1")
+	if got.Status != BatchStatusInterrupted {
+		t.Fatalf("signal interrupt must stick through TouchProgress, got %s", got.Status)
+	}
+}
+
 func TestBrokenChildren(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "备份/2024/x.jpg", "备份/2025/y.jpg", "loose.jpg")
 	_ = s.MarkItemDone("b1", "备份/2024/x.jpg", 1000) // 2024 fully uploaded
-	_ = s.SetInterrupted("b1", 2000)
+	_ = s.SetInterrupted("b1", 2000, BatchInterruptSourceTimeout)
 
 	// Under /DATA/Media: child entries "备份" (missing 2025/y.jpg) and "loose.jpg" hit
 	m, err := s.BrokenChildren("/DATA/Media", "u1")
@@ -156,7 +210,7 @@ func TestBrokenChildren(t *testing.T) {
 func TestBrokenChildrenOwnerScoped(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "b1", "loose.jpg") // owner=u1
-	_ = s.SetInterrupted("b1", 2000)
+	_ = s.SetInterrupted("b1", 2000, BatchInterruptSourceTimeout)
 
 	// another user cannot see u1's badge
 	m, err := s.BrokenChildren("/DATA/Media", "u2")
@@ -186,7 +240,7 @@ func TestMarkItemDoneAcrossBatchesClearsOldInterruptedBatch(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "old", "a.jpg", "b.jpg", "c.jpg")
 	_ = s.MarkItemDone("old", "a.jpg", 1000) // old batch has uploaded 1/3
-	_ = s.SetInterrupted("old", 2000)        // old batch suspended, missing b.jpg / c.jpg
+	_ = s.SetInterrupted("old", 2000, BatchInterruptSourceTimeout)        // old batch suspended, missing b.jpg / c.jpg
 
 	newTestBatch(t, s, "new", "b.jpg", "c.jpg") // user directly re-uploads the two missing files, no dialog
 
@@ -212,7 +266,7 @@ func TestMarkItemDoneAcrossBatchesClearsOldInterruptedBatch(t *testing.T) {
 func TestMarkItemDoneAcrossBatchesIgnoresOtherTargetPath(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "old", "a.jpg")
-	_ = s.SetInterrupted("old", 2000)
+	_ = s.SetInterrupted("old", 2000, BatchInterruptSourceTimeout)
 
 	other := &UploadBatch{ID: "other", OwnerUserID: "u1", TargetPath: "/DATA/Other",
 		Status: BatchStatusInterrupted, Total: 1}
@@ -240,7 +294,7 @@ func TestMarkItemDoneAcrossBatchesIdempotent(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "old", "a.jpg", "b.jpg")
 	_ = s.MarkItemDone("old", "a.jpg", 1000)
-	_ = s.SetInterrupted("old", 2000)
+	_ = s.SetInterrupted("old", 2000, BatchInterruptSourceTimeout)
 
 	for i := 0; i < 3; i++ {
 		if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "a.jpg", int64(3000+i)); err != nil {
@@ -262,7 +316,7 @@ func TestMarkItemDoneAcrossBatchesIdempotent(t *testing.T) {
 func TestMarkItemDoneAcrossBatchesAbsolutePathParentBatchChildUpload(t *testing.T) {
 	s := NewBatchStore(openBatchTestDB(t))
 	newTestBatch(t, s, "old", "backup/a.jpg", "backup/b.jpg")
-	_ = s.SetInterrupted("old", 2000) // missing backup/a.jpg, backup/b.jpg
+	_ = s.SetInterrupted("old", 2000, BatchInterruptSourceTimeout) // missing backup/a.jpg, backup/b.jpg
 
 	// Direct upload into the subdirectory: targetPath=/DATA/Media/backup, relativePath=a.jpg
 	if err := s.MarkItemDoneAcrossBatches("/DATA/Media/backup", "a.jpg", 3000); err != nil {
@@ -287,7 +341,7 @@ func TestMarkItemDoneAcrossBatchesAbsolutePathChildBatchParentUpload(t *testing.
 	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
 		t.Fatal(err)
 	}
-	_ = s.SetInterrupted("old", 2000)
+	_ = s.SetInterrupted("old", 2000, BatchInterruptSourceTimeout)
 
 	if err := s.MarkItemDoneAcrossBatches("/DATA/Media", "backup/a.jpg", 3000); err != nil {
 		t.Fatal(err)
@@ -329,7 +383,7 @@ func TestMarkItemDoneAcrossBatchesTrailingSlashNormalized(t *testing.T) {
 	if err := s.Create(b, []UploadBatchItem{{BatchID: "old", RelativePath: "a.jpg", Size: 100}}); err != nil {
 		t.Fatal(err)
 	}
-	_ = s.SetInterrupted("old", 2000)
+	_ = s.SetInterrupted("old", 2000, BatchInterruptSourceTimeout)
 
 	if err := s.MarkItemDoneAcrossBatches("/DATA/Media/backup", "a.jpg", 3000); err != nil {
 		t.Fatal(err)
@@ -351,7 +405,7 @@ func TestDeleteTerminal(t *testing.T) {
 	newTestBatch(t, s, "quit", "a.jpg")
 	_ = s.SetStatus("quit", BatchStatusAbandoned)
 	newTestBatch(t, s, "stuck", "a.jpg")
-	_ = s.SetInterrupted("stuck", 2000)
+	_ = s.SetInterrupted("stuck", 2000, BatchInterruptSourceTimeout)
 	newTestBatch(t, s, "live", "a.jpg") // active
 
 	n, err := s.DeleteTerminal()
@@ -373,5 +427,111 @@ func TestDeleteTerminal(t *testing.T) {
 	}
 	if b, err := s.Get("live"); err != nil || b.Status != BatchStatusActive {
 		t.Fatalf("active batch must survive: %v", err)
+	}
+}
+
+// TestAbandonInterruptedUnder: one click on the badge must clear EVERY
+// interrupted batch whose missing files sit under the badged entry — the badge
+// only carries one batch id, but several interrupted batches can be stacked on
+// the same folder (each retry that got canceled leaves one), and abandoning
+// them one listing at a time reads as a badge that refuses to die.
+func TestAbandonInterruptedUnder(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	// Two interrupted batches missing files under /DATA/Media/Trip
+	newTestBatch(t, s, "trip1", "Trip/a.jpg", "Trip/b.jpg")
+	_ = s.SetInterrupted("trip1", 1000, BatchInterruptSourceTimeout)
+	newTestBatch(t, s, "trip2", "Trip/c.jpg")
+	_ = s.SetInterrupted("trip2", 1000, BatchInterruptSourceSignal)
+	// Interrupted, but under a different folder
+	newTestBatch(t, s, "other", "Docs/x.pdf")
+	_ = s.SetInterrupted("other", 1000, BatchInterruptSourceTimeout)
+	// Under Trip but still active — a running upload must never be abandoned
+	newTestBatch(t, s, "running", "Trip/d.jpg")
+	// Under Trip, interrupted, but owned by someone else
+	ob := &UploadBatch{ID: "foreign", OwnerUserID: "u2", TargetPath: "/DATA/Media",
+		Status: BatchStatusActive, Total: 1}
+	if err := s.Create(ob, []UploadBatchItem{{BatchID: "foreign", RelativePath: "Trip/e.jpg", Size: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetInterrupted("foreign", 1000, BatchInterruptSourceTimeout)
+
+	ids, err := s.AbandonInterruptedUnder("/DATA/Media/Trip", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("want trip1+trip2 abandoned, got %v", ids)
+	}
+	for _, id := range []string{"trip1", "trip2"} {
+		if b, _ := s.Get(id); b.Status != BatchStatusAbandoned {
+			t.Fatalf("%s should be abandoned, got %s", id, b.Status)
+		}
+	}
+	for id, want := range map[string]string{
+		"other": BatchStatusInterrupted, "running": BatchStatusActive, "foreign": BatchStatusInterrupted,
+	} {
+		if b, _ := s.Get(id); b.Status != want {
+			t.Fatalf("%s should stay %s, got %s", id, want, b.Status)
+		}
+	}
+}
+
+// TestAbandonInterruptedUnderExactFile: the badged entry can be a plain file
+// (flat upload with one finished sibling), so an exact path match — not just
+// prefix-with-slash — must count as a hit.
+func TestAbandonInterruptedUnderExactFile(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "flat", "report.pdf")
+	_ = s.SetInterrupted("flat", 1000, BatchInterruptSourceTimeout)
+	ids, err := s.AbandonInterruptedUnder("/DATA/Media/report.pdf", "u1")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+	if b, _ := s.Get("flat"); b.Status != BatchStatusAbandoned {
+		t.Fatalf("got %s", b.Status)
+	}
+}
+
+// TestRemoveItems: canceling individual files must shrink the manifest, or the
+// batch can never complete and the sweeper later hangs a broken badge on a
+// folder the user deliberately trimmed.
+func TestRemoveItems(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "b1", "a.jpg", "b.jpg", "c.jpg")
+	_ = s.MarkItemDone("b1", "a.jpg", 1000)
+
+	if err := s.RemoveItems("b1", []string{"b.jpg", "c.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := s.Get("b1")
+	if b.Total != 1 || b.Done != 1 {
+		t.Fatalf("want total=1 done=1, got total=%d done=%d", b.Total, b.Done)
+	}
+	// Everything still on the manifest is done → the batch completes and the
+	// sweeper can collect it; nothing is left to badge.
+	if b.Status != BatchStatusCompleted {
+		t.Fatalf("want completed, got %s", b.Status)
+	}
+	missing, _ := s.MissingItems("b1")
+	if len(missing) != 0 {
+		t.Fatalf("want no missing items, got %d", len(missing))
+	}
+}
+
+// TestRemoveItemsKeepsDoneAndUnknown: done items are accounting history and
+// must not be deletable; unknown paths are ignored; a batch with work left
+// stays active.
+func TestRemoveItemsKeepsDoneAndUnknown(t *testing.T) {
+	s := NewBatchStore(openBatchTestDB(t))
+	newTestBatch(t, s, "b1", "a.jpg", "b.jpg", "c.jpg")
+	_ = s.MarkItemDone("b1", "a.jpg", 1000)
+
+	if err := s.RemoveItems("b1", []string{"a.jpg", "nope.jpg", "b.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := s.Get("b1")
+	// Only b.jpg (not done) was removable: total 3→2, done stays 1.
+	if b.Total != 2 || b.Done != 1 || b.Status != BatchStatusActive {
+		t.Fatalf("got total=%d done=%d status=%s", b.Total, b.Done, b.Status)
 	}
 }
