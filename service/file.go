@@ -125,7 +125,19 @@ var opQueue struct {
 // It is kept under opQueue's existing mutex, alongside the fingerprint and
 // context bookkeeping, so it is released by exactly the same retirement
 // paths and can never be forgotten by a caller.
+// A task already gone from FileQueue has been retired, and the retirement
+// paths that clear this map have already run — recording it now would leave
+// an entry nothing ever deletes. That ordering is reachable: FileOperate
+// stores its terminal state, the notify poller observes Finished and does
+// FileQueue.Delete + DequeueOp, and only then does this call land. Ids are
+// uuids and never reused, so the stale entry is harmless to correctness, but
+// it is one map entry per file operation for the lifetime of the process.
+// Checking FileQueue narrows that to the few instructions between this load
+// and the store below, the same bound storeFileProgress settles for.
 func markOpFinished(id string) {
+	if _, live := FileQueue.Load(id); !live {
+		return
+	}
 	opQueue.Lock()
 	defer opQueue.Unlock()
 	if opQueue.finished == nil {
