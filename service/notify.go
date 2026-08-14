@@ -101,7 +101,25 @@ func buildFileNotifyTask(id string, temp model2.FileOperate) (task notify.File, 
 		}
 	}
 
-	if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
+	// A task is finished when its worker says so — either via the Finished
+	// flag it stores in FileQueue, or via opFinished, which records the same
+	// event where CheckFileStatus's stale write-back cannot erase it (see
+	// service.markOpFinished).
+	//
+	// ProcessedSize >= TotalSize is kept only as the progress-derived
+	// fallback it was always meant to be, and now requires TotalSize > 0. A
+	// batch whose sources contain no regular files at all — a tree of
+	// nothing but empty directories — is sized 0 by file.GetFileOrDirSize
+	// (it sums non-directory entries only), so it satisfied 0 >= 0 from the
+	// instant it was enqueued and was declared finished before any work
+	// happened. That is not cosmetic: SendFileOperateNotify's finished
+	// branch below does FileQueue.Delete + DequeueOp, and the route
+	// dispatches this poller and the worker (go ExecOpFile -> go
+	// FileOperate) at the same moment — so whenever the poller won that
+	// race, the task was deleted out from under a worker that had not yet
+	// loaded it. The user saw HTTP 200 and nothing moved, with no error
+	// raised anywhere. Reproduced on-device at 6 failures in 10 attempts.
+	if temp.Finished || opFinished(id) || (temp.TotalSize > 0 && temp.ProcessedSize >= temp.TotalSize) {
 		task.Finished = true
 		if temp.Cancelled {
 			task.Cancelled = true
@@ -180,8 +198,16 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 		OpStrArrbak := PeekOps()
 
 		for _, v := range OpStrArrbak {
+			// The !ok check has to come before the type assertion: an id can
+			// be retired (task completion, CancelOp) between PeekOps' snapshot
+			// above and this load, and asserting a type on the nil interface
+			// Load returns then panics, killing the whole notify goroutine
+			// and with it the status updates for every other queued task.
 			tempItem, ok := FileQueue.Load(v)
-			temp := tempItem.(model2.FileOperate)
+			if !ok {
+				continue
+			}
+			temp, ok := tempItem.(model2.FileOperate)
 			if !ok {
 				continue
 			}
@@ -230,8 +256,14 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 			OpStrArrbak := PeekOps()
 
 			for _, v := range OpStrArrbak {
+				// Same ordering fix as the nowSend branch above: check ok
+				// before asserting, or a task retired between PeekOps and
+				// this load panics the notify goroutine.
 				tempItem, ok := FileQueue.Load(v)
-				temp := tempItem.(model2.FileOperate)
+				if !ok {
+					continue
+				}
+				temp, ok := tempItem.(model2.FileOperate)
 				if !ok {
 					continue
 				}
