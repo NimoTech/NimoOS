@@ -6,7 +6,7 @@ toolchain go1.23.8
 
 require (
 	github.com/Curtis-Milo/nat-type-identifier-go v0.0.0-20220215191915-18d42168c63d
-	github.com/NimoTech/NimoOS-Common v1.9.4-alpha2
+	github.com/NimoTech/NimoOS-Common v1.9.4-alpha3
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/deckarep/golang-set/v2 v2.3.0
 	github.com/deepmap/oapi-codegen v1.12.4
@@ -22,7 +22,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/googollee/go-socket.io v1.7.0
 	github.com/gorilla/websocket v1.5.0
-	github.com/h2non/filetype v1.1.3
 	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/json-iterator/go v1.1.12
 	github.com/labstack/echo/v4 v4.12.0
@@ -124,4 +123,3 @@ require (
 	modernc.org/sqlite v1.21.2 // indirect
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
-
