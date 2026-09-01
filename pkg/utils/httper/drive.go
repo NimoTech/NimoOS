@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/NimoTech/NimoOS-Common/utils/logger"
@@ -77,13 +78,35 @@ func GetMountList() (MountList, error) {
 	return result, err
 }
 
+// vaultExcludeFilter returns the rc `_filter` JSON for a remote type, or ""
+// when the type needs none. OneDrive: a locked Personal Vault rejects every
+// Graph listing with "invalidResourceId: ObjectHandle is Invalid", so any
+// tree walk over the mount spams IO errors forever — rclone cannot unlock a
+// vault, the folder is unusable through the API by design, so exclude it
+// from the mount (both the English and Chinese folder names — OneDrive
+// localizes it per account language).
+func vaultExcludeFilter(remoteType string) string {
+	if remoteType != "onedrive" {
+		return ""
+	}
+	return `{"ExcludeRule":["Personal Vault/**","个人保管库/**"]}`
+}
+
 func Mount(mountPoint string, fs string) error {
-	res, err := NewRestyClient().R().SetFormData(map[string]string{
+	form := map[string]string{
 		"mountPoint": mountPoint,
 		"fs":         fs,
 		"mountOpt":   `{"AllowOther": true}`,
 		"vfsOpt":     `{"CacheMode": 3}`,
-	}).Post("/mount/mount")
+	}
+	// Look up the remote's type to decide whether it needs a path filter.
+	// Best-effort: an rc lookup failure must not block the mount itself.
+	if cfg, err := GetConfigByName(strings.TrimSuffix(fs, ":")); err == nil {
+		if f := vaultExcludeFilter(cfg["type"]); f != "" {
+			form["_filter"] = f
+		}
+	}
+	res, err := NewRestyClient().R().SetFormData(form).Post("/mount/mount")
 	if err != nil {
 		return err
 	}
