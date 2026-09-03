@@ -12,9 +12,13 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-type fakeRG struct{ ids []string }
+type fakeRG struct {
+	ids   []string
+	roots []model.RootGrant
+}
 
 func (f *fakeRG) EnabledRootIDs() ([]string, error)              { return f.ids, nil }
+func (f *fakeRG) EnabledRoots() ([]model.RootGrant, error)       { return f.roots, nil }
 func (f *fakeRG) UpsertGrant(string, string, bool, string) error { return nil }
 func (f *fakeRG) DeleteGrant(string) error                       { return nil }
 func (f *fakeRG) SeedVirtual(string) error                       { return nil }
@@ -22,7 +26,7 @@ func (f *fakeRG) ReconcileWiki([]model.RootGrant) error          { return nil }
 
 func TestSearchRoots_ReturnsEnabled(t *testing.T) {
 	e := echo.New()
-	h := v1.NewRootGrantHandler(&fakeRG{ids: []string{"aabb", "photos"}})
+	h := v1.NewRootGrantHandler(&fakeRG{roots: []model.RootGrant{{RootID: "aabb", Path: "/DATA/a"}, {RootID: "photos"}}})
 	req := httptest.NewRequest(http.MethodGet, "/v1/nimoos/search-roots?user_id=ignored", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
@@ -94,6 +98,7 @@ func TestReconcileGrants_PreservesEnabledFalse(t *testing.T) {
 type reconcileSpy struct{ got []model.RootGrant }
 
 func (s *reconcileSpy) EnabledRootIDs() ([]string, error)              { return nil, nil }
+func (s *reconcileSpy) EnabledRoots() ([]model.RootGrant, error)       { return nil, nil }
 func (s *reconcileSpy) UpsertGrant(string, string, bool, string) error { return nil }
 func (s *reconcileSpy) DeleteGrant(string) error                       { return nil }
 func (s *reconcileSpy) SeedVirtual(string) error                       { return nil }
@@ -108,7 +113,8 @@ type upsertDeleteSpy struct {
 	deleteRootID  string
 }
 
-func (s *upsertDeleteSpy) EnabledRootIDs() ([]string, error) { return nil, nil }
+func (s *upsertDeleteSpy) EnabledRootIDs() ([]string, error)        { return nil, nil }
+func (s *upsertDeleteSpy) EnabledRoots() ([]model.RootGrant, error) { return nil, nil }
 func (s *upsertDeleteSpy) UpsertGrant(rootID, path string, enabled bool, source string) error {
 	s.upsertRootID, s.upsertPath, s.upsertEnabled, s.upsertSource = rootID, path, enabled, source
 	return nil
@@ -160,5 +166,36 @@ func TestDeleteGrant_CallsRepo(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK || spy.deleteRootID != "aabbcc" {
 		t.Fatalf("delete not delegated correctly: code=%d rootID=%s", rec.Code, spy.deleteRootID)
+	}
+}
+
+// Search scopes its filename index by the *paths* of the enabled grants, so
+// the endpoint must expose {root_id, path} pairs alongside the legacy id list.
+func TestSearchRoots_IncludesRootPaths(t *testing.T) {
+	e := echo.New()
+	h := v1.NewRootGrantHandler(&fakeRG{
+		ids:   []string{"aabb", "photos"},
+		roots: []model.RootGrant{{RootID: "aabb", Path: "/DATA/docs", Enabled: true}, {RootID: "photos", Path: "", Enabled: true}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/nimoos/search-roots?user_id=1", nil)
+	rec := httptest.NewRecorder()
+	if err := h.SearchRoots(e.NewContext(req, rec)); err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		RootIDs []string `json:"root_ids"`
+		Roots   []struct {
+			RootID string `json:"root_id"`
+			Path   string `json:"path"`
+		} `json:"roots"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.RootIDs) != 2 {
+		t.Fatalf("root_ids must stay for old clients: %v", body.RootIDs)
+	}
+	if len(body.Roots) != 2 || body.Roots[0].RootID != "aabb" || body.Roots[0].Path != "/DATA/docs" {
+		t.Fatalf("roots=%+v", body.Roots)
 	}
 }

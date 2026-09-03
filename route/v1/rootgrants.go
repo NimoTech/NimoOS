@@ -41,13 +41,31 @@ func NewRootGrantHandler(repo service.RootGrantRepo) *RootGrantHandler {
 func (h *RootGrantHandler) SearchRoots(c echo.Context) error {
 	_ = c.QueryParam("user_id") // MVP: read but ignored, real multi-user ACL is a separate requirement
 
-	ids, err := h.repo.EnabledRootIDs()
+	grants, err := h.repo.EnabledRoots()
 	if err != nil {
-		logger.Error("SearchRoots: EnabledRootIDs failed", zap.Error(err))
+		logger.Error("SearchRoots: EnabledRoots failed", zap.Error(err))
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
 
-	return c.JSON(http.StatusOK, map[string][]string{"root_ids": ids})
+	// root_ids is the original contract (kept for older Search builds); roots
+	// adds the path so Search can scope its filename index by grant path.
+	ids := make([]string, 0, len(grants))
+	roots := make([]searchRoot, 0, len(grants))
+	for _, g := range grants {
+		ids = append(ids, g.RootID)
+		roots = append(roots, searchRoot{RootID: g.RootID, Path: g.Path})
+	}
+	return c.JSON(http.StatusOK, searchRootsResponse{RootIDs: ids, Roots: roots})
+}
+
+type searchRoot struct {
+	RootID string `json:"root_id"`
+	Path   string `json:"path"`
+}
+
+type searchRootsResponse struct {
+	RootIDs []string     `json:"root_ids"`
+	Roots   []searchRoot `json:"roots"`
 }
 
 // upsertGrantBody is the request body for PUT /_internal/root-grants/:root_id.

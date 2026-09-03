@@ -121,3 +121,29 @@ func mustEnabled(t *testing.T, r service.RootGrantRepo) []string {
 	}
 	return ids
 }
+
+func TestRootGrant_EnabledRoots_ReturnsPaths(t *testing.T) {
+	r := newRGRepo(t)
+	if err := r.UpsertGrant("g1", "/DATA/docs", true, "wiki"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.UpsertGrant("g2", "/DATA/private", false, "wiki"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.EnabledRoots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The shared in-memory DB is reused across tests, so look for our own rows
+	// rather than asserting on the total count.
+	byID := map[string]model.RootGrant{}
+	for _, g := range got {
+		byID[g.RootID] = g
+	}
+	if g, ok := byID["g1"]; !ok || g.Path != "/DATA/docs" {
+		t.Fatalf("enabled grant g1 missing or wrong path: %+v", got)
+	}
+	if _, ok := byID["g2"]; ok {
+		t.Fatalf("disabled grant g2 must not be returned: %+v", got)
+	}
+}
