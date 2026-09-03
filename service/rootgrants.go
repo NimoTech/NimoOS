@@ -22,6 +22,10 @@ type RootGrantRepo interface {
 	DeleteGrant(rootID string) error
 	// EnabledRootIDs returns all root_id with enabled=true (regardless of source, including virtual).
 	EnabledRootIDs() ([]string, error)
+	// EnabledRoots returns every enabled grant with its path, so consumers
+	// that scope by filesystem path (Search's filename index) can map ids to
+	// paths without a second lookup. Virtual roots carry an empty path.
+	EnabledRoots() ([]model.RootGrant, error)
 	// ReconcileWiki fully syncs the source="wiki" rows against the input: adds/updates
 	// rows present in the list, deletes rows not in the list; never touches source="virtual" rows.
 	ReconcileWiki(grants []model.RootGrant) error
@@ -59,6 +63,15 @@ func (s *rootGrantStore) UpsertGrant(rootID, path string, enabled bool, source s
 
 func (s *rootGrantStore) DeleteGrant(rootID string) error {
 	return s.db.Where("root_id = ?", rootID).Delete(&model.RootGrant{}).Error
+}
+
+func (s *rootGrantStore) EnabledRoots() ([]model.RootGrant, error) {
+	rows := []model.RootGrant{}
+	err := s.db.Where("enabled = ?", true).Order("root_id").Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (s *rootGrantStore) EnabledRootIDs() ([]string, error) {

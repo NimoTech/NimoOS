@@ -17,6 +17,7 @@ import (
 type wiringFakeRepo struct{}
 
 func (wiringFakeRepo) EnabledRootIDs() ([]string, error)              { return nil, nil }
+func (wiringFakeRepo) EnabledRoots() ([]model.RootGrant, error)       { return nil, nil }
 func (wiringFakeRepo) UpsertGrant(string, string, bool, string) error { return nil }
 func (wiringFakeRepo) DeleteGrant(string) error                       { return nil }
 func (wiringFakeRepo) SeedVirtual(string) error                       { return nil }
